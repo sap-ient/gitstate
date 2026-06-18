@@ -1,152 +1,171 @@
 // cmd/billsim/model.go — billing viability math for gitstate.
 //
-// Pricing model (from config.example.yaml + decisions.md):
-//   Plans:  Free $0 · Hobby $9 · Pro $39 · Team $199 · Scale $249
-//           Enterprise is custom — excluded from simulation.
-//   Billing: USD prices; charged in ZAR at a captured FX rate.
-//   Paystack fee: 2.9% of ZAR amount + ZAR 1.50 cap-flat per transaction.
-//   Stakeholders: free (P6) — never counted toward seats or revenue.
+// Pricing model (v2): per-BUILDER tiers with included LLM credits + overage, BYOK
+// default, and a minimized free tier. Stakeholders are always free (decisions P6).
 //
-// COGS per org/month:
-//   - Hosting:   fly.io compute + Neon DB + Tigris storage; roughly ~$0.50/org on free, ~$1.50 on paid.
-//   - LLM:       THE margin killer. Each org runs diff-difficulty sizing, status synthesis,
-//                and NL→report. Modelled as tokens/org/month × $/token.
-//                Defaults assume ~200k tokens/org/month (mixed input/output) at $3/$15 per 1M
-//                (Claude Sonnet class). This is the primary tunable.
-//   - Support:   ~$0.20/org on free (near-zero), ~$2 on paid plans.
-//   - Sync/compute: GitHub/GitLab API + background workers, ~$0.30/org avg.
+// The key change vs v1: LLM is no longer a pure subsidized COST. It is one of:
+//   - BYOK         → customer brings their own provider key; $0 cost to us.
+//   - Included     → the subscription bundles a per-builder credit allowance; we
+//                    absorb the provider cost up to that allowance (already priced in).
+//   - Overage      → usage beyond the allowance is billed at provider-cost × markup
+//                    (via the LiteLLM gateway), so heavy usage is REVENUE, not a hole.
+// The free tier is BYOK-only and scale-to-zero, so it has near-zero COGS — which is
+// what lets the model break even almost immediately instead of drowning in free drag.
+//
+// All prices are USD; customers are charged in ZAR at a captured FX rate, through
+// Paystack (% + flat fee). This is a steady-state (per-month) model, not a time series.
 
 package main
 
-// Plan defines a pricing tier.
-type Plan struct {
-	Key      string
-	Name     string
-	PriceUSD float64 // monthly price in USD (0 = free)
+// Tier is a per-builder pricing tier.
+type Tier struct {
+	Key            string
+	Name           string
+	PerBuilderUSD  float64 // monthly price per BILLABLE builder (stakeholders free)
+	IncludedLLMUSD float64 // included managed-LLM allowance per builder/mo, at OUR provider cost
+	OverageMarkup  float64 // markup on managed-LLM usage beyond the allowance (e.g. 1.30 = +30%)
 }
 
-// DefaultPlans matches config.example.yaml (ent excluded — custom pricing).
-var DefaultPlans = []Plan{
-	{"free", "Free", 0},
-	{"hobby", "Hobby", 9},
-	{"pro", "Pro", 39},
-	{"team", "Team", 199},
-	{"scale", "Scale", 249},
+// DefaultTiers — competitive per-builder ladder. Enterprise (custom/self-host/BYOK)
+// is excluded from the simulation.
+var DefaultTiers = []Tier{
+	{"free", "Free", 0, 0, 0},              // BYOK-only, ≤2 builders, scale-to-zero
+	{"team", "Team", 12, 4, 1.30},          // includes $4/builder managed LLM
+	{"business", "Business", 25, 12, 1.30}, // includes $12/builder managed LLM, SSO/audit
 }
 
-// SimParams holds all tunable inputs. Sensible defaults are set in main.go via flags.
+// SimParams holds all tunable inputs (defaults set in main.go via flags).
 type SimParams struct {
-	// Customer funnel
-	TotalOrgs  int     // total organisations to simulate
-	ConvPct    float64 // % of free-signups that convert to any paid plan (0–100)
-	ChurnPctMo float64 // monthly churn % of paid orgs (0–100)
+	TotalOrgs  int     // organisations simulated
+	ConvPct    float64 // % of orgs on a PAID tier (after churn settles)
+	ChurnPctMo float64 // monthly churn % of paid orgs
 
-	// FX & payment processing
-	FXRate        float64 // USD → ZAR spot rate (default 18.5)
-	PaystackPctFee float64 // Paystack % fee on ZAR amount (default 2.9)
-	PaystackFlat  float64 // Paystack flat fee per charge in ZAR (default 1.50)
+	FXRate         float64 // USD → ZAR
+	PaystackPctFee float64 // % fee on ZAR amount
+	PaystackFlat   float64 // flat ZAR fee per charge
 
-	// LLM inference cost — THE margin variable
-	// Assumption: each org uses a mix of diff-difficulty, status synthesis, NL→report.
-	// Tokens are a blend of input (cheap) and output (expensive).
-	// Default: 200 000 blended tokens/org/month at an effective $5/1M (Sonnet-class blend).
-	LLMTokensPerOrg  float64 // tokens per org per month
-	LLMCostPerMToken float64 // cost per 1 000 000 tokens in USD (blended input+output)
+	// Paid-tier mix (aligns with DefaultTiers[1:] → Team, Business). Normalised internally.
+	PaidMix [2]float64
 
-	// Hosting / infra per org per month (USD)
-	// fly.io + Neon + Tigris. Free orgs cost less (dormant, smaller).
-	HostingFreeUSD float64
-	HostingPaidUSD float64
+	// Average billable builders per paid org, per tier (Team, Business).
+	BuildersPerOrg [2]float64
 
-	// Support cost per org per month (USD)
-	SupportFreeUSD float64
-	SupportPaidUSD float64
+	// BYOK adoption: fraction of managed-eligible builders that bring their own key
+	// (→ $0 LLM cost AND $0 LLM revenue for us).
+	BYOKFrac float64
 
-	// Sync/compute cost per org per month (USD)
-	// Background workers, GitHub/GitLab API quota amortised.
-	SyncComputeUSD float64
+	// Average managed-LLM usage per non-BYOK builder, in USD of provider cost (per tier).
+	LLMUsagePerBuilder [2]float64
 
-	// Cohort distribution of paid plan mix (must sum to 1.0).
-	// Index aligns with DefaultPlans[1:] → Hobby, Pro, Team, Scale.
-	PaidMix [4]float64
+	// Infra (scale-to-zero compute + DB), USD/mo.
+	InfraFreeUSD     float64 // dormant free org
+	InfraPaidBaseUSD float64 // per paid org
+	InfraPerBuilder  float64 // per builder
+
+	// Support + sync, USD/mo.
+	SupportFreeUSD    float64
+	SupportPerBuilder float64
+	SyncPerBuilder    float64
 }
 
-// PlanResult holds computed metrics for one plan tier.
-type PlanResult struct {
-	Plan          Plan
-	Orgs          int
-	MRR_USD       float64 // gross MRR in USD
-	MRR_ZAR_Gross float64 // MRR × FX
-	PaystackFees  float64 // total Paystack fees (ZAR)
-	MRR_ZAR_Net   float64 // ZAR net of Paystack fees
-	MRR_USD_Net   float64 // ZAR net converted back to USD for margin calc
-	COGS_USD      float64 // total COGS in USD
-	GrossMargin   float64 // (MRR_USD_Net - COGS_USD) / MRR_USD_Net × 100; NaN for free
-	Contribution  float64 // MRR_USD_Net - COGS_USD (can be negative)
-	LLMShare      float64 // LLM portion of COGS_USD
-	Underwater    bool    // true if LLM alone > revenue
+// TierResult holds computed metrics for one tier.
+type TierResult struct {
+	Tier         Tier
+	Orgs         int
+	Builders     float64
+	SubRevUSD    float64 // subscription revenue (USD, gross)
+	OverageRev   float64 // managed-LLM overage revenue (USD, gross)
+	GrossRevUSD  float64 // sub + overage
+	FeesUSD      float64 // Paystack fees (USD-equivalent)
+	NetRevUSD    float64 // gross − fees
+	LLMCostUSD   float64 // managed-LLM provider cost we absorb
+	InfraUSD     float64
+	OtherCOGSUSD float64 // support + sync
+	COGSUSD      float64 // LLM + infra + other
+	Contribution float64 // NetRev − COGS
+	MarginPct    float64
 }
 
 // SimResult is the full simulation output.
 type SimResult struct {
-	Plans       []PlanResult
-	TotalOrgs   int
-	TotalMRR    float64 // gross USD MRR across all paid tiers
-	TotalNetMRR float64 // USD net-of-fees
-	TotalCOGS   float64 // USD
-	GrossMargin float64 // %
-	BreakEven   int     // orgs needed at current paid-mix to hit 0 margin
+	Tiers          []TierResult
+	TotalOrgs      int
+	PaidOrgs       int
+	FreeOrgs       int
+	FreeDragUSD    float64 // total free-tier COGS (the only real drag)
+	TotalNetRev    float64
+	TotalCOGS      float64
+	Contribution   float64
+	MarginPct      float64
+	PerPaidContrib float64 // blended contribution per paid org
+	BreakEvenPaid  int     // paid orgs needed for total contribution ≥ 0 (1 = from first customer)
 }
 
-// llmCostPerOrg returns the monthly LLM cost in USD for one org.
-func llmCostPerOrg(p SimParams) float64 {
-	// tokens ÷ 1_000_000 × $/1M_tokens
-	return (p.LLMTokensPerOrg / 1_000_000) * p.LLMCostPerMToken
-}
-
-// cogsPerOrg returns the total monthly COGS in USD for one org on a given plan.
-// Free orgs still incur hosting + LLM (they drive inference too, just less activity).
-// We halve token usage for free orgs (they explore, rarely run full reports).
-func cogsPerOrg(p SimParams, isFree bool) (total, llmShare float64) {
-	var hosting, support, llm float64
-	if isFree {
-		hosting = p.HostingFreeUSD
-		support = p.SupportFreeUSD
-		llm = llmCostPerOrg(p) * 0.4 // free orgs use ~40% of paid token budget
-	} else {
-		hosting = p.HostingPaidUSD
-		support = p.SupportPaidUSD
-		llm = llmCostPerOrg(p)
-	}
-	sync := p.SyncComputeUSD
-	total = hosting + support + llm + sync
-	llmShare = llm
-	return
-}
-
-// paystackFee returns the ZAR fee for a single monthly charge.
-// Paystack: 2.9% + flat cap. We also model the gross-up: the amount charged
-// must cover the fee, but for simplicity we compute fee on the plan ZAR amount.
-func paystackFee(zarAmount float64, pctFee, flatFee float64) float64 {
-	if zarAmount <= 0 {
+func paystackFeeUSD(grossUSD float64, p SimParams) float64 {
+	if grossUSD <= 0 {
 		return 0
 	}
-	return zarAmount*(pctFee/100) + flatFee
+	zar := grossUSD * p.FXRate
+	feeZAR := zar*(p.PaystackPctFee/100) + p.PaystackFlat
+	return feeZAR / p.FXRate
 }
 
-// Simulate runs the full model and returns per-plan + aggregate results.
+// paidOrgResult computes one paid tier's economics for n orgs.
+func paidOrgResult(t Tier, tierIdx, n int, p SimParams) TierResult {
+	builders := p.BuildersPerOrg[tierIdx]
+	managedBuilders := builders * (1 - p.BYOKFrac)
+
+	// Revenue.
+	subPerOrg := builders * t.PerBuilderUSD
+	usage := p.LLMUsagePerBuilder[tierIdx] // provider $ per managed builder
+	overagePerBuilder := usage - t.IncludedLLMUSD
+	if overagePerBuilder < 0 {
+		overagePerBuilder = 0
+	}
+	overagePerOrg := managedBuilders * overagePerBuilder * t.OverageMarkup
+	grossPerOrg := subPerOrg + overagePerOrg
+
+	// Costs.
+	llmCostPerOrg := managedBuilders * usage // we pay provider for all managed usage
+	infraPerOrg := p.InfraPaidBaseUSD + builders*p.InfraPerBuilder
+	otherPerOrg := builders * (p.SupportPerBuilder + p.SyncPerBuilder)
+
+	feePerOrg := paystackFeeUSD(grossPerOrg, p)
+	netPerOrg := grossPerOrg - feePerOrg
+	cogsPerOrg := llmCostPerOrg + infraPerOrg + otherPerOrg
+	contribPerOrg := netPerOrg - cogsPerOrg
+
+	nf := float64(n)
+	margin := 0.0
+	if netPerOrg > 0 {
+		margin = (contribPerOrg / netPerOrg) * 100
+	}
+	return TierResult{
+		Tier:         t,
+		Orgs:         n,
+		Builders:     builders * nf,
+		SubRevUSD:    subPerOrg * nf,
+		OverageRev:   overagePerOrg * nf,
+		GrossRevUSD:  grossPerOrg * nf,
+		FeesUSD:      feePerOrg * nf,
+		NetRevUSD:    netPerOrg * nf,
+		LLMCostUSD:   llmCostPerOrg * nf,
+		InfraUSD:     infraPerOrg * nf,
+		OtherCOGSUSD: otherPerOrg * nf,
+		COGSUSD:      cogsPerOrg * nf,
+		Contribution: contribPerOrg * nf,
+		MarginPct:    margin,
+	}
+}
+
+// Simulate runs the full steady-state model.
 func Simulate(p SimParams) SimResult {
-	// Derive org counts.
-	// Paid orgs = TotalOrgs × (ConvPct/100). Churn is steady-state: we model the
-	// active monthly cohort AFTER churn has stabilised, i.e. we already bake in
-	// churn by reducing the paid count: paidActive = conv × (1 - churn/100).
-	// This is a steady-state model, not a time-series.
 	convFrac := p.ConvPct / 100
 	churnFrac := p.ChurnPctMo / 100
-	paidOrgs := int(float64(p.TotalOrgs) * convFrac * (1 - churnFrac))
+	paidFrac := convFrac * (1 - churnFrac)
+	paidOrgs := int(float64(p.TotalOrgs) * paidFrac)
 	freeOrgs := p.TotalOrgs - paidOrgs
 
-	// Ensure paid mix sums to ~1.0 (caller's responsibility, but clamp).
 	var mixSum float64
 	for _, m := range p.PaidMix {
 		mixSum += m
@@ -155,121 +174,65 @@ func Simulate(p SimParams) SimResult {
 		mixSum = 1
 	}
 
-	// Plans: Free (index 0) + paid tiers (indices 1–4 → Hobby/Pro/Team/Scale).
-	results := make([]PlanResult, len(DefaultPlans))
+	results := make([]TierResult, len(DefaultTiers))
 
-	// --- Free tier ---
-	cogsFree, llmFree := cogsPerOrg(p, true)
-	results[0] = PlanResult{
-		Plan:         DefaultPlans[0],
+	// Free tier: BYOK-only, scale-to-zero → tiny COGS, no LLM cost, no revenue.
+	freeCostPerOrg := p.InfraFreeUSD + p.SupportFreeUSD
+	results[0] = TierResult{
+		Tier:         DefaultTiers[0],
 		Orgs:         freeOrgs,
-		MRR_USD:      0,
-		COGS_USD:     cogsFree * float64(freeOrgs),
-		LLMShare:     llmFree * float64(freeOrgs),
-		GrossMargin:  0, // undefined; show as "-"
-		Contribution: -(cogsFree * float64(freeOrgs)),
+		InfraUSD:     p.InfraFreeUSD * float64(freeOrgs),
+		OtherCOGSUSD: p.SupportFreeUSD * float64(freeOrgs),
+		COGSUSD:      freeCostPerOrg * float64(freeOrgs),
+		Contribution: -freeCostPerOrg * float64(freeOrgs),
 	}
 
-	// --- Paid tiers ---
-	var totalMRR, totalNetMRR, totalCOGS float64
-	totalCOGS += results[0].COGS_USD // free tier COGS still counts
+	var totalNetRev, totalCOGS, totalContrib float64
+	totalCOGS += results[0].COGSUSD
+	totalContrib += results[0].Contribution
 
-	for i, plan := range DefaultPlans[1:] {
-		n := int(float64(paidOrgs) * (p.PaidMix[i] / mixSum))
-		zarPrice := plan.PriceUSD * p.FXRate
-		fee := paystackFee(zarPrice, p.PaystackPctFee, p.PaystackFlat)
-
-		mrrUSD := plan.PriceUSD * float64(n)
-		mrrZARGross := zarPrice * float64(n)
-		totalFees := fee * float64(n)
-		mrrZARNet := mrrZARGross - totalFees
-		// Convert ZAR net back to USD for margin arithmetic.
-		mrrUSDNet := mrrZARNet / p.FXRate
-
-		cogs, llm := cogsPerOrg(p, false)
-		cogsTotal := cogs * float64(n)
-		llmTotal := llm * float64(n)
-		contribution := mrrUSDNet - cogsTotal
-
-		var grossMargin float64
-		if mrrUSDNet > 0 {
-			grossMargin = (contribution / mrrUSDNet) * 100
-		}
-
-		results[i+1] = PlanResult{
-			Plan:          plan,
-			Orgs:          n,
-			MRR_USD:       mrrUSD,
-			MRR_ZAR_Gross: mrrZARGross,
-			PaystackFees:  totalFees,
-			MRR_ZAR_Net:   mrrZARNet,
-			MRR_USD_Net:   mrrUSDNet,
-			COGS_USD:      cogsTotal,
-			GrossMargin:   grossMargin,
-			Contribution:  contribution,
-			LLMShare:      llmTotal,
-			// Flag tier underwater if LLM COGS alone exceeds net revenue.
-			Underwater: llmTotal > mrrUSDNet,
-		}
-
-		totalMRR += mrrUSD
-		totalNetMRR += mrrUSDNet
-		totalCOGS += cogsTotal
-	}
-
-	var overallMargin float64
-	if totalNetMRR > 0 {
-		overallMargin = ((totalNetMRR - totalCOGS) / totalNetMRR) * 100
-	}
-
-	// Break-even: find N paid orgs at current mix where contribution = 0.
-	// At break-even: totalNetMRR(N) == totalCOGS(N) + freeCOGS(constant).
-	// freeCOGS scales with free orgs, which scale with totalOrgs. We hold the
-	// free/paid ratio constant and solve for N paid orgs.
-	//
-	// Per paid org net revenue (blended across mix):
-	var blendedRevenuePerPaid, blendedCOGSPerPaid float64
-	for i, plan := range DefaultPlans[1:] {
+	var blendedContribPerPaid float64
+	for i, t := range DefaultTiers[1:] {
 		weight := p.PaidMix[i] / mixSum
-		zarPrice := plan.PriceUSD * p.FXRate
-		fee := paystackFee(zarPrice, p.PaystackPctFee, p.PaystackFlat)
-		netUSD := (zarPrice - fee) / p.FXRate
-		blendedRevenuePerPaid += weight * netUSD
-		c, _ := cogsPerOrg(p, false)
-		blendedCOGSPerPaid += weight * c
+		n := int(float64(paidOrgs) * weight)
+		r := paidOrgResult(t, i, n, p)
+		results[i+1] = r
+		totalNetRev += r.NetRevUSD
+		totalCOGS += r.COGSUSD
+		totalContrib += r.Contribution
+
+		unit := paidOrgResult(t, i, 1, p) // per-org contribution
+		blendedContribPerPaid += weight * unit.Contribution
 	}
-	// freeCOGS per free org:
-	freeCOGS, _ := cogsPerOrg(p, true)
-	// Free orgs = paidOrgs × (freeRatio/paidRatio). With current params:
-	// freeRatio = (1 - convFrac*(1-churnFrac)), paidRatio = convFrac*(1-churnFrac).
-	paidFrac := convFrac * (1 - churnFrac)
-	var freeToPaidRatio float64
-	if paidFrac > 0 {
-		freeToPaidRatio = (1 - paidFrac) / paidFrac
+
+	margin := 0.0
+	if totalNetRev > 0 {
+		margin = (totalContrib / totalNetRev) * 100
 	}
-	// Contribution per paid org (net of blended free drag):
-	// contribution(N_paid) = N_paid*(rev - cogs_paid) - N_paid*freeToPaidRatio*freeCOGS = 0
-	// N_paid*(rev - cogs_paid - freeToPaidRatio*freeCOGS) = 0
-	// break-even when rev - cogs_paid - freeToPaidRatio*freeCOGS > 0 (else never profitable)
-	marginPerPaid := blendedRevenuePerPaid - blendedCOGSPerPaid - (freeToPaidRatio * freeCOGS)
+
+	// Break-even: total contribution(N) = N·[paidFrac·perPaid − (1−paidFrac)·freeCost].
+	// If positive, the model is profitable from the first paying customer.
 	breakEven := -1
-	if marginPerPaid > 0 {
-		// We need N_paid paid orgs to cover fixed = 0 (pure variable model).
-		// Since it's purely variable, any N > 0 is profitable in this model.
-		// But useful break-even: minimum paid orgs to produce $1 net positive.
-		breakEven = int(1/marginPerPaid) + 1
-		if breakEven < 1 {
-			breakEven = 1
-		}
+	freePerPaid := 0.0
+	if paidFrac > 0 {
+		freePerPaid = (1 - paidFrac) / paidFrac
+	}
+	netPerPaid := blendedContribPerPaid - freePerPaid*freeCostPerOrg
+	if blendedContribPerPaid > 0 && netPerPaid > 0 {
+		breakEven = 1
 	}
 
 	return SimResult{
-		Plans:       results,
-		TotalOrgs:   p.TotalOrgs,
-		TotalMRR:    totalMRR,
-		TotalNetMRR: totalNetMRR,
-		TotalCOGS:   totalCOGS,
-		GrossMargin: overallMargin,
-		BreakEven:   breakEven,
+		Tiers:          results,
+		TotalOrgs:      p.TotalOrgs,
+		PaidOrgs:       paidOrgs,
+		FreeOrgs:       freeOrgs,
+		FreeDragUSD:    results[0].COGSUSD,
+		TotalNetRev:    totalNetRev,
+		TotalCOGS:      totalCOGS,
+		Contribution:   totalContrib,
+		MarginPct:      margin,
+		PerPaidContrib: blendedContribPerPaid,
+		BreakEvenPaid:  breakEven,
 	}
 }
