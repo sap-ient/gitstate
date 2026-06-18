@@ -42,3 +42,4 @@ internal/web/embed/*
 
 # Local Claude settings
 .claude/
+/billsim

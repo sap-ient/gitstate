@@ -12,93 +12,154 @@ import rehypeSlug from 'rehype-slug'
 
 const components = {
   h1: ({ children, id }) => (
-    <h1 id={id} className="font-display text-3xl font-semibold text-[var(--text)] mt-8 mb-4 leading-tight scroll-mt-20">
+    <h1
+      id={id}
+      className="font-display text-[2rem] font-semibold text-[var(--text)] mt-0 mb-5 leading-[1.2] tracking-tight scroll-mt-24"
+    >
       {children}
     </h1>
   ),
   h2: ({ children, id }) => (
-    <h2 id={id} className="font-display text-2xl font-semibold text-[var(--text)] mt-8 mb-3 leading-tight scroll-mt-20">
+    <h2
+      id={id}
+      className="font-display text-[1.4rem] font-semibold text-[var(--text)] mt-12 mb-4 leading-[1.25] tracking-tight scroll-mt-24"
+    >
       {children}
     </h2>
   ),
   h3: ({ children, id }) => (
-    <h3 id={id} className="font-body text-xl font-semibold text-[var(--text-dim)] mt-6 mb-2 scroll-mt-20">
+    <h3
+      id={id}
+      className="font-display text-[1.1rem] font-semibold text-[var(--text-dim)] mt-8 mb-3 leading-snug scroll-mt-24"
+    >
       {children}
     </h3>
   ),
   h4: ({ children, id }) => (
-    <h4 id={id} className="font-body text-base font-semibold text-[var(--text-muted)] mt-4 mb-1 scroll-mt-20">
+    <h4
+      id={id}
+      className="font-body text-base font-semibold text-[var(--text-muted)] mt-6 mb-2 scroll-mt-24"
+    >
       {children}
     </h4>
   ),
   p: ({ children }) => (
-    <p className="text-[var(--text-muted)] leading-relaxed mb-4">{children}</p>
+    <p className="text-[var(--text-muted)] leading-[1.8] mb-5 text-[0.9375rem]">{children}</p>
   ),
   a: ({ href, children }) => (
     <a
       href={href}
-      className="text-[var(--brand-teal)] underline decoration-[var(--brand-teal)]/30 underline-offset-3 hover:decoration-[var(--brand-teal)] transition-all duration-150"
+      className="text-[var(--brand-teal)] underline decoration-[var(--brand-teal)]/30 underline-offset-[3px] hover:decoration-[var(--brand-teal)] transition-all duration-150 font-medium"
       target={href?.startsWith('http') ? '_blank' : undefined}
       rel={href?.startsWith('http') ? 'noopener noreferrer' : undefined}
     >
       {children}
     </a>
   ),
-  code: ({ inline, children }) => {
+  code: ({ inline, children, className: langClass }) => {
     if (inline) {
       return (
-        <code className="font-mono text-[0.875em] px-1.5 py-0.5 rounded-[4px] bg-[var(--bg-surface3)] border border-[var(--border)] text-[var(--brand-teal)]">
+        <code className="font-mono text-[0.84em] px-[0.4em] py-[0.15em] rounded-[4px] bg-[var(--bg-surface3)] border border-[var(--border)] text-[var(--brand-teal)]">
           {children}
         </code>
       )
     }
     return (
-      <code className="font-mono text-sm text-[var(--text-dim)]">{children}</code>
+      <code className={['font-mono text-[0.84em] text-[var(--text-dim)]', langClass].filter(Boolean).join(' ')}>
+        {children}
+      </code>
     )
   },
   pre: ({ children }) => (
-    <pre className="rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--bg-surface)] p-4 overflow-x-auto mb-4 text-sm leading-relaxed">
+    <pre
+      className="rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] p-5 overflow-x-auto mb-6 mt-2 text-[0.84em] leading-[1.7]"
+      style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.2), 0 4px 12px rgba(0,0,0,0.12)' }}
+    >
       {children}
     </pre>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="border-l-2 border-[var(--brand-teal)] pl-4 my-4 text-[var(--text-faint)] italic">
+    <blockquote
+      className="border-l-[3px] border-[var(--brand-teal)] pl-5 my-6 text-[var(--text-faint)] italic"
+      style={{ background: 'var(--bg-surface)', borderRadius: '0 8px 8px 0', padding: '0.75rem 1.25rem' }}
+    >
       {children}
     </blockquote>
   ),
   ul: ({ children }) => (
-    <ul className="list-none mb-4 space-y-1.5 pl-0">{children}</ul>
+    <ul className="list-none mb-5 space-y-2 pl-0">{children}</ul>
   ),
   ol: ({ children }) => (
-    <ol className="list-decimal list-inside mb-4 space-y-1.5 text-[var(--text-muted)]">{children}</ol>
+    <ol className="list-none mb-5 space-y-2 pl-0 counter-reset-[item]">{children}</ol>
   ),
-  li: ({ children }) => (
-    <li className="flex gap-2 text-[var(--text-muted)]">
-      <span className="mt-[0.55em] w-1 h-1 rounded-full bg-[var(--brand-teal)] shrink-0" />
+  li: ({ children, ordered }) => (
+    <li className="flex gap-3 text-[var(--text-muted)] text-[0.9375rem] leading-[1.7]">
+      {ordered ? (
+        <span
+          className="mt-[0.35em] flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono font-semibold text-[var(--brand-teal)] bg-[var(--brand-teal)]/10"
+          aria-hidden="true"
+        >
+          ·
+        </span>
+      ) : (
+        <span
+          className="mt-[0.68em] w-1.5 h-1.5 rounded-full shrink-0"
+          style={{ background: 'var(--brand-teal)', opacity: 0.7 }}
+          aria-hidden="true"
+        />
+      )}
       <span>{children}</span>
     </li>
   ),
   table: ({ children }) => (
-    <div className="overflow-x-auto mb-4">
+    <div className="overflow-x-auto mb-6 rounded-xl border border-[var(--border)]" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }}>
       <table className="w-full text-sm border-collapse">{children}</table>
     </div>
   ),
+  thead: ({ children }) => (
+    <thead style={{ background: 'var(--bg-surface2)' }}>{children}</thead>
+  ),
   th: ({ children }) => (
-    <th className="text-left px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-[var(--text-faint)] border-b border-[var(--border)] bg-[var(--bg-surface3)]">
+    <th className="text-left px-4 py-2.5 font-mono text-[11px] uppercase tracking-widest text-[var(--text-faint)] border-b border-[var(--border)]">
       {children}
     </th>
   ),
   td: ({ children }) => (
-    <td className="px-3 py-2 text-[var(--text-muted)] border-b border-[var(--border)]/50">{children}</td>
+    <td className="px-4 py-3 text-[var(--text-muted)] border-b border-[var(--border)]/50 text-[0.875rem] leading-relaxed">
+      {children}
+    </td>
+  ),
+  tr: ({ children }) => (
+    <tr className="transition-colors hover:bg-[var(--bg-surface2)]">{children}</tr>
   ),
   hr: () => (
-    <hr className="border-none border-t border-[var(--border)] my-8" />
+    <hr className="border-none h-px my-10" style={{ background: 'var(--border)' }} />
   ),
   strong: ({ children }) => (
     <strong className="font-semibold text-[var(--text)]">{children}</strong>
   ),
   em: ({ children }) => (
     <em className="italic text-[var(--text-dim)]">{children}</em>
+  ),
+  img: ({ src, alt }) => (
+    <span className="block my-6">
+      <img
+        src={src}
+        alt={alt ?? ''}
+        className="max-w-full rounded-xl border border-[var(--border)] block"
+        style={{
+          maxHeight: '480px',
+          objectFit: 'contain',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.12)',
+        }}
+        loading="lazy"
+      />
+      {alt && (
+        <span className="block mt-2 text-center text-xs text-[var(--text-faint)] font-mono">
+          {alt}
+        </span>
+      )}
+    </span>
   ),
 }
 
