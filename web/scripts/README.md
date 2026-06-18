@@ -1,3 +1,52 @@
-# Screenshots
+# web/scripts
 
-`screenshots.mjs` drives the live gitstate UI with Playwright (chromium) and writes retina PNGs to `docs/screenshots/` for the README and docs. To run it, first start the gitstate server (it serves the embedded app at `http://localhost:8080`), then from `web/` run `npm run shots`. It captures the public pages (landing in both dark and light, pricing, compare, docs), logs in via the UI using the demo account (`demo@gitstate.dev` / `demo1234`), and captures the authed pages (dashboard, board, involvement, capacity, cycle-time, billing). Override with `BASE_URL`, `OUT`, `EMAIL`, and `PASSWORD` env vars; pages fail independently so one broken route won't stop the rest.
+## screenshots.mjs
+
+Playwright-based screenshotter that captures the gitstate UI into PNG files.
+
+### Usage
+
+```bash
+# From web/
+npm run shots
+```
+
+The gitstate server must be running first (default `http://localhost:8080`).
+
+### Output destinations
+
+Every captured screenshot is written to **two** locations:
+
+| Destination | Path | Purpose |
+|---|---|---|
+| Docs | `docs/screenshots/<name>.png` | README and project docs |
+| Public | `web/public/shots/<name>.png` | Served as `/shots/*.png` in the Vite app |
+
+The `web/public/shots/` files are served statically at `/shots/<name>.png` by both the Vite dev server and the production build. The landing page `Hero` section uses these via `<BrowserFrame src="/shots/dashboard.png">`.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `BASE_URL` | `http://localhost:8080` | Base URL of the running server |
+| `OUT` | `../../docs/screenshots` | Override the docs output directory |
+| `EMAIL` | `demo@gitstate.dev` | Login email for authed page shots |
+| `PASSWORD` | `demo1234` | Login password for authed page shots |
+
+### Captured pages
+
+**Public (no auth) — dark + light themes:**
+- `/` → `landing-dark.png`, `landing-light.png`
+- `/pricing` → `pricing.png`, `pricing-light.png`
+- `/compare` → `compare.png`
+- `/docs` → `docs.png`
+
+**Authed (dark theme):**
+- `/dashboard` → `dashboard.png`
+- `/board` → `board.png`
+- `/involvement` → `involvement.png`
+- `/capacity` → `capacity.png`
+- `/cycle-time` → `cycle-time.png`
+- `/settings/billing` → `billing.png`
+
+Pages fail independently — one broken route won't stop the rest. Override with `BASE_URL`, `OUT`, `EMAIL`, and `PASSWORD` env vars.

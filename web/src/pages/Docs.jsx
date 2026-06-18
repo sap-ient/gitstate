@@ -8,10 +8,48 @@
  * Orchestrator wraps this in MarketingLayout (nav/footer) — this file
  * owns only the docs chrome (sidebar + content + ToC).
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, createElement } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
+import {
+  BookOpen,
+  Rocket,
+  GitMerge,
+  Receipt,
+  Users,
+  Settings,
+  Plug,
+  Terminal,
+  FileText,
+  Hash,
+  ArrowLeft,
+  ArrowRight,
+  ChevronRight,
+} from 'lucide-react'
 import { Markdown } from '../components/Markdown.jsx'
+import { BrowserFrame } from '../components/ui'
 import { get } from '../lib/api.js'
+
+// ── Icon mapping ──────────────────────────────────────────────────────────────
+// Picks a lucide icon for a doc by matching keywords in its slug/title.
+
+const ICON_RULES = [
+  [/(overview|intro|start|welcome|getting)/, Rocket],
+  [/(state|board|git|status|workflow)/, GitMerge],
+  [/(invoice|billing|payment|pricing)/, Receipt],
+  [/(team|seat|member|stakeholder|people)/, Users],
+  [/(connect|integration|github|gitlab|webhook|api)/, Plug],
+  [/(cli|command|terminal)/, Terminal],
+  [/(config|setting|admin)/, Settings],
+]
+
+function iconForDoc(doc, index) {
+  const key = `${doc?.slug ?? ''} ${doc?.title ?? ''}`.toLowerCase()
+  if (index === 0) return Rocket
+  for (const [re, Icon] of ICON_RULES) {
+    if (re.test(key)) return Icon
+  }
+  return FileText
+}
 
 // ── Heading extractor ─────────────────────────────────────────────────────────
 
@@ -52,25 +90,38 @@ function extractHeadings(markdown) {
 
 // ── Sidebar item ──────────────────────────────────────────────────────────────
 
-function SidebarItem({ doc, isActive }) {
+function SidebarItem({ doc, isActive, index }) {
+  const icon = iconForDoc(doc, index)
   return (
     <Link
       to={`/docs/${doc.slug}`}
       className={[
-        'group flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
+        'group relative flex items-center gap-2.5 pl-3.5 pr-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
         isActive
-          ? 'bg-[var(--bg-surface2)] text-[var(--text)] border border-[var(--border2)]'
-          : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] border border-transparent',
+          ? 'bg-[var(--bg-surface2)] text-[var(--text)]'
+          : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)]/60',
       ].join(' ')}
     >
-      {/* Active indicator dot */}
+      {/* Active accent bar */}
+      <span
+        aria-hidden="true"
+        className={[
+          'absolute left-0 top-1/2 -translate-y-1/2 w-[2px] rounded-full transition-all duration-200',
+          isActive ? 'h-5 opacity-100' : 'h-0 opacity-0',
+        ].join(' ')}
+        style={{ background: 'linear-gradient(to bottom, #2DD4BF, #6366F1)' }}
+      />
       <span
         className={[
-          'w-1 h-1 rounded-full shrink-0 transition-colors duration-150',
-          isActive ? 'bg-[var(--brand-teal)]' : 'bg-[var(--border2)] group-hover:bg-[var(--text-faint)]',
+          'flex items-center justify-center w-6 h-6 rounded-md shrink-0 transition-colors duration-150',
+          isActive
+            ? 'bg-[var(--brand-teal)]/12 text-[var(--brand-teal)]'
+            : 'bg-[var(--bg-surface3)]/50 text-[var(--text-faint)] group-hover:text-[var(--text-muted)]',
         ].join(' ')}
-      />
-      {doc.title}
+      >
+        {createElement(icon, { size: 13, strokeWidth: 2 })}
+      </span>
+      <span className="truncate">{doc.title}</span>
     </Link>
   )
 }
@@ -91,14 +142,21 @@ function TocItem({ heading, isActive }) {
       href={`#${heading.id}`}
       onClick={handleClick}
       className={[
-        'block text-xs leading-relaxed transition-colors duration-150 py-0.5 border-l-2',
-        heading.level === 3 ? 'pl-4' : 'pl-3',
+        'group flex items-center gap-1.5 text-xs leading-relaxed transition-colors duration-150 py-1 border-l-2',
+        heading.level === 3 ? 'pl-5' : 'pl-3',
         isActive
-          ? 'text-[var(--brand-teal)] border-[var(--brand-teal)]'
+          ? 'text-[var(--brand-teal)] border-[var(--brand-teal)] font-medium'
           : 'text-[var(--text-faint)] border-transparent hover:text-[var(--text-muted)] hover:border-[var(--border2)]',
       ].join(' ')}
     >
-      {heading.text}
+      {heading.level === 2 && (
+        <Hash
+          size={10}
+          strokeWidth={2.5}
+          className={isActive ? 'text-[var(--brand-teal)]/70' : 'text-[var(--text-faint)]/40'}
+        />
+      )}
+      <span className="truncate">{heading.text}</span>
     </a>
   )
 }
@@ -260,6 +318,9 @@ export default function Docs() {
 
   const headings = extractHeadings(doc?.content ?? '')
 
+  // First doc in the (order-sorted) list is the overview — anchor it with a shot.
+  const isOverview = docs.length > 0 && doc != null && docs[0].slug === slug
+
   // ── Internal docs link interceptor ─────────────────────────────────────────
   // Handles <a href="/docs/some-slug"> inside rendered markdown
 
@@ -300,7 +361,10 @@ export default function Docs() {
         {/* ── Left sidebar ──────────────────────────────────────────────────── */}
         <aside className="hidden md:flex flex-col shrink-0 w-56 lg:w-64 sticky top-0 self-start h-screen pt-10 pb-8 pr-6">
           {/* Section label */}
-          <div className="mb-4 px-3">
+          <div className="mb-4 px-2 flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-md bg-[var(--brand-teal)]/12 text-[var(--brand-teal)]">
+              <BookOpen size={13} strokeWidth={2} />
+            </span>
             <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-[var(--text-faint)]">
               Documentation
             </span>
@@ -315,8 +379,8 @@ export default function Docs() {
                 Could not load docs index.
               </p>
             ) : (
-              docs.map((d) => (
-                <SidebarItem key={d.slug} doc={d} isActive={d.slug === slug} />
+              docs.map((d, i) => (
+                <SidebarItem key={d.slug} doc={d} isActive={d.slug === slug} index={i} />
               ))
             )}
           </nav>
@@ -386,6 +450,36 @@ export default function Docs() {
                 ref={contentRef}
                 onClick={handleContentClick}
               >
+                {/* Breadcrumb */}
+                <div className="flex items-center gap-1.5 mb-5 text-xs font-mono text-[var(--text-faint)]">
+                  <Link to="/docs" className="hover:text-[var(--text-muted)] transition-colors">
+                    Docs
+                  </Link>
+                  <ChevronRight size={12} strokeWidth={2} className="opacity-50" />
+                  <span className="text-[var(--text-muted)]">{doc.title}</span>
+                </div>
+
+                {/* Product screenshot banner — only on the overview (first) doc */}
+                {isOverview && (
+                  <div className="relative mb-8">
+                    <div
+                      className="absolute -inset-4 pointer-events-none z-0"
+                      style={{
+                        background:
+                          'radial-gradient(ellipse 70% 60% at 50% 40%, rgba(45,212,191,0.07) 0%, transparent 70%)',
+                      }}
+                      aria-hidden="true"
+                    />
+                    <div className="relative z-10">
+                      <BrowserFrame
+                        src="/shots/dashboard.png"
+                        alt="gitstate dashboard — work state derived from git"
+                        url="app.gitstate.dev/dashboard"
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <div
                   className="rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] p-8 mb-8"
                   style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }}
@@ -399,33 +493,51 @@ export default function Docs() {
                   const prev = idx > 0 ? docs[idx - 1] : null
                   const next = idx < docs.length - 1 ? docs[idx + 1] : null
                   return (
-                    <nav className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-6">
+                    <nav className="grid grid-cols-2 gap-4 pt-2">
                       {prev ? (
                         <Link
                           to={`/docs/${prev.slug}`}
-                          className="group flex flex-col items-start gap-0.5 min-w-0"
+                          className="group flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] px-4 py-3.5 hover:border-[var(--brand-teal)]/40 hover:bg-[var(--bg-surface2)] transition-all duration-150 min-w-0"
                         >
-                          <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)] group-hover:text-[var(--brand-teal)] transition-colors">
-                            ← Previous
-                          </span>
-                          <span className="text-sm font-medium text-[var(--text-muted)] group-hover:text-[var(--text)] transition-colors truncate">
-                            {prev.title}
+                          <ArrowLeft
+                            size={16}
+                            strokeWidth={2}
+                            className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--brand-teal)] group-hover:-translate-x-0.5 transition-all"
+                          />
+                          <span className="flex flex-col items-start gap-0.5 min-w-0">
+                            <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">
+                              Previous
+                            </span>
+                            <span className="text-sm font-medium text-[var(--text-muted)] group-hover:text-[var(--text)] transition-colors truncate w-full">
+                              {prev.title}
+                            </span>
                           </span>
                         </Link>
-                      ) : <div />}
+                      ) : (
+                        <div />
+                      )}
                       {next ? (
                         <Link
                           to={`/docs/${next.slug}`}
-                          className="group flex flex-col items-end gap-0.5 min-w-0"
+                          className="group flex items-center justify-end gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] px-4 py-3.5 hover:border-[var(--brand-teal)]/40 hover:bg-[var(--bg-surface2)] transition-all duration-150 min-w-0 text-right"
                         >
-                          <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)] group-hover:text-[var(--brand-teal)] transition-colors">
-                            Next →
+                          <span className="flex flex-col items-end gap-0.5 min-w-0">
+                            <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">
+                              Next
+                            </span>
+                            <span className="text-sm font-medium text-[var(--text-muted)] group-hover:text-[var(--text)] transition-colors truncate w-full">
+                              {next.title}
+                            </span>
                           </span>
-                          <span className="text-sm font-medium text-[var(--text-muted)] group-hover:text-[var(--text)] transition-colors truncate">
-                            {next.title}
-                          </span>
+                          <ArrowRight
+                            size={16}
+                            strokeWidth={2}
+                            className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--brand-teal)] group-hover:translate-x-0.5 transition-all"
+                          />
                         </Link>
-                      ) : <div />}
+                      ) : (
+                        <div />
+                      )}
                     </nav>
                   )
                 })()}

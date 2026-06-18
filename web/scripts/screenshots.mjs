@@ -1,7 +1,8 @@
 /**
  * Playwright screenshotter for gitstate.
  *
- * Captures the embedded React UI into PNGs for the README and docs.
+ * Captures the embedded React UI into PNGs for the README, docs, AND the
+ * web/public/shots/ directory so Landing.jsx can reference them via <img src>.
  *
  * Usage:
  *   1. Make sure the gitstate server is running (default http://localhost:8080).
@@ -12,11 +13,16 @@
  *   OUT        default ../../docs/screenshots  (repo docs/screenshots/)
  *   EMAIL      default demo@gitstate.dev
  *   PASSWORD   default demo1234
+ *
+ * Output destinations:
+ *   $OUT/             — original docs/screenshots location (unchanged)
+ *   web/public/shots/ — served as /shots/*.png from the Vite dev server and
+ *                       the production build; used by BrowserFrame on Landing.
  */
 import { chromium } from 'playwright'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, copyFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, basename } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -24,6 +30,10 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:8080'
 const OUT = process.env.OUT
   ? resolve(process.env.OUT)
   : resolve(__dirname, '../../docs/screenshots')
+
+// Public shots dir — served as /shots/ in the Vite app
+const PUBLIC_SHOTS = resolve(__dirname, '../public/shots')
+
 const EMAIL = process.env.EMAIL || 'demo@gitstate.dev'
 const PASSWORD = process.env.PASSWORD || 'demo1234'
 
@@ -90,6 +100,13 @@ async function capture(page, name, { fullPage = false } = {}) {
     await page.screenshot({ path: file, fullPage })
     captured.push(name)
     console.log(`  ✓ ${name}.png`)
+    // Mirror to web/public/shots/ so the Vite app can serve them as /shots/*.png
+    try {
+      await copyFile(file, resolve(PUBLIC_SHOTS, `${name}.png`))
+      console.log(`  ↳ /shots/${name}.png`)
+    } catch (copyErr) {
+      console.warn(`  ⚠ could not copy to public/shots: ${copyErr?.message || copyErr}`)
+    }
   } catch (err) {
     failed.push({ name, error: String(err?.message || err) })
     console.error(`  ✗ ${name}.png — ${err?.message || err}`)
@@ -138,8 +155,10 @@ async function newContext(browser, theme) {
 
 async function main() {
   await mkdir(OUT, { recursive: true })
-  console.log(`Base URL: ${BASE_URL}`)
-  console.log(`Output:   ${OUT}\n`)
+  await mkdir(PUBLIC_SHOTS, { recursive: true })
+  console.log(`Base URL:    ${BASE_URL}`)
+  console.log(`Output:      ${OUT}`)
+  console.log(`Public shots: ${PUBLIC_SHOTS}\n`)
 
   const browser = await chromium.launch()
 

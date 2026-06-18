@@ -4,7 +4,24 @@
  * Wrapped by MarketingLayout from the orchestrator (no nav/footer here).
  */
 import { Link } from 'react-router-dom'
-import { Card, Badge, Pill, GradientText, Section, Container, Glow } from '../components/ui'
+import {
+  Check,
+  Minus,
+  X,
+  ArrowRight,
+  GitMerge,
+  ScanLine,
+  GitBranch,
+  Receipt,
+  Users,
+  Layers,
+  Bot,
+  GitFork,
+  MessageSquareText,
+  Lock,
+  ShieldOff,
+} from 'lucide-react'
+import { Card, Badge, Pill, GradientText, Section, Container, Glow, BrowserFrame } from '../components/ui'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 
 // ── Data ─────────────────────────────────────────────────────────────────────
@@ -14,16 +31,18 @@ const ROWS = [
   {
     feature: 'State derived from git',
     detail: 'Merged = done. Open PR = in progress. No manual status fields.',
+    icon: GitMerge,
     gitstate: true,
     jira: false,
     linear: false,
     clickup: false,
     zenhub: 'partial',
-    winner: true, // gitstate uniquely wins
+    winner: true,
   },
   {
     feature: 'Effort from reading the diff',
-    detail: 'LLM reads actual diff to judge semantic difficulty — not story-point poker.',
+    detail: 'LLM reads the actual diff to judge semantic difficulty — not story-point poker.',
+    icon: ScanLine,
     gitstate: true,
     jira: false,
     linear: false,
@@ -34,6 +53,7 @@ const ROWS = [
   {
     feature: 'GitHub + GitLab unified',
     detail: 'Single board spanning both platforms, two-way issue sync.',
+    icon: GitBranch,
     gitstate: true,
     jira: 'partial',
     linear: 'partial',
@@ -44,6 +64,7 @@ const ROWS = [
   {
     feature: 'Evidence-based invoicing',
     detail: 'Every invoice line links to a commit SHA or PR. Gaps flagged, not fabricated.',
+    icon: Receipt,
     gitstate: true,
     jira: false,
     linear: false,
@@ -54,6 +75,7 @@ const ROWS = [
   {
     feature: 'Free stakeholder seats',
     detail: 'Clients, PMs, and execs can view without driving up your bill.',
+    icon: Users,
     gitstate: true,
     jira: false,
     linear: false,
@@ -63,7 +85,8 @@ const ROWS = [
   },
   {
     feature: 'Involvement as texture, not a score',
-    detail: 'Multi-dimensional contribution view — review, authorship, scope — never a single number used in pay formulas.',
+    detail: 'Multi-dimensional contribution view — review, authorship, scope — never a single number in pay formulas.',
+    icon: Layers,
     gitstate: true,
     jira: false,
     linear: false,
@@ -74,6 +97,7 @@ const ROWS = [
   {
     feature: 'Agent-native',
     detail: 'Built for workflows where agents write code and humans supervise. No ticket-update rituals.',
+    icon: Bot,
     gitstate: true,
     jira: false,
     linear: false,
@@ -84,6 +108,7 @@ const ROWS = [
   {
     feature: 'Open source + self-host',
     detail: 'AGPL-3.0 core. Run it on your own infra, fork it, own your data.',
+    icon: GitFork,
     gitstate: true,
     jira: false,
     linear: false,
@@ -94,6 +119,7 @@ const ROWS = [
   {
     feature: 'Queryable / NL→report',
     detail: 'Ask "show me PRs by contributor last quarter" in plain language. No BI tool needed.',
+    icon: MessageSquareText,
     gitstate: true,
     jira: 'partial',
     linear: false,
@@ -105,10 +131,10 @@ const ROWS = [
 
 const TOOL_COLS = [
   { key: 'gitstate', label: 'gitstate', isGs: true },
-  { key: 'jira',     label: 'Jira',     isGs: false },
-  { key: 'linear',   label: 'Linear',   isGs: false },
-  { key: 'clickup',  label: 'ClickUp',  isGs: false },
-  { key: 'zenhub',   label: 'ZenHub',   isGs: false },
+  { key: 'jira', label: 'Jira', isGs: false },
+  { key: 'linear', label: 'Linear', isGs: false },
+  { key: 'clickup', label: 'ClickUp', isGs: false },
+  { key: 'zenhub', label: 'ZenHub', isGs: false },
 ]
 
 // ── Cell rendering ────────────────────────────────────────────────────────────
@@ -118,33 +144,33 @@ function Cell({ value, isGs }) {
     return (
       <span
         className={[
-          'inline-flex items-center justify-center w-7 h-7 rounded-full text-sm font-bold',
+          'inline-flex items-center justify-center w-7 h-7 rounded-full transition-transform duration-150',
           isGs
-            ? 'bg-[#2DD4BF]/15 text-[#2DD4BF] shadow-[0_0_12px_rgba(45,212,191,0.3)]'
+            ? 'bg-[#2DD4BF]/15 text-[#2DD4BF] shadow-[0_0_14px_rgba(45,212,191,0.35)] group-hover:scale-110'
             : 'bg-green-500/10 text-green-400',
         ].join(' ')}
         aria-label="Yes"
       >
-        ✓
+        <Check size={15} strokeWidth={3} />
       </span>
     )
   }
   if (value === 'partial') {
     return (
       <span
-        className="inline-flex items-center justify-center w-7 h-7 rounded-full text-sm font-mono text-yellow-400/80 bg-yellow-500/8"
+        className="inline-flex items-center justify-center w-7 h-7 rounded-full text-yellow-400/80 bg-yellow-500/[0.08]"
         aria-label="Partial"
       >
-        ~
+        <Minus size={15} strokeWidth={3} />
       </span>
     )
   }
   return (
     <span
-      className="inline-flex items-center justify-center w-7 h-7 rounded-full text-sm font-bold text-[#334155] bg-transparent"
+      className="inline-flex items-center justify-center w-7 h-7 rounded-full text-[var(--text-faint)]/50 bg-transparent"
       aria-label="No"
     >
-      ✗
+      <X size={14} strokeWidth={2.5} />
     </span>
   )
 }
@@ -178,19 +204,24 @@ For billing teams: every invoice line links to a commit SHA or pull request. Wor
 
 // ── Components ────────────────────────────────────────────────────────────────
 
-function NarrativeSection({ heading, body }) {
+function NarrativeSection({ heading, body, index }) {
   return (
     <Reveal inView>
       <div className="group relative">
-        {/* Left accent bar */}
-        <div
-          className="absolute -left-4 top-0 bottom-0 w-[2px] rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500"
-          style={{ background: 'linear-gradient(to bottom, #2DD4BF, #6366F1)' }}
+        {/* Numbered node on the timeline */}
+        <span
+          className="absolute -left-[1.6rem] top-1 w-3 h-3 rounded-full border-2 border-[var(--bg)] z-10"
+          style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
           aria-hidden="true"
         />
-        <h3 className="font-display text-xl font-semibold text-[var(--text)] mb-3 tracking-tight">
-          {heading}
-        </h3>
+        <div className="flex items-baseline gap-3 mb-3">
+          <span className="font-mono text-xs text-[var(--brand-teal)] tabular-nums">
+            {String(index + 1).padStart(2, '0')}
+          </span>
+          <h3 className="font-display text-xl font-semibold text-[var(--text)] tracking-tight">
+            {heading}
+          </h3>
+        </div>
         <div className="space-y-3">
           {body.split('\n\n').map((para) => (
             <p key={para.slice(0, 40)} className="text-[var(--text-muted)] leading-relaxed text-[15px]">
@@ -206,12 +237,11 @@ function NarrativeSection({ heading, body }) {
 function MatrixTable() {
   return (
     <div className="w-full overflow-x-auto">
-      <table className="w-full border-collapse min-w-[700px]" style={{ tableLayout: 'fixed' }}>
-        {/* Column widths */}
+      <table className="w-full border-collapse min-w-[720px]" style={{ tableLayout: 'fixed' }}>
         <colgroup>
-          <col style={{ width: '38%' }} />
-          {TOOL_COLS.map(col => (
-            <col key={col.key} style={{ width: `${62 / TOOL_COLS.length}%` }} />
+          <col style={{ width: '40%' }} />
+          {TOOL_COLS.map((col) => (
+            <col key={col.key} style={{ width: `${60 / TOOL_COLS.length}%` }} />
           ))}
         </colgroup>
 
@@ -223,21 +253,20 @@ function MatrixTable() {
                 feature
               </span>
             </th>
-            {TOOL_COLS.map(col => (
+            {TOOL_COLS.map((col) => (
               <th key={col.key} className="pb-4 px-2 text-center">
                 {col.isGs ? (
-                  <div className="inline-flex flex-col items-center gap-1.5">
-                    <span
-                      className="font-mono text-sm font-bold px-2.5 py-1 rounded-md"
-                      style={{
-                        background: 'linear-gradient(135deg, rgba(45,212,191,0.15), rgba(99,102,241,0.15))',
-                        border: '1px solid rgba(45,212,191,0.35)',
-                        color: '#2DD4BF',
-                      }}
-                    >
-                      {col.label}
-                    </span>
-                  </div>
+                  <span
+                    className="inline-flex font-mono text-sm font-bold px-3 py-1.5 rounded-md"
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(45,212,191,0.18), rgba(99,102,241,0.16))',
+                      border: '1px solid rgba(45,212,191,0.4)',
+                      color: '#2DD4BF',
+                      boxShadow: '0 0 20px rgba(45,212,191,0.18)',
+                    }}
+                  >
+                    {col.label}
+                  </span>
                 ) : (
                   <span className="font-mono text-xs font-medium text-[var(--text-faint)]">
                     {col.label}
@@ -246,7 +275,6 @@ function MatrixTable() {
               </th>
             ))}
           </tr>
-          {/* Separator */}
           <tr aria-hidden="true">
             <td colSpan={TOOL_COLS.length + 1}>
               <div className="h-px w-full bg-gradient-to-r from-[#2DD4BF]/30 via-[var(--border)] to-transparent mb-1" />
@@ -256,54 +284,62 @@ function MatrixTable() {
 
         {/* Rows */}
         <tbody>
-          {ROWS.map((row) => (
-            <tr
-              key={row.feature}
-              className="group border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-surface2)]/50 transition-colors duration-150"
-            >
-              {/* Feature label */}
-              <td className="py-3.5 pr-4 align-top">
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-sm font-medium text-[var(--text-dim)] font-display leading-snug">
-                    {row.feature}
-                  </span>
-                  <span className="text-[12px] text-[var(--text-faint)] leading-relaxed hidden sm:block">
-                    {row.detail}
-                  </span>
-                </div>
-              </td>
-
-              {/* Value cells */}
-              {TOOL_COLS.map(col => (
-                <td
-                  key={col.key}
-                  className={[
-                    'py-3.5 px-2 text-center align-middle',
-                    col.isGs
-                      ? 'bg-[#2DD4BF]/[0.03] group-hover:bg-[#2DD4BF]/[0.06] transition-colors duration-150'
-                      : '',
-                  ].join(' ')}
-                >
-                  <Cell value={row[col.key]} isGs={col.isGs} />
+          {ROWS.map((row) => {
+            const Icon = row.icon
+            return (
+              <tr
+                key={row.feature}
+                className="group border-b border-[var(--border)] last:border-0 transition-colors duration-150"
+              >
+                {/* Feature label */}
+                <td className="py-3.5 pr-4 align-top group-hover:bg-[var(--bg-surface2)]/40 transition-colors duration-150">
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 flex items-center justify-center w-7 h-7 rounded-md bg-[var(--bg-surface3)] text-[var(--text-muted)] shrink-0 group-hover:text-[var(--brand-teal)] transition-colors duration-150">
+                      <Icon size={15} strokeWidth={2} />
+                    </span>
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <span className="text-sm font-medium text-[var(--text-dim)] font-display leading-snug">
+                        {row.feature}
+                      </span>
+                      <span className="text-[12px] text-[var(--text-faint)] leading-relaxed hidden sm:block">
+                        {row.detail}
+                      </span>
+                    </div>
+                  </div>
                 </td>
-              ))}
-            </tr>
-          ))}
+
+                {/* Value cells */}
+                {TOOL_COLS.map((col) => (
+                  <td
+                    key={col.key}
+                    className={[
+                      'py-3.5 px-2 text-center align-middle transition-colors duration-150',
+                      col.isGs
+                        ? 'bg-[#2DD4BF]/[0.035] group-hover:bg-[#2DD4BF]/[0.07]'
+                        : 'group-hover:bg-[var(--bg-surface2)]/40',
+                    ].join(' ')}
+                  >
+                    <Cell value={row[col.key]} isGs={col.isGs} />
+                  </td>
+                ))}
+              </tr>
+            )
+          })}
         </tbody>
 
         {/* Footer legend */}
         <tfoot>
           <tr>
             <td colSpan={TOOL_COLS.length + 1} className="pt-5 pb-1">
-              <div className="flex items-center gap-5 text-[11px] font-mono text-[var(--text-faint)]">
+              <div className="flex flex-wrap items-center gap-5 text-[11px] font-mono text-[var(--text-faint)]">
                 <span className="flex items-center gap-1.5">
-                  <span className="text-[#2DD4BF]">✓</span> full support
+                  <Check size={13} strokeWidth={3} className="text-[#2DD4BF]" /> full support
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="text-yellow-400/80">~</span> partial / plugin
+                  <Minus size={13} strokeWidth={3} className="text-yellow-400/80" /> partial / plugin
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="text-[#334155]">✗</span> not supported
+                  <X size={13} strokeWidth={2.5} className="text-[var(--text-faint)]/60" /> not supported
                 </span>
               </div>
             </td>
@@ -315,18 +351,24 @@ function MatrixTable() {
 }
 
 function WinCountBanner() {
-  const gsWins = ROWS.filter(r => r.gitstate === true).length
+  const gsWins = ROWS.filter((r) => r.gitstate === true).length
   return (
     <div
       className="relative overflow-hidden rounded-xl border border-[#2DD4BF]/20 px-6 py-5 flex flex-col sm:flex-row items-start sm:items-center gap-4"
       style={{ background: 'linear-gradient(135deg, rgba(45,212,191,0.06) 0%, rgba(99,102,241,0.04) 100%)' }}
     >
-      <div className="flex-1">
+      <Glow variant="teal" size={300} className="-top-10 -left-10" />
+      <div className="flex-1 relative z-10">
         <p className="text-sm font-mono text-[var(--text-muted)] leading-relaxed">
-          gitstate wins <span className="text-[#2DD4BF] font-bold">{gsWins}/{ROWS.length}</span> categories above — not by checking more boxes, but because the categories didn't exist before git became the source of truth.
+          gitstate wins{' '}
+          <span className="text-[#2DD4BF] font-bold">
+            {gsWins}/{ROWS.length}
+          </span>{' '}
+          categories above — not by checking more boxes, but because the categories didn't exist before git
+          became the source of truth.
         </p>
       </div>
-      <Pill color="teal" className="shrink-0 text-xs">
+      <Pill color="teal" className="shrink-0 text-xs relative z-10">
         git-derived
       </Pill>
     </div>
@@ -337,11 +379,14 @@ function WinCountBanner() {
 
 function CtaBlock() {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-[var(--border2)]" style={{ background: 'var(--bg-surface)' }}>
+    <div
+      className="relative overflow-hidden rounded-2xl border border-[var(--border2)] grain"
+      style={{ background: 'var(--bg-surface)' }}
+    >
       <Glow variant="brand" size={500} className="top-1/2 left-1/2" />
       <div className="relative z-10 px-8 py-12 text-center">
         <Reveal>
-          <div className="inline-flex items-center gap-2 mb-5">
+          <div className="inline-flex flex-wrap items-center justify-center gap-2 mb-5">
             <Badge color="teal">open source · AGPL-3.0</Badge>
             <Badge color="indigo">free stakeholder seats</Badge>
           </div>
@@ -353,7 +398,8 @@ function CtaBlock() {
         </Reveal>
         <Reveal delay={0.14}>
           <p className="text-[var(--text-muted)] max-w-md mx-auto mb-8 text-[15px] leading-relaxed">
-            Connect your repos and let git tell the truth. No ticket migrations, no sprint ceremonies, no reconstructed timesheets.
+            Connect your repos and let git tell the truth. No ticket migrations, no sprint ceremonies, no
+            reconstructed timesheets.
           </p>
         </Reveal>
         <Reveal delay={0.2}>
@@ -364,9 +410,7 @@ function CtaBlock() {
               style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
             >
               Start for free
-              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
-              </svg>
+              <ArrowRight size={15} strokeWidth={2.5} />
             </Link>
             <Link
               to="/pricing"
@@ -387,39 +431,44 @@ const BLOCKERS = [
   {
     tool: 'Jira / ClickUp',
     reason: 'Per-seat pricing on every viewer. Free stakeholder access destroys their revenue model.',
-    icon: '💼',
+    icon: Lock,
   },
   {
     tool: 'Linear',
     reason: 'Ticket is the atom of truth. Replacing it with a git event invalidates their entire data model.',
-    icon: '📐',
+    icon: Layers,
   },
   {
     tool: 'ZenHub',
     reason: 'GitHub-only; no GitLab. Derived state is additive, not foundational — tickets still own status.',
-    icon: '🔗',
+    icon: GitBranch,
   },
 ]
 
 function BlockersSection() {
   return (
     <RevealList className="grid grid-cols-1 md:grid-cols-3 gap-4" staggerDelay={0.07} inView>
-      {BLOCKERS.map(b => (
-        <Card key={b.tool} padding="lg" hoverable>
-          <div className="flex flex-col gap-3 h-full">
-            <div className="flex items-center gap-2">
-              <span className="text-lg" aria-hidden="true">{b.icon}</span>
-              <span className="font-mono text-xs font-medium text-[var(--text-faint)] uppercase tracking-widest">
-                {b.tool}
-              </span>
+      {BLOCKERS.map((b) => {
+        const Icon = b.icon
+        return (
+          <Card key={b.tool} padding="lg" hoverable>
+            <div className="flex flex-col gap-3 h-full">
+              <div className="flex items-center gap-2.5">
+                <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-red-500/10 text-red-400/80 shrink-0">
+                  <Icon size={16} strokeWidth={2} />
+                </span>
+                <span className="font-mono text-xs font-medium text-[var(--text-faint)] uppercase tracking-widest">
+                  {b.tool}
+                </span>
+              </div>
+              <p className="text-sm text-[var(--text-muted)] leading-relaxed flex-1">{b.reason}</p>
+              <Badge color="red" className="self-start inline-flex items-center gap-1">
+                <ShieldOff size={11} strokeWidth={2.5} /> won't fix
+              </Badge>
             </div>
-            <p className="text-sm text-[var(--text-muted)] leading-relaxed flex-1">
-              {b.reason}
-            </p>
-            <Badge color="red" className="self-start">won't fix</Badge>
-          </div>
-        </Card>
-      ))}
+          </Card>
+        )
+      })}
     </RevealList>
   )
 }
@@ -446,17 +495,16 @@ export default function Compare() {
 
               <Reveal delay={0.08}>
                 <h1 className="font-display text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-4 leading-[1.08]">
-                  <span className="text-[var(--text)]">Your tracker is a</span>
-                  {' '}
-                  <GradientText>manually-maintained fiction</GradientText>
-                  {' '}
+                  <span className="text-[var(--text)]">Your tracker is a</span>{' '}
+                  <GradientText>manually-maintained fiction</GradientText>{' '}
                   <span className="text-[var(--text)]">next to git.</span>
                 </h1>
               </Reveal>
 
               <Reveal delay={0.15}>
                 <p className="text-[var(--text-muted)] text-lg md:text-xl max-w-2xl mx-auto leading-relaxed mt-4">
-                  Jira, Linear, ClickUp, and ZenHub store a copy of your reality. gitstate reads the original — the git object graph — and derives state, effort, and invoices from it.
+                  Jira, Linear, ClickUp, and ZenHub store a copy of your reality. gitstate reads the original —
+                  the git object graph — and derives state, effort, and invoices from it.
                 </p>
               </Reveal>
 
@@ -468,6 +516,7 @@ export default function Compare() {
                     style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
                   >
                     Start for free
+                    <ArrowRight size={15} strokeWidth={2.5} />
                   </Link>
                   <Link
                     to="/pricing"
@@ -479,6 +528,20 @@ export default function Compare() {
               </Reveal>
             </div>
           </div>
+        </Container>
+      </Section>
+
+      {/* ── Product shot anchor ── */}
+      <Section py="sm">
+        <Container size="lg">
+          <Reveal inView delay={0.05}>
+            <div className="relative">
+              <Glow variant="brand" size={600} className="top-1/4 left-1/2" />
+              <div className="relative z-10">
+                <BrowserFrame src="/shots/board.png" alt="gitstate board — state derived from git" url="app.gitstate.dev/board" />
+              </div>
+            </div>
+          </Reveal>
         </Container>
       </Section>
 
@@ -495,35 +558,52 @@ export default function Compare() {
                   Across the dimensions that matter to teams building real software.
                 </p>
               </div>
-              <Badge color="teal" className="shrink-0">9 categories · 5 tools</Badge>
+              <Badge color="teal" className="shrink-0">
+                9 categories · 5 tools
+              </Badge>
             </div>
           </Reveal>
 
           <Reveal inView delay={0.06}>
-            <Card padding="none" className="overflow-hidden">
-              <div className="px-6 py-5 border-b border-[var(--border)]">
-                {/* Column header bar */}
-                <div className="flex items-center gap-2 text-[11px] font-mono text-[var(--text-faint)]">
-                  <span
-                    className="px-2 py-0.5 rounded font-semibold"
-                    style={{
-                      background: 'linear-gradient(135deg, rgba(45,212,191,0.15), rgba(99,102,241,0.12))',
-                      color: '#2DD4BF',
-                      border: '1px solid rgba(45,212,191,0.25)',
-                    }}
-                  >
-                    gitstate
-                  </span>
-                  <span className="text-[var(--border2)]">vs</span>
-                  {['Jira', 'Linear', 'ClickUp', 'ZenHub'].map(t => (
-                    <span key={t} className="text-[var(--text-faint)]">{t}</span>
-                  ))}
+            <div className="relative">
+              {/* glow behind the highlighted gitstate column */}
+              <div
+                className="absolute inset-y-0 pointer-events-none z-0 hidden md:block"
+                style={{
+                  left: '40%',
+                  width: '12%',
+                  background:
+                    'linear-gradient(to bottom, rgba(45,212,191,0.10), rgba(99,102,241,0.05) 60%, transparent)',
+                  filter: 'blur(8px)',
+                }}
+                aria-hidden="true"
+              />
+              <Card padding="none" className="overflow-hidden relative z-10">
+                <div className="px-6 py-5 border-b border-[var(--border)]">
+                  <div className="flex items-center gap-2 text-[11px] font-mono text-[var(--text-faint)]">
+                    <span
+                      className="px-2 py-0.5 rounded font-semibold"
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(45,212,191,0.15), rgba(99,102,241,0.12))',
+                        color: '#2DD4BF',
+                        border: '1px solid rgba(45,212,191,0.25)',
+                      }}
+                    >
+                      gitstate
+                    </span>
+                    <span className="text-[var(--border2)]">vs</span>
+                    {['Jira', 'Linear', 'ClickUp', 'ZenHub'].map((t) => (
+                      <span key={t} className="text-[var(--text-faint)]">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div className="px-6 pb-4 pt-2">
-                <MatrixTable />
-              </div>
-            </Card>
+                <div className="px-6 pb-4 pt-2">
+                  <MatrixTable />
+                </div>
+              </Card>
+            </div>
           </Reveal>
 
           <Reveal inView delay={0.12} className="mt-4">
@@ -537,16 +617,18 @@ export default function Compare() {
         <Container size="md">
           <Reveal inView>
             <div className="mb-3">
-              <Badge color="default" className="mb-4">the honest case</Badge>
+              <Badge color="default" className="mb-4">
+                the honest case
+              </Badge>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-[var(--text)] tracking-tight">
                 Why the comparison isn't close
               </h2>
             </div>
           </Reveal>
 
-          <div className="mt-10 space-y-10 pl-5 border-l border-[var(--border)]">
+          <div className="mt-10 space-y-12 pl-6 border-l border-[var(--border)]">
             {NARRATIVES.map((n, i) => (
-              <NarrativeSection key={i} heading={n.heading} body={n.body} />
+              <NarrativeSection key={i} heading={n.heading} body={n.body} index={i} />
             ))}
           </div>
         </Container>
@@ -557,7 +639,9 @@ export default function Compare() {
         <Container size="lg">
           <Reveal inView>
             <div className="mb-8 text-center">
-              <Badge color="red" className="mb-4">won't because structurally blocked</Badge>
+              <Badge color="red" className="mb-4">
+                won't because structurally blocked
+              </Badge>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-[var(--text)] tracking-tight">
                 They can't copy it — and here's why
               </h2>
@@ -588,8 +672,10 @@ export default function Compare() {
                   { label: 'agent-native', color: 'indigo' },
                   { label: 'NL→report', color: 'indigo' },
                   { label: 'GitHub + GitLab', color: 'indigo' },
-                ].map(item => (
-                  <Badge key={item.label} color={item.color}>{item.label}</Badge>
+                ].map((item) => (
+                  <Badge key={item.label} color={item.color}>
+                    {item.label}
+                  </Badge>
                 ))}
               </div>
             </Card>
@@ -603,7 +689,6 @@ export default function Compare() {
           <CtaBlock />
         </Container>
       </Section>
-
     </div>
   )
 }

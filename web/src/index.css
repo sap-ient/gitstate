@@ -18,11 +18,11 @@
   /* Dark theme surfaces */
   --color-gs-base:        #0B1120;
   --color-gs-base-alt:    #0d1320;
-  --color-gs-surface:     #111827;
-  --color-gs-surface-2:   #1a2336;
-  --color-gs-surface-3:   #1f2d44;
-  --color-gs-border:      #1e2d45;
-  --color-gs-border-2:    #243352;
+  --color-gs-surface:     #101827;
+  --color-gs-surface-2:   #172032;
+  --color-gs-surface-3:   #1d2b41;
+  --color-gs-border:      #1c2a40;
+  --color-gs-border-2:    #22334e;
   --color-gs-muted:       #64748b;
   --color-gs-subtle:      #94a3b8;
   --color-gs-text:        #e2e8f0;
@@ -35,10 +35,10 @@
   --color-gs-del-bg:      rgba(239,68,68,0.08);
 
   /* Light theme overrides (applied by .light class on <html>) */
-  --color-gs-base-lt:       #f8fafc;
-  --color-gs-surface-lt:    #ffffff;
-  --color-gs-surface-2-lt:  #f1f5f9;
-  --color-gs-border-lt:     #e2e8f0;
+  --color-gs-base-lt:       #f5f3ef;
+  --color-gs-surface-lt:    #fdfcf9;
+  --color-gs-surface-2-lt:  #ede9e2;
+  --color-gs-border-lt:     #ddd8d0;
   --color-gs-text-lt:       #0f172a;
   --color-gs-subtle-lt:     #64748b;
 
@@ -47,10 +47,12 @@
   --radius-badge: 6px;
   --radius-btn:  8px;
 
-  /* Shadows */
-  --shadow-card: 0 1px 3px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.25);
-  --shadow-glow-teal: 0 0 40px rgba(45,212,191,0.15), 0 0 80px rgba(45,212,191,0.06);
-  --shadow-glow-indigo: 0 0 40px rgba(99,102,241,0.15), 0 0 80px rgba(99,102,241,0.06);
+  /* Shadows — richer layered depth */
+  --shadow-card:        0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3), 0 16px 40px rgba(0,0,0,0.18);
+  --shadow-card-hover:  0 2px 4px rgba(0,0,0,0.45), 0 8px 24px rgba(0,0,0,0.35), 0 24px 56px rgba(0,0,0,0.22);
+  --shadow-float:       0 4px 8px rgba(0,0,0,0.5), 0 12px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04);
+  --shadow-glow-teal:   0 0 40px rgba(45,212,191,0.18), 0 0 80px rgba(45,212,191,0.08);
+  --shadow-glow-indigo: 0 0 40px rgba(99,102,241,0.18), 0 0 80px rgba(99,102,241,0.08);
 
   /* Typography */
   --font-display: 'Bricolage Grotesque Variable', system-ui, sans-serif;
@@ -60,13 +62,13 @@
 
 /* ─── Theme CSS vars (semantic aliases) ──────────────────────────────────── */
 :root {
-  /* dark is the default */
+  /* dark is the default — near-black base with real elevation steps */
   --bg:          #0B1120;
-  --bg-surface:  #111827;
-  --bg-surface2: #1a2336;
-  --bg-surface3: #1f2d44;
-  --border:      #1e2d45;
-  --border2:     #243352;
+  --bg-surface:  #101827;
+  --bg-surface2: #172032;
+  --bg-surface3: #1d2b41;
+  --border:      #1c2a40;
+  --border2:     #22334e;
   --text:        #e2e8f0;
   --text-dim:    #cbd5e1;
   --text-muted:  #94a3b8;
@@ -78,13 +80,14 @@
   color-scheme: dark;
 }
 
+/* Light theme — warm off-white, not stark white */
 .light {
-  --bg:          #f8fafc;
-  --bg-surface:  #ffffff;
-  --bg-surface2: #f1f5f9;
-  --bg-surface3: #e8edf5;
-  --border:      #e2e8f0;
-  --border2:     #cbd5e1;
+  --bg:          #f5f3ef;
+  --bg-surface:  #fdfcf9;
+  --bg-surface2: #ede9e2;
+  --bg-surface3: #e3ddd5;
+  --border:      #ddd8d0;
+  --border2:     #c9c3ba;
   --text:        #0f172a;
   --text-dim:    #1e293b;
   --text-muted:  #475569;
@@ -117,7 +120,8 @@
     color: var(--text);
     font-family: var(--font-body);
     font-size: 15px;
-    line-height: 1.6;
+    line-height: 1.65;
+    letter-spacing: -0.005em;
     transition: background 0.2s ease, color 0.2s ease;
   }
 
@@ -130,6 +134,12 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+
+  /* Refined heading defaults */
+  h1, h2, h3, h4, h5, h6 {
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+  }
 }
 
 /* ─── Grain / noise overlay utility ─────────────────────────────────────── */
@@ -151,18 +161,35 @@
   /* Gradient mesh glow */
   .glow-teal {
     background: radial-gradient(600px circle at var(--glow-x, 50%) var(--glow-y, 50%),
-      rgba(45,212,191,0.12) 0%,
+      rgba(45,212,191,0.14) 0%,
       transparent 70%);
   }
   .glow-indigo {
     background: radial-gradient(600px circle at var(--glow-x, 50%) var(--glow-y, 50%),
-      rgba(99,102,241,0.12) 0%,
+      rgba(99,102,241,0.14) 0%,
       transparent 70%);
   }
   .glow-brand {
     background:
-      radial-gradient(400px circle at 20% 40%, rgba(45,212,191,0.10) 0%, transparent 60%),
-      radial-gradient(400px circle at 80% 60%, rgba(99,102,241,0.10) 0%, transparent 60%);
+      radial-gradient(400px circle at 20% 40%, rgba(45,212,191,0.11) 0%, transparent 60%),
+      radial-gradient(400px circle at 80% 60%, rgba(99,102,241,0.11) 0%, transparent 60%);
+  }
+
+  /* Ambient radial backdrop utilities */
+  .ambient-teal {
+    background: radial-gradient(ellipse 80% 60% at 50% 0%,
+      rgba(45,212,191,0.09) 0%,
+      transparent 70%);
+  }
+  .ambient-indigo {
+    background: radial-gradient(ellipse 80% 60% at 50% 0%,
+      rgba(99,102,241,0.09) 0%,
+      transparent 70%);
+  }
+  .ambient-brand {
+    background:
+      radial-gradient(ellipse 70% 50% at 15% 20%, rgba(45,212,191,0.08) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 85% 80%, rgba(99,102,241,0.08) 0%, transparent 60%);
   }
 
   /* Brand gradient text */
@@ -181,4 +208,12 @@
   .font-display { font-family: var(--font-display); }
   .font-body    { font-family: var(--font-body); }
   .font-mono    { font-family: var(--font-mono); }
+
+  /* Soft inset border glow for elevated panels */
+  .border-glow-teal {
+    box-shadow: inset 0 0 0 1px rgba(45,212,191,0.12), 0 0 24px rgba(45,212,191,0.06);
+  }
+  .border-glow-indigo {
+    box-shadow: inset 0 0 0 1px rgba(99,102,241,0.12), 0 0 24px rgba(99,102,241,0.06);
+  }
 }
