@@ -68,7 +68,7 @@ migrate:
 
 ## seed: run the demo seed (synthetic org + git history for local dev / demo).
 seed:
-	go run $(CMD_MIG) seed
+	go run ./cmd/seed
 
 # ─── docker ──────────────────────────────────────────────────────────────────
 

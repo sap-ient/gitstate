@@ -1,4 +1,4 @@
-<!-- title: Quickstart | order: 2 -->
+<!-- title: Quickstart | order: 3 -->
 
 # Quickstart
 
@@ -6,7 +6,8 @@ Run the full stack locally in a few commands.
 
 ## Prerequisites
 
-- Go 1.25+, Node 20+, and a Postgres database (local or [Neon](https://neon.com)).
+- **Go 1.25+**, **Node 20+**, and a **Postgres** database (local or [Neon](https://neon.com)).
+- `git` on the `PATH` (the git engine shells out to it).
 
 ## Setup
 
@@ -26,6 +27,19 @@ cd web && npm install && npm run dev:full   # Go API on :8080 + Vite on :5173
 
 Open **http://localhost:5173** and sign in.
 
+> The `.env.dev` file is loaded automatically in dev. One file holds both backend secrets
+> (unprefixed) and frontend-public vars (`VITE_*`); see [Configuration](/docs/configuration).
+
+## First steps in the app
+
+1. **Create an organisation** — the tenant root. Everything is scoped to it.
+2. **Connect a repo** — point gitstate at a GitHub or GitLab repository and trigger a sync. See
+   [Connecting repos](/docs/connecting-repos).
+3. **Watch state derive** — issues auto-progress from linked PRs, cycle times compute, and (if an
+   `ANTHROPIC_API_KEY` is set) effort estimates appear on the issue drawer.
+4. **Ask a question** — use the natural-language report box on the dashboard, e.g. *"which PRs took
+   longest to merge last month?"*. See [Metrics & reporting](/docs/metrics-and-reporting).
+
 ## Single binary
 
 ```bash
@@ -34,4 +48,5 @@ make build-ee      # Enterprise Edition (Paystack billing + cross-org admin)
 ./gitstate         # serves API + the embedded UI on :8080
 ```
 
-See [Self-hosting](/docs/self-hosting) for Docker and fly.io.
+See [Self-hosting](/docs/self-hosting) for Docker, fly.io, and systemd, and the
+[CLI & tools](/docs/cli-and-tools) page for `migrate`, `seed`, and `billsim`.

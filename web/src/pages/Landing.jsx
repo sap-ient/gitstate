@@ -7,6 +7,7 @@
  *   Disciplines   the three honest constraints
  *   DerivedDemo   ticket-vs-diff side-by-side
  *   Features      six key capabilities grid
+ *   Capabilities  alternating screenshot showcase (7 caps)
  *   Stats         four proof numbers strip
  *   ICP           client-billing dev shops callout
  *   CompareTeaser gitstate vs Jira vs Linear table
@@ -17,6 +18,7 @@ import Hero from './landing/Hero.jsx'
 import Disciplines from './landing/Disciplines.jsx'
 import DerivedDemo from './landing/DerivedDemo.jsx'
 import Features from './landing/Features.jsx'
+import Capabilities from './landing/Capabilities.jsx'
 import Stats from './landing/Stats.jsx'
 import ICP from './landing/ICP.jsx'
 import CompareTeaser from './landing/CompareTeaser.jsx'
@@ -29,6 +31,7 @@ export default function Landing() {
       <Disciplines />
       <DerivedDemo />
       <Features />
+      <Capabilities />
       <Stats />
       <ICP />
       <CompareTeaser />

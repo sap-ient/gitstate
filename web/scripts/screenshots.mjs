@@ -215,6 +215,9 @@ async function main() {
       await shoot(page, '/capacity', 'capacity', { reveals: true })
       await shoot(page, '/cycle-time', 'cycle-time', { reveals: true })
       await shoot(page, '/settings/billing', 'billing', { reveals: true })
+      await shoot(page, '/repos', 'repos', { reveals: true })
+      await shoot(page, '/projects', 'projects', { reveals: true })
+      await shoot(page, '/settings/members', 'members', { reveals: true })
     } else {
       for (const n of ['dashboard', 'board', 'involvement', 'capacity', 'cycle-time', 'billing']) {
         failed.push({ name: n, error: 'skipped — login failed' })

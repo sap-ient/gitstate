@@ -1,8 +1,10 @@
-<!-- title: The Wedge | order: 3 -->
+<!-- title: The Wedge | order: 2 -->
 
 # The Wedge
 
 Why does gitstate exist, and why can't the incumbents just copy it?
+
+![tracker vs git, compared](/shots/compare.png)
 
 ## The problem is structural
 
@@ -30,5 +32,13 @@ Incumbents are structurally blocked: their entire data model is hand-entered tic
 revenue is per-seat. gitstate reads the git object graph directly, charges per *builder* (stakeholders
 free), and is built for the arriving world where agents write the code and humans supervise.
 
-The entry point is **client-billing dev shops** — they bleed on manual time-tracking today. The
-expansion is cross-repo state for scaling teams, then agent-native project management.
+## Beachhead and expansion
+
+| Stage | Who | Why now |
+|---|---|---|
+| **Beachhead** | Client-billing dev shops (agencies, consultancies) | Acute pain — they bleed on manual time-tracking and defending invoices today |
+| **Expansion** | Scaling multi-repo teams | Cross-repo derived state without the ticket-maintenance tax |
+| **End game** | Agent-native PM | Agents write the code; humans supervise — incumbents' ticket model doesn't survive this |
+
+The next step is the [Concepts](/docs/concepts) mental model, which turns these principles into the
+exact mechanics gitstate uses.
