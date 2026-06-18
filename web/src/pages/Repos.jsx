@@ -3,11 +3,32 @@
  */
 import { useState, useCallback } from 'react'
 import { useRepos } from '../lib/useRepos.js'
+import { Card, Badge, Button } from '../components/ui/index.js'
 
 const PLATFORMS = [
   { id: 'github', label: 'GitHub' },
   { id: 'gitlab', label: 'GitLab' },
 ]
+
+function Spinner() {
+  return (
+    <svg className="animate-spin shrink-0" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function FormInput({ label, hint, children }) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="text-[10px] text-[var(--text-faint)] mt-1 font-mono">{hint}</p>}
+    </div>
+  )
+}
 
 function ConnectForm({ onConnect, onClose }) {
   const [platform, setPlatform] = useState('github')
@@ -32,18 +53,15 @@ function ConnectForm({ onConnect, onClose }) {
   }, [platform, fullName, token, onConnect, onClose])
 
   return (
-    <div
-      className="mb-8 rounded-xl p-6"
-      style={{ background: '#111827', border: '1px solid #1e2d45' }}
-    >
+    <Card padding="lg" className="mb-8">
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h3 className="text-sm font-semibold text-[#e2e8f0]">Connect a repository</h3>
-          <p className="text-xs text-[#64748b] mt-0.5">
+          <h3 className="text-sm font-semibold text-[var(--text)] font-display">Connect a repository</h3>
+          <p className="text-xs text-[var(--text-faint)] mt-0.5">
             gitstate will read commits, PRs, and issues to derive project state.
           </p>
         </div>
-        <button onClick={onClose} className="text-[#64748b] hover:text-[#e2e8f0] transition-colors">
+        <button onClick={onClose} className="text-[var(--text-faint)] hover:text-[var(--text)] transition-colors">
           <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
           </svg>
@@ -52,22 +70,19 @@ function ConnectForm({ onConnect, onClose }) {
 
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Platform */}
-        <div>
-          <label className="block text-xs font-semibold text-[#64748b] uppercase tracking-widest mb-2">
-            Platform
-          </label>
+        <FormInput label="Platform">
           <div className="flex gap-2">
             {PLATFORMS.map(p => (
               <button
                 key={p.id}
                 type="button"
                 onClick={() => setPlatform(p.id)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150"
-                style={{
-                  background: platform === p.id ? 'rgba(45,212,191,0.12)' : '#0d1628',
-                  border: platform === p.id ? '1px solid rgba(45,212,191,0.4)' : '1px solid #1e2d45',
-                  color: platform === p.id ? '#2DD4BF' : '#94a3b8',
-                }}
+                className={[
+                  'flex items-center gap-2 px-4 py-2 rounded-[var(--radius-btn)] text-sm font-medium transition-all duration-150 border',
+                  platform === p.id
+                    ? 'bg-[var(--brand-teal)]/10 border-[var(--brand-teal)]/40 text-[var(--brand-teal)]'
+                    : 'bg-[var(--bg)] border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border2)]',
+                ].join(' ')}
               >
                 <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
                   {p.id === 'github' ? (
@@ -80,67 +95,42 @@ function ConnectForm({ onConnect, onClose }) {
               </button>
             ))}
           </div>
-        </div>
+        </FormInput>
 
-        {/* Repo name */}
-        <div>
-          <label className="block text-xs font-semibold text-[#64748b] uppercase tracking-widest mb-1.5">
-            Repository <span className="text-[#ef4444]">*</span>
-          </label>
+        <FormInput label={<>Repository <span className="text-red-400">*</span></>} hint="e.g. exo/gitstate">
           <input
             autoFocus
             required
             type="text"
             placeholder="owner/repo-name"
-            className="w-full bg-[#0d1628] text-[#e2e8f0] text-sm rounded-lg px-3 py-2.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/50 placeholder-[#334155] font-mono transition-colors"
+            className="w-full bg-[var(--bg)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50 placeholder-[var(--text-faint)] font-mono transition-colors"
             value={fullName}
             onChange={e => setFullName(e.target.value)}
           />
-          <p className="text-[10px] text-[#64748b] mt-1 font-mono">e.g. exo/gitstate</p>
-        </div>
+        </FormInput>
 
-        {/* Token */}
-        <div>
-          <label className="block text-xs font-semibold text-[#64748b] uppercase tracking-widest mb-1.5">
-            Access token <span className="text-[#64748b] font-normal normal-case">(optional for public repos)</span>
-          </label>
+        <FormInput label={<>Access token <span className="text-[var(--text-faint)] font-normal normal-case">(optional for public repos)</span></>}>
           <input
             type="password"
             placeholder="ghp_… or glpat-…"
-            className="w-full bg-[#0d1628] text-[#e2e8f0] text-sm rounded-lg px-3 py-2.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/50 placeholder-[#334155] font-mono transition-colors"
+            className="w-full bg-[var(--bg)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50 placeholder-[var(--text-faint)] font-mono transition-colors"
             value={token}
             onChange={e => setToken(e.target.value)}
           />
-        </div>
+        </FormInput>
 
         {error && (
-          <p className="text-xs text-[#ef4444] bg-[#ef444410] rounded px-3 py-2">{error}</p>
+          <p className="text-xs text-red-400 bg-red-500/[0.08] rounded px-3 py-2">{error}</p>
         )}
 
         <div className="flex items-center gap-3 pt-1">
-          <button
-            type="submit"
-            disabled={saving || !fullName.trim()}
-            className="px-5 py-2 rounded-lg text-sm font-semibold text-[#0B1120] disabled:opacity-40 transition-all flex items-center gap-2"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
-          >
-            {saving && (
-              <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
-              </svg>
-            )}
+          <Button type="submit" disabled={saving || !fullName.trim()} leftIcon={saving ? <Spinner /> : null}>
             Connect repository
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-sm font-medium text-[#64748b] hover:text-[#e2e8f0] transition-colors"
-          >
-            Cancel
-          </button>
+          </Button>
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
         </div>
       </form>
-    </div>
+    </Card>
   )
 }
 
@@ -149,7 +139,7 @@ function SyncButton({ repoId, syncing, onSync }) {
     <button
       onClick={(e) => { e.stopPropagation(); onSync(repoId) }}
       disabled={syncing}
-      className="flex items-center gap-1.5 text-xs font-medium text-[#64748b] hover:text-[#2DD4BF] transition-colors disabled:opacity-50"
+      className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-faint)] hover:text-[var(--brand-teal)] transition-colors disabled:opacity-50"
       title="Trigger sync"
     >
       <svg
@@ -164,35 +154,33 @@ function SyncButton({ repoId, syncing, onSync }) {
 }
 
 function RepoRow({ repo, onSync }) {
-  const platformColor = repo.platform === 'github' ? '#2DD4BF' : '#f59e0b'
-
   return (
-    <div className="flex items-center gap-4 px-5 py-4 border-b border-[#1e2d45] last:border-0 hover:bg-[#0d1628]/40 transition-colors">
+    <div className="flex items-center gap-4 px-5 py-4 border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-surface2)] transition-colors">
       {/* Platform indicator */}
       <div
         className="w-2 h-2 rounded-full shrink-0"
-        style={{ background: platformColor }}
+        style={{ background: repo.platform === 'github' ? 'var(--brand-teal)' : '#f59e0b' }}
         title={repo.platform}
       />
 
       {/* Repo name */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-[#e2e8f0] font-mono truncate">{repo.fullName}</p>
+        <p className="text-sm font-semibold text-[var(--text)] font-mono truncate">{repo.fullName}</p>
         <div className="flex items-center gap-3 mt-0.5">
-          <span className="text-xs text-[#64748b] font-mono">{repo.platform}</span>
+          <span className="text-xs text-[var(--text-faint)] font-mono">{repo.platform}</span>
           {repo.lastSyncedAt ? (
-            <span className="text-xs text-[#64748b]">
+            <span className="text-xs text-[var(--text-faint)]">
               synced {new Date(repo.lastSyncedAt).toLocaleDateString()}
             </span>
           ) : (
-            <span className="text-xs text-[#f59e0b]">never synced</span>
+            <Badge color="yellow">never synced</Badge>
           )}
         </div>
       </div>
 
       {/* Stats */}
       {repo.issueCount != null && (
-        <div className="hidden sm:flex items-center gap-1 text-xs font-mono text-[#64748b]">
+        <div className="hidden sm:flex items-center gap-1 text-xs font-mono text-[var(--text-faint)]">
           <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
           </svg>
@@ -200,7 +188,6 @@ function RepoRow({ repo, onSync }) {
         </div>
       )}
 
-      {/* Sync button */}
       <SyncButton repoId={repo.id} syncing={repo.syncing} onSync={onSync} />
     </div>
   )
@@ -215,89 +202,77 @@ export default function Repos() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-[#e2e8f0] tracking-tight">Repositories</h1>
-          <p className="text-sm text-[#64748b] mt-1">
+          <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Repositories</h1>
+          <p className="text-sm text-[var(--text-faint)] mt-1">
             Connected repos are the source of truth for dev work.
           </p>
         </div>
         {!showForm && (
-          <button
+          <Button
+            variant="primary"
             onClick={() => setShowForm(true)}
-            className="px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120] transition-all duration-150 flex items-center gap-1.5"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
+            leftIcon={
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+            }
           >
-            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-            </svg>
             Connect repo
-          </button>
+          </Button>
         )}
       </div>
 
       {/* Connect form */}
       {showForm && (
-        <ConnectForm
-          onConnect={connectRepo}
-          onClose={() => setShowForm(false)}
-        />
+        <ConnectForm onConnect={connectRepo} onClose={() => setShowForm(false)} />
       )}
 
       {/* Repo list */}
-      <div className="bg-[#111827] border border-[#1e2d45] rounded-xl overflow-hidden">
+      <Card padding="none" className="overflow-hidden">
         {/* List header */}
-        <div className="flex items-center gap-4 px-5 py-3 border-b border-[#1e2d45] bg-[#0d1628]/50">
-          <span className="text-[10px] font-semibold text-[#64748b] uppercase tracking-widest flex-1">Repository</span>
-          <span className="text-[10px] font-semibold text-[#64748b] uppercase tracking-widest hidden sm:block w-24">Issues</span>
-          <span className="text-[10px] font-semibold text-[#64748b] uppercase tracking-widest w-14">Sync</span>
+        <div className="flex items-center gap-4 px-5 py-3 border-b border-[var(--border)] bg-[var(--bg-surface2)]/50">
+          <span className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest flex-1">Repository</span>
+          <span className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest hidden sm:block w-24">Issues</span>
+          <span className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest w-14">Sync</span>
         </div>
 
         {loading && (
           <div className="py-12 text-center">
-            <svg className="animate-spin mx-auto" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2">
+            <svg className="animate-spin mx-auto" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" strokeWidth="2">
               <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
             </svg>
-            <p className="text-xs text-[#64748b] mt-2">Loading repos…</p>
+            <p className="text-xs text-[var(--text-faint)] mt-2">Loading repos…</p>
           </div>
         )}
 
         {!loading && error && (
           <div className="py-10 px-6 text-center">
-            <p className="text-sm text-[#ef4444]">{error}</p>
-            <p className="text-xs text-[#64748b] mt-1">Connect a repo above to get started.</p>
+            <p className="text-sm text-red-400">{error}</p>
+            <p className="text-xs text-[var(--text-faint)] mt-1">Connect a repo above to get started.</p>
           </div>
         )}
 
         {!loading && !error && repos.length === 0 && (
           <div className="py-16 text-center px-6">
-            <div
-              className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4"
-              style={{ background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.2)' }}
-            >
-              <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="#2DD4BF" strokeWidth="1.5">
+            <div className="w-12 h-12 rounded-[var(--radius-card)] flex items-center justify-center mx-auto mb-4 bg-[var(--brand-teal)]/[0.06] border border-[var(--brand-teal)]/20">
+              <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="var(--brand-teal)" strokeWidth="1.5">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5" />
               </svg>
             </div>
-            <h3 className="text-sm font-semibold text-[#e2e8f0] mb-1">No repositories yet</h3>
-            <p className="text-xs text-[#64748b] max-w-xs mx-auto">
+            <h3 className="text-sm font-semibold text-[var(--text)] mb-1">No repositories yet</h3>
+            <p className="text-xs text-[var(--text-faint)] max-w-xs mx-auto mb-4">
               Connect a GitHub or GitLab repo and gitstate will derive project state from git — no ticket maintenance.
             </p>
-            <button
-              onClick={() => setShowForm(true)}
-              className="mt-4 px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120]"
-              style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
-            >
-              Connect first repo
-            </button>
+            <Button variant="primary" onClick={() => setShowForm(true)}>Connect first repo</Button>
           </div>
         )}
 
         {!loading && repos.map(repo => (
           <RepoRow key={repo.id} repo={repo} onSync={syncRepo} />
         ))}
-      </div>
+      </Card>
 
-      {/* Wedge note */}
-      <p className="text-xs text-[#334155] font-mono mt-4">
+      <p className="text-xs text-[var(--text-faint)] font-mono mt-4">
         Derived from git · merged = done · PR open = in progress · no manual status updates
       </p>
     </div>

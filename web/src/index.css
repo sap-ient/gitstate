@@ -1,20 +1,99 @@
+/* ─── Font imports ───────────────────────────────────────────────────────── */
+@import '@fontsource-variable/bricolage-grotesque';
+@import '@fontsource-variable/hanken-grotesk';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/700.css';
+
 @import "tailwindcss";
 
+/* ─── Design tokens ──────────────────────────────────────────────────────── */
 @theme {
-  --color-gs-teal: #2DD4BF;
-  --color-gs-indigo: #6366F1;
-  --color-gs-base: #0B1120;
-  --color-gs-surface: #111827;
-  --color-gs-surface-2: #1a2336;
-  --color-gs-border: #1e2d45;
-  --color-gs-muted: #64748b;
-  --color-gs-text: #e2e8f0;
-  --color-gs-subtle: #94a3b8;
+  /* Brand colours */
+  --color-gs-teal:        #2DD4BF;
+  --color-gs-indigo:      #6366F1;
+  --color-gs-teal-dim:    #1a9e8f;
+  --color-gs-indigo-dim:  #4749b8;
 
-  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Dark theme surfaces */
+  --color-gs-base:        #0B1120;
+  --color-gs-base-alt:    #0d1320;
+  --color-gs-surface:     #111827;
+  --color-gs-surface-2:   #1a2336;
+  --color-gs-surface-3:   #1f2d44;
+  --color-gs-border:      #1e2d45;
+  --color-gs-border-2:    #243352;
+  --color-gs-muted:       #64748b;
+  --color-gs-subtle:      #94a3b8;
+  --color-gs-text:        #e2e8f0;
+  --color-gs-text-dim:    #cbd5e1;
+
+  /* Diff colours */
+  --color-gs-add:         #22c55e;
+  --color-gs-add-bg:      rgba(34,197,94,0.08);
+  --color-gs-del:         #ef4444;
+  --color-gs-del-bg:      rgba(239,68,68,0.08);
+
+  /* Light theme overrides (applied by .light class on <html>) */
+  --color-gs-base-lt:       #f8fafc;
+  --color-gs-surface-lt:    #ffffff;
+  --color-gs-surface-2-lt:  #f1f5f9;
+  --color-gs-border-lt:     #e2e8f0;
+  --color-gs-text-lt:       #0f172a;
+  --color-gs-subtle-lt:     #64748b;
+
+  /* Radii */
+  --radius-card: 12px;
+  --radius-badge: 6px;
+  --radius-btn:  8px;
+
+  /* Shadows */
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.25);
+  --shadow-glow-teal: 0 0 40px rgba(45,212,191,0.15), 0 0 80px rgba(45,212,191,0.06);
+  --shadow-glow-indigo: 0 0 40px rgba(99,102,241,0.15), 0 0 80px rgba(99,102,241,0.06);
+
+  /* Typography */
+  --font-display: 'Bricolage Grotesque Variable', system-ui, sans-serif;
+  --font-body:    'Hanken Grotesk Variable', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 }
 
+/* ─── Theme CSS vars (semantic aliases) ──────────────────────────────────── */
+:root {
+  /* dark is the default */
+  --bg:          #0B1120;
+  --bg-surface:  #111827;
+  --bg-surface2: #1a2336;
+  --bg-surface3: #1f2d44;
+  --border:      #1e2d45;
+  --border2:     #243352;
+  --text:        #e2e8f0;
+  --text-dim:    #cbd5e1;
+  --text-muted:  #94a3b8;
+  --text-faint:  #64748b;
+
+  --brand-teal:   #2DD4BF;
+  --brand-indigo: #6366F1;
+
+  color-scheme: dark;
+}
+
+.light {
+  --bg:          #f8fafc;
+  --bg-surface:  #ffffff;
+  --bg-surface2: #f1f5f9;
+  --bg-surface3: #e8edf5;
+  --border:      #e2e8f0;
+  --border2:     #cbd5e1;
+  --text:        #0f172a;
+  --text-dim:    #1e293b;
+  --text-muted:  #475569;
+  --text-faint:  #94a3b8;
+
+  color-scheme: light;
+}
+
+/* ─── Base layer ─────────────────────────────────────────────────────────── */
 @layer base {
   *, *::before, *::after {
     box-sizing: border-box;
@@ -25,16 +104,81 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
     color-scheme: dark;
+    scroll-behavior: smooth;
+  }
+
+  html.light {
+    color-scheme: light;
   }
 
   body {
     margin: 0;
-    background: #0B1120;
-    color: #e2e8f0;
-    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.6;
+    transition: background 0.2s ease, color 0.2s ease;
   }
 
   #root {
     min-height: 100svh;
   }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+}
+
+/* ─── Grain / noise overlay utility ─────────────────────────────────────── */
+@layer utilities {
+  .grain {
+    position: relative;
+  }
+  .grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    background-size: 256px 256px;
+    pointer-events: none;
+    border-radius: inherit;
+    z-index: 0;
+  }
+
+  /* Gradient mesh glow */
+  .glow-teal {
+    background: radial-gradient(600px circle at var(--glow-x, 50%) var(--glow-y, 50%),
+      rgba(45,212,191,0.12) 0%,
+      transparent 70%);
+  }
+  .glow-indigo {
+    background: radial-gradient(600px circle at var(--glow-x, 50%) var(--glow-y, 50%),
+      rgba(99,102,241,0.12) 0%,
+      transparent 70%);
+  }
+  .glow-brand {
+    background:
+      radial-gradient(400px circle at 20% 40%, rgba(45,212,191,0.10) 0%, transparent 60%),
+      radial-gradient(400px circle at 80% 60%, rgba(99,102,241,0.10) 0%, transparent 60%);
+  }
+
+  /* Brand gradient text */
+  .gradient-text {
+    background: linear-gradient(135deg, #2DD4BF 0%, #818cf8 50%, #6366F1 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Diff line highlights */
+  .diff-add { background: var(--color-gs-add-bg); border-left: 2px solid var(--color-gs-add); }
+  .diff-del { background: var(--color-gs-del-bg); border-left: 2px solid var(--color-gs-del); }
+
+  /* Font utilities */
+  .font-display { font-family: var(--font-display); }
+  .font-body    { font-family: var(--font-body); }
+  .font-mono    { font-family: var(--font-mono); }
 }

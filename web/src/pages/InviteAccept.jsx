@@ -8,10 +8,11 @@ import { LogoFull } from '../components/Logo.jsx'
 import { useAuth } from '../lib/useAuth.js'
 import { useOrg } from '../lib/useOrg.js'
 import * as api from '../lib/api.js'
+import { Card, Button } from '../components/ui/index.js'
 
 function Spinner() {
   return (
-    <svg className="animate-spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <svg className="animate-spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" strokeWidth="2.5">
       <path strokeLinecap="round" d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
     </svg>
   )
@@ -32,7 +33,6 @@ export default function InviteAccept() {
   const { switchOrg, refetchOrgs } = useOrg()
   const token = searchParams.get('token')
 
-  // Derive initial state without needing a synchronous setState call in effects
   const [state, dispatch] = useReducer(reducer, {
     status: token ? 'loading' : 'error',
     errorMsg: token ? null : 'No invite token found in the URL.',
@@ -67,12 +67,12 @@ export default function InviteAccept() {
   const { status, errorMsg } = state
 
   return (
-    <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center px-4 py-12">
+    <div className="min-h-screen bg-[var(--bg)] flex flex-col items-center justify-center px-4 py-12">
       {/* Background glow */}
       <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden">
         <div
           className="absolute -top-32 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full opacity-[0.06]"
-          style={{ background: 'radial-gradient(ellipse at center, #2DD4BF, #6366F1)' }}
+          style={{ background: 'radial-gradient(ellipse at center, var(--brand-teal), var(--brand-indigo))' }}
         />
       </div>
 
@@ -81,28 +81,28 @@ export default function InviteAccept() {
           <LogoFull height={38} />
         </div>
 
-        <div className="bg-[#111827] border border-[#1e2d45] rounded-2xl p-8 shadow-2xl text-center">
+        <Card padding="xl" className="text-center">
           {status === 'loading' && (
             <>
-              <div className="flex justify-center mb-4 text-[#2DD4BF]">
+              <div className="flex justify-center mb-4">
                 <Spinner />
               </div>
-              <h1 className="text-lg font-semibold text-[#e2e8f0] mb-1">Accepting invite…</h1>
-              <p className="text-sm text-[#64748b]">Joining your new organization.</p>
+              <h1 className="text-lg font-semibold font-display text-[var(--text)] mb-1">Accepting invite…</h1>
+              <p className="text-sm text-[var(--text-faint)]">Joining your new organization.</p>
             </>
           )}
 
           {status === 'success' && (
             <>
               <div className="flex justify-center mb-4">
-                <div className="w-12 h-12 rounded-full bg-[#2DD4BF]/10 border border-[#2DD4BF]/20 flex items-center justify-center">
-                  <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="#2DD4BF" strokeWidth="2.5">
+                <div className="w-12 h-12 rounded-full bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 flex items-center justify-center">
+                  <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="var(--brand-teal)" strokeWidth="2.5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
                   </svg>
                 </div>
               </div>
-              <h1 className="text-lg font-semibold text-[#e2e8f0] mb-1">You&apos;re in!</h1>
-              <p className="text-sm text-[#64748b]">Redirecting to your workspace…</p>
+              <h1 className="text-lg font-semibold font-display text-[var(--text)] mb-1">You&apos;re in!</h1>
+              <p className="text-sm text-[var(--text-faint)]">Redirecting to your workspace…</p>
             </>
           )}
 
@@ -115,17 +115,14 @@ export default function InviteAccept() {
                   </svg>
                 </div>
               </div>
-              <h1 className="text-lg font-semibold text-[#e2e8f0] mb-2">Invite error</h1>
-              <p className="text-sm text-[#64748b] mb-5">{errorMsg}</p>
-              <button
-                onClick={() => navigate('/', { replace: true })}
-                className="px-4 py-2 rounded-lg text-sm font-medium border border-[#1e2d45] text-[#94a3b8] hover:border-[#2DD4BF]/40 hover:text-[#2DD4BF] transition-all"
-              >
+              <h1 className="text-lg font-semibold font-display text-[var(--text)] mb-2">Invite error</h1>
+              <p className="text-sm text-[var(--text-faint)] mb-5">{errorMsg}</p>
+              <Button variant="outline" onClick={() => navigate('/', { replace: true })}>
                 Go to workspace
-              </button>
+              </Button>
             </>
           )}
-        </div>
+        </Card>
       </div>
     </div>
   )

@@ -13,6 +13,7 @@ import { ListView } from '../components/ListView.jsx'
 import { TableView } from '../components/TableView.jsx'
 import { IssueDrawer } from '../components/IssueDrawer.jsx'
 import { CreateIssueModal } from '../components/CreateIssueModal.jsx'
+import { Card, Badge, Button } from '../components/ui/index.js'
 
 const VIEWS = [
   {
@@ -60,36 +61,22 @@ const STATE_FILTERS = [
 
 function TwoTruthsBanner() {
   return (
-    <div
-      className="rounded-xl px-5 py-3.5 flex items-center gap-4 mb-5"
-      style={{
-        background: 'linear-gradient(135deg, rgba(45,212,191,0.04), rgba(99,102,241,0.04))',
-        border: '1px solid rgba(45,212,191,0.12)',
-      }}
-    >
-      <div className="flex items-center gap-2 shrink-0">
-        <span
-          className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded"
-          style={{ color: '#2DD4BF', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.25)' }}
-        >
-          git
-        </span>
-        <span className="text-[10px] text-[#64748b]">derived from git</span>
+    <Card className="border-[var(--brand-teal)]/15 bg-gradient-to-r from-[var(--brand-teal)]/[0.03] to-[var(--brand-indigo)]/[0.03] mb-5" padding="sm">
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge color="teal">git</Badge>
+          <span className="text-[10px] text-[var(--text-faint)]">derived from git</span>
+        </div>
+        <span className="text-[var(--border2)] hidden sm:block">·</span>
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge>manual</Badge>
+          <span className="text-[10px] text-[var(--text-faint)]">tracked here · not from git</span>
+        </div>
+        <p className="text-[10px] text-[var(--text-faint)] font-mono ml-auto hidden md:block">
+          two truth-modes · shown honestly
+        </p>
       </div>
-      <span className="text-[#1e2d45]">·</span>
-      <div className="flex items-center gap-2 shrink-0">
-        <span
-          className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded"
-          style={{ color: '#94a3b8', background: 'rgba(148,163,184,0.1)', border: '1px solid rgba(148,163,184,0.2)' }}
-        >
-          manual
-        </span>
-        <span className="text-[10px] text-[#64748b]">tracked here · not from git</span>
-      </div>
-      <p className="text-[10px] text-[#334155] font-mono ml-auto hidden md:block">
-        two truth-modes · shown honestly
-      </p>
-    </div>
+    </Card>
   )
 }
 
@@ -109,7 +96,6 @@ export default function Board() {
     project: projectFilter || undefined,
   })
 
-  // Client-side filter (in case server doesn't support all params yet)
   const filteredIssues = useMemo(() => {
     return issues.filter(issue => {
       if (sourceFilter && issue.source !== sourceFilter) return false
@@ -130,37 +116,29 @@ export default function Board() {
       {/* Page header */}
       <div className="flex items-start justify-between mb-5">
         <div>
-          <h1 className="text-2xl font-bold text-[#e2e8f0] tracking-tight">Work</h1>
+          <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Work</h1>
           <div className="flex items-center gap-3 mt-1">
-            <p className="text-sm text-[#64748b]">Board · List · Table</p>
+            <p className="text-sm text-[var(--text-faint)]">Board · List · Table</p>
             {!loading && (
               <div className="flex items-center gap-2">
-                {gitCount > 0 && (
-                  <span className="text-[10px] font-mono text-[#2DD4BF] bg-[#2DD4BF12] px-1.5 py-0.5 rounded">
-                    {gitCount} git
-                  </span>
-                )}
-                {nativeCount > 0 && (
-                  <span className="text-[10px] font-mono text-[#94a3b8] bg-[#94a3b810] px-1.5 py-0.5 rounded">
-                    {nativeCount} manual
-                  </span>
-                )}
+                {gitCount > 0 && <Badge color="teal">{gitCount} git</Badge>}
+                {nativeCount > 0 && <Badge>{nativeCount} manual</Badge>}
               </div>
             )}
           </div>
         </div>
 
-        {/* Create native issue */}
-        <button
+        <Button
+          variant="primary"
           onClick={() => setShowCreate(true)}
-          className="px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120] transition-all duration-150 flex items-center gap-1.5 shrink-0"
-          style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
+          leftIcon={
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+          }
         >
-          <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
           New task
-        </button>
+        </Button>
       </div>
 
       {/* Two-truth-modes banner */}
@@ -169,19 +147,17 @@ export default function Board() {
       {/* Controls bar */}
       <div className="flex items-center gap-2 flex-wrap mb-5">
         {/* View toggle */}
-        <div
-          className="flex items-center rounded-lg p-0.5 gap-0.5 shrink-0"
-          style={{ background: '#0d1628', border: '1px solid #1e2d45' }}
-        >
+        <div className="flex items-center rounded-[var(--radius-btn)] p-0.5 gap-0.5 shrink-0 bg-[var(--bg)] border border-[var(--border)]">
           {VIEWS.map(v => (
             <button
               key={v.id}
               onClick={() => setView(v.id)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-150"
-              style={{
-                background: view === v.id ? '#1a2d4a' : 'transparent',
-                color: view === v.id ? '#2DD4BF' : '#64748b',
-              }}
+              className={[
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] text-xs font-medium transition-all duration-150',
+                view === v.id
+                  ? 'bg-[var(--bg-surface2)] text-[var(--brand-teal)]'
+                  : 'text-[var(--text-faint)] hover:text-[var(--text-muted)]',
+              ].join(' ')}
             >
               {v.icon}
               {v.label}
@@ -189,7 +165,7 @@ export default function Board() {
           ))}
         </div>
 
-        <div className="w-px h-5 bg-[#1e2d45] hidden sm:block" />
+        <div className="w-px h-5 bg-[var(--border)] hidden sm:block" />
 
         {/* Source filter */}
         <div className="flex gap-1">
@@ -197,23 +173,23 @@ export default function Board() {
             <button
               key={f.id}
               onClick={() => setSourceFilter(f.id)}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-150"
-              style={{
-                background: sourceFilter === f.id ? 'rgba(45,212,191,0.1)' : 'transparent',
-                color: sourceFilter === f.id ? '#2DD4BF' : '#64748b',
-                border: sourceFilter === f.id ? '1px solid rgba(45,212,191,0.25)' : '1px solid transparent',
-              }}
+              className={[
+                'px-2.5 py-1.5 rounded-[var(--radius-btn)] text-xs font-medium transition-all duration-150 border',
+                sourceFilter === f.id
+                  ? 'bg-[var(--brand-teal)]/10 text-[var(--brand-teal)] border-[var(--brand-teal)]/25'
+                  : 'text-[var(--text-faint)] border-transparent hover:text-[var(--text-muted)]',
+              ].join(' ')}
             >
               {f.label}
             </button>
           ))}
         </div>
 
-        <div className="w-px h-5 bg-[#1e2d45] hidden sm:block" />
+        <div className="w-px h-5 bg-[var(--border)] hidden sm:block" />
 
         {/* State filter */}
         <select
-          className="bg-[#0d1628] text-xs text-[#94a3b8] rounded-lg px-2.5 py-1.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40 transition-colors"
+          className="bg-[var(--bg)] text-xs text-[var(--text-muted)] rounded-[var(--radius-btn)] px-2.5 py-1.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/40 transition-colors"
           value={stateFilter}
           onChange={e => setStateFilter(e.target.value)}
         >
@@ -223,7 +199,7 @@ export default function Board() {
         {/* Project filter */}
         {projects.length > 0 && (
           <select
-            className="bg-[#0d1628] text-xs text-[#94a3b8] rounded-lg px-2.5 py-1.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40 transition-colors"
+            className="bg-[var(--bg)] text-xs text-[var(--text-muted)] rounded-[var(--radius-btn)] px-2.5 py-1.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/40 transition-colors"
             value={projectFilter}
             onChange={e => setProjectFilter(e.target.value)}
           >
@@ -232,7 +208,7 @@ export default function Board() {
           </select>
         )}
 
-        <span className="ml-auto text-xs text-[#334155] font-mono hidden md:block">
+        <span className="ml-auto text-xs text-[var(--text-faint)] font-mono hidden md:block">
           {filteredIssues.length} issue{filteredIssues.length !== 1 ? 's' : ''}
         </span>
       </div>
@@ -240,7 +216,7 @@ export default function Board() {
       {/* Loading */}
       {loading && (
         <div className="flex items-center justify-center py-20">
-          <svg className="animate-spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2">
+          <svg className="animate-spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" strokeWidth="2">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
           </svg>
         </div>
@@ -248,12 +224,9 @@ export default function Board() {
 
       {/* Error */}
       {!loading && error && (
-        <div
-          className="rounded-xl px-5 py-4 text-sm text-[#ef4444]"
-          style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}
-        >
-          {error} — the backend may not be running yet.
-        </div>
+        <Card className="border-red-500/20 bg-red-500/[0.04]">
+          <p className="text-sm text-red-400">{error} — the backend may not be running yet.</p>
+        </Card>
       )}
 
       {/* Views */}
@@ -265,35 +238,23 @@ export default function Board() {
         </>
       )}
 
-      {/* Empty state (no error, no loading, no issues at all) */}
+      {/* Empty state */}
       {!loading && !error && issues.length === 0 && (
-        <div
-          className="rounded-xl p-12 text-center mt-4"
-          style={{ background: 'rgba(13,22,40,0.4)', border: '1px dashed #1e2d45' }}
-        >
-          <div
-            className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4"
-            style={{ background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.15)' }}
-          >
-            <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="#2DD4BF" strokeWidth="1.5">
+        <Card padding="xl" className="border-dashed mt-4 text-center">
+          <div className="w-12 h-12 rounded-[var(--radius-card)] flex items-center justify-center mx-auto mb-4 bg-[var(--brand-teal)]/[0.06] border border-[var(--brand-teal)]/15">
+            <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="var(--brand-teal)" strokeWidth="1.5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
             </svg>
           </div>
-          <h3 className="text-sm font-semibold text-[#e2e8f0] mb-1">No work items yet</h3>
-          <p className="text-xs text-[#64748b] max-w-xs mx-auto mb-4">
+          <h3 className="text-sm font-semibold text-[var(--text)] mb-1">No work items yet</h3>
+          <p className="text-xs text-[var(--text-faint)] max-w-xs mx-auto mb-4">
             Connect a repo in Repos to pull in git-derived issues, or create a manual task for non-dev work.
           </p>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120]"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
-          >
-            Create first task
-          </button>
-        </div>
+          <Button variant="primary" onClick={() => setShowCreate(true)}>Create first task</Button>
+        </Card>
       )}
 
-      {/* Issue drawer — keyed by id so it remounts when switching issues */}
+      {/* Issue drawer */}
       {selectedIssue && (
         <IssueDrawer
           key={selectedIssue.id}

@@ -6,6 +6,30 @@ import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjects } from '../lib/useProjects.js'
 import { BurndownChart } from '../components/BurndownChart.jsx'
+import { Card, Badge, Button } from '../components/ui/index.js'
+
+function Spinner() {
+  return (
+    <svg className="animate-spin shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function InputField({ label, required, ...props }) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
+        {label} {required && <span className="text-red-400">*</span>}
+      </label>
+      <input
+        {...props}
+        required={required}
+        className="w-full bg-[var(--bg)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50 placeholder-[var(--text-faint)] transition-colors"
+      />
+    </div>
+  )
+}
 
 function CreateProjectModal({ onClose, onCreate }) {
   const [name, setName] = useState('')
@@ -35,13 +59,10 @@ function CreateProjectModal({ onClose, onCreate }) {
         style={{ background: 'rgba(11,17,32,0.7)', backdropFilter: 'blur(3px)' }}
         onClick={onClose}
       />
-      <div
-        className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl"
-        style={{ background: '#111827', border: '1px solid #1e2d45', boxShadow: '0 24px 80px rgba(0,0,0,0.6)' }}
-      >
-        <div className="px-6 pt-6 pb-4 border-b border-[#1e2d45] flex items-center justify-between">
-          <h2 className="text-base font-semibold text-[#e2e8f0]">New project</h2>
-          <button onClick={onClose} className="text-[#64748b] hover:text-[#e2e8f0] transition-colors">
+      <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-card)] bg-[var(--bg-surface)] border border-[var(--border)] shadow-2xl">
+        <div className="px-6 pt-6 pb-4 border-b border-[var(--border)] flex items-center justify-between">
+          <h2 className="text-base font-semibold text-[var(--text)] font-display">New project</h2>
+          <button onClick={onClose} className="text-[var(--text-faint)] hover:text-[var(--text)] transition-colors">
             <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
             </svg>
@@ -49,54 +70,35 @@ function CreateProjectModal({ onClose, onCreate }) {
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+          <InputField
+            label="Name"
+            required
+            autoFocus
+            type="text"
+            placeholder="e.g. Q3 Launch, API v2, Mobile App"
+            value={name}
+            onChange={e => setName(e.target.value)}
+          />
           <div>
-            <label className="block text-xs font-semibold text-[#64748b] uppercase tracking-widest mb-1.5">
-              Name <span className="text-[#ef4444]">*</span>
-            </label>
-            <input
-              autoFocus
-              required
-              type="text"
-              placeholder="e.g. Q3 Launch, API v2, Mobile App"
-              className="w-full bg-[#0d1628] text-[#e2e8f0] text-sm rounded-lg px-3 py-2.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/50 placeholder-[#334155] transition-colors"
-              value={name}
-              onChange={e => setName(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-[#64748b] uppercase tracking-widest mb-1.5">
+            <label className="block text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
               Description
             </label>
             <textarea
               rows={2}
               placeholder="What is this project for?"
-              className="w-full bg-[#0d1628] text-[#e2e8f0] text-sm rounded-lg px-3 py-2.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/50 placeholder-[#334155] resize-none transition-colors"
+              className="w-full bg-[var(--bg)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50 placeholder-[var(--text-faint)] resize-none transition-colors"
               value={description}
               onChange={e => setDescription(e.target.value)}
             />
           </div>
-          {error && <p className="text-xs text-[#ef4444] bg-[#ef444410] rounded px-3 py-2">{error}</p>}
+          {error && (
+            <p className="text-xs text-red-400 bg-red-500/[0.08] rounded px-3 py-2">{error}</p>
+          )}
           <div className="flex items-center gap-3 pt-1">
-            <button
-              type="submit"
-              disabled={saving || !name.trim()}
-              className="px-5 py-2 rounded-lg text-sm font-semibold text-[#0B1120] disabled:opacity-40 transition-all flex items-center gap-2"
-              style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
-            >
-              {saving && (
-                <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
-                </svg>
-              )}
+            <Button type="submit" disabled={saving || !name.trim()} leftIcon={saving ? <Spinner /> : null}>
               Create project
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg text-sm font-medium text-[#64748b] hover:text-[#e2e8f0] transition-colors"
-            >
-              Cancel
-            </button>
+            </Button>
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
           </div>
         </form>
       </div>
@@ -104,53 +106,54 @@ function CreateProjectModal({ onClose, onCreate }) {
   )
 }
 
-function ProjectCard({ project, onClick }) {
-  const statusColors = {
-    active: '#2DD4BF',
-    stale: '#f59e0b',
-    done: '#6366F1',
-  }
-  const color = statusColors[project.status ?? 'active'] ?? '#2DD4BF'
+const STATUS_COLORS = {
+  active: 'teal',
+  stale: 'yellow',
+  done: 'indigo',
+}
+
+function ProjectCard({ project, selected, onClick }) {
+  const badgeColor = STATUS_COLORS[project.status ?? 'active'] ?? 'teal'
 
   return (
-    <div
+    <Card
+      hoverable
       onClick={() => onClick(project)}
-      className="bg-[#111827] border border-[#1e2d45] rounded-xl p-5 cursor-pointer hover:border-[#2DD4BF]/25 transition-all duration-150 hover:translate-y-[-1px] group"
-      style={{ boxShadow: '0 1px 6px rgba(0,0,0,0.25)' }}
+      className={[
+        'cursor-pointer',
+        selected ? 'ring-2 ring-[var(--brand-teal)]/40' : '',
+      ].join(' ')}
     >
-      {/* Header */}
       <div className="flex items-start gap-3 mb-3">
-        <div
-          className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-          style={{ background: `${color}15`, border: `1px solid ${color}30` }}
-        >
-          <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke={color} strokeWidth="2">
+        <div className={[
+          'w-8 h-8 rounded-[var(--radius-badge)] flex items-center justify-center shrink-0',
+          badgeColor === 'teal' ? 'bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/25' :
+          badgeColor === 'yellow' ? 'bg-yellow-500/10 border border-yellow-500/25' :
+          'bg-[var(--brand-indigo)]/10 border border-[var(--brand-indigo)]/25',
+        ].join(' ')}>
+          <svg width="14" height="14" fill="none" viewBox="0 0 24 24"
+            stroke={badgeColor === 'teal' ? 'var(--brand-teal)' : badgeColor === 'yellow' ? '#f59e0b' : 'var(--brand-indigo)'}
+            strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
           </svg>
         </div>
         <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-[#e2e8f0] group-hover:text-white transition-colors truncate">
-            {project.name}
-          </h3>
+          <h3 className="text-sm font-semibold text-[var(--text)] truncate">{project.name}</h3>
           {project.description && (
-            <p className="text-xs text-[#64748b] mt-0.5 line-clamp-2">{project.description}</p>
+            <p className="text-xs text-[var(--text-faint)] mt-0.5 line-clamp-2">{project.description}</p>
           )}
         </div>
+        <Badge color={badgeColor}>{project.status ?? 'active'}</Badge>
       </div>
 
-      {/* Stats */}
-      <div className="flex items-center gap-4 text-xs font-mono text-[#64748b]">
-        {project.issueCount != null && (
-          <span>{project.issueCount} issues</span>
-        )}
-        {project.repoCount != null && (
-          <span>{project.repoCount} repos</span>
-        )}
+      <div className="flex items-center gap-4 text-xs font-mono text-[var(--text-faint)]">
+        {project.issueCount != null && <span>{project.issueCount} issues</span>}
+        {project.repoCount != null && <span>{project.repoCount} repos</span>}
         {project.updatedAt && (
           <span className="ml-auto">{new Date(project.updatedAt).toLocaleDateString()}</span>
         )}
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -161,7 +164,6 @@ export default function Projects() {
   const [selectedProjectId, setSelectedProjectId] = useState(null)
 
   const handleProjectClick = useCallback((project) => {
-    // Toggle burndown panel; navigate to board on double-click / navigate button
     setSelectedProjectId(prev => prev === project.id ? null : project.id)
   }, [])
 
@@ -170,27 +172,26 @@ export default function Projects() {
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-[#e2e8f0] tracking-tight">Projects</h1>
-          <p className="text-sm text-[#64748b] mt-1">
-            Group issues and repos · filter the board by project.
-          </p>
+          <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Projects</h1>
+          <p className="text-sm text-[var(--text-faint)] mt-1">Group issues and repos · filter the board by project.</p>
         </div>
-        <button
+        <Button
+          variant="primary"
           onClick={() => setShowCreate(true)}
-          className="px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120] transition-all duration-150 flex items-center gap-1.5"
-          style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
+          leftIcon={
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+          }
         >
-          <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
           New project
-        </button>
+        </Button>
       </div>
 
       {/* Loading */}
       {loading && (
         <div className="flex items-center justify-center py-20">
-          <svg className="animate-spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2">
+          <svg className="animate-spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" strokeWidth="2">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
           </svg>
         </div>
@@ -198,40 +199,25 @@ export default function Projects() {
 
       {/* Error */}
       {!loading && error && (
-        <div
-          className="rounded-xl px-5 py-4 text-sm text-[#ef4444] mb-4"
-          style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}
-        >
-          {error}
-        </div>
+        <Card className="border-red-500/20 bg-red-500/[0.04] mb-4">
+          <p className="text-sm text-red-400">{error}</p>
+        </Card>
       )}
 
       {/* Empty state */}
       {!loading && !error && projects.length === 0 && (
-        <div
-          className="rounded-xl p-14 text-center"
-          style={{ background: 'rgba(13,22,40,0.4)', border: '1px dashed #1e2d45' }}
-        >
-          <div
-            className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4"
-            style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)' }}
-          >
-            <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="#6366F1" strokeWidth="1.5">
+        <Card padding="xl" className="border-dashed text-center">
+          <div className="w-12 h-12 rounded-[var(--radius-card)] flex items-center justify-center mx-auto mb-4 bg-[var(--brand-indigo)]/[0.06] border border-[var(--brand-indigo)]/20">
+            <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="var(--brand-indigo)" strokeWidth="1.5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
             </svg>
           </div>
-          <h3 className="text-sm font-semibold text-[#e2e8f0] mb-1">No projects yet</h3>
-          <p className="text-xs text-[#64748b] max-w-xs mx-auto mb-4">
+          <h3 className="text-sm font-semibold text-[var(--text)] mb-1">No projects yet</h3>
+          <p className="text-xs text-[var(--text-faint)] max-w-xs mx-auto mb-4">
             Create a project to group issues and repos, then filter the work board by project.
           </p>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120]"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
-          >
-            Create first project
-          </button>
-        </div>
+          <Button variant="primary" onClick={() => setShowCreate(true)}>Create first project</Button>
+        </Card>
       )}
 
       {/* Project grid */}
@@ -239,35 +225,33 @@ export default function Projects() {
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {projects.map(p => (
-              <div
+              <ProjectCard
                 key={p.id}
-                style={{
-                  outline: selectedProjectId === p.id ? '2px solid rgba(45,212,191,0.35)' : 'none',
-                  borderRadius: 12,
-                }}
-              >
-                <ProjectCard project={p} onClick={handleProjectClick} />
-              </div>
+                project={p}
+                selected={selectedProjectId === p.id}
+                onClick={handleProjectClick}
+              />
             ))}
           </div>
 
-          {/* Burndown panel — shown below grid when a project is selected */}
+          {/* Burndown panel */}
           {selectedProjectId && (
-            <div className="mt-4">
+            <Card padding="lg" className="mt-4">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-[#e2e8f0]">
+                <h2 className="text-sm font-semibold text-[var(--text)]">
                   Burndown — {projects.find(p => p.id === selectedProjectId)?.name ?? ''}
                 </h2>
                 <div className="flex items-center gap-3">
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="xs"
                     onClick={() => navigate(`/board?project=${selectedProjectId}`)}
-                    className="text-xs font-medium text-[#2DD4BF] hover:underline"
                   >
                     Open board
-                  </button>
+                  </Button>
                   <button
                     onClick={() => setSelectedProjectId(null)}
-                    className="text-[#475569] hover:text-[#94a3b8] transition-colors"
+                    className="text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors"
                   >
                     <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
@@ -276,7 +260,7 @@ export default function Projects() {
                 </div>
               </div>
               <BurndownChart projectId={selectedProjectId} />
-            </div>
+            </Card>
           )}
         </>
       )}

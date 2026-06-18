@@ -7,7 +7,7 @@ import { useBurndown } from '../lib/useBurndown.js'
 
 function Spinner() {
   return (
-    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2">
+    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" strokeWidth="2">
       <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
     </svg>
   )
@@ -19,8 +19,8 @@ function DualLineChart({ points, width = 600, height = 200 }) {
   if (!points.length) {
     return (
       <div
-        className="flex items-center justify-center rounded-xl text-xs text-[#334155] font-mono"
-        style={{ width, height, background: 'rgba(13,22,40,0.3)', border: '1px dashed #1e2d45' }}
+        className="flex items-center justify-center rounded-[var(--radius-card)] text-xs text-[var(--text-faint)] font-mono border border-dashed border-[var(--border)]"
+        style={{ width, height, background: 'var(--bg)' }}
       >
         No burndown data yet.
       </div>
@@ -53,7 +53,6 @@ function DualLineChart({ points, width = 600, height = 200 }) {
     })
     .join(' ')
 
-  // Area fill for remaining
   const areaPath = [
     `M ${toX(0).toFixed(1)} ${(PAD.top + H).toFixed(1)}`,
     ...points.filter(p => p.remaining != null).map((p) => {
@@ -64,13 +63,11 @@ function DualLineChart({ points, width = 600, height = 200 }) {
     'Z',
   ].join(' ')
 
-  // Y axis ticks
   const yTicks = Array.from({ length: 5 }, (_, i) => {
     const v = yMax - (yMax / 4) * i
     return { v, y: toY(v) }
   })
 
-  // X ticks
   const step = Math.max(1, Math.floor(points.length / 6))
   const xTicks = points
     .map((p, i) => ({ p, i }))
@@ -82,7 +79,7 @@ function DualLineChart({ points, width = 600, height = 200 }) {
       {yTicks.map(({ v, y }, i) => (
         <g key={i}>
           <line x1={PAD.left} y1={y.toFixed(1)} x2={PAD.left + W} y2={y.toFixed(1)} stroke="#1e2d45" strokeWidth="1" />
-          <text x={PAD.left - 8} y={y.toFixed(1)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#475569">
+          <text x={PAD.left - 8} y={y.toFixed(1)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#64748b">
             {Math.round(v)}
           </text>
         </g>
@@ -106,7 +103,7 @@ function DualLineChart({ points, width = 600, height = 200 }) {
         const d = new Date(p.date)
         const label = isNaN(d) ? p.date : `${d.getMonth() + 1}/${d.getDate()}`
         return (
-          <text key={i} x={toX(i).toFixed(1)} y={PAD.top + H + 18} textAnchor="middle" fontSize="10" fill="#475569">
+          <text key={i} x={toX(i).toFixed(1)} y={PAD.top + H + 18} textAnchor="middle" fontSize="10" fill="#64748b">
             {label}
           </text>
         )
@@ -133,23 +130,17 @@ export function BurndownChart({ projectId }) {
   if (!projectId) return null
 
   return (
-    <div
-      className="rounded-xl p-6"
-      style={{ background: '#111827', border: '1px solid #1e2d45' }}
-    >
+    <div>
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h3 className="text-sm font-semibold text-[#e2e8f0]">Burndown</h3>
-          <p className="text-xs text-[#475569] mt-0.5">Remaining work vs ideal — derived from issue state</p>
+          <h3 className="text-sm font-semibold text-[var(--text)]">Burndown</h3>
+          <p className="text-xs text-[var(--text-faint)] mt-0.5">Remaining work vs ideal — derived from issue state</p>
         </div>
         {loading && <Spinner />}
       </div>
 
       {error && (
-        <div
-          className="rounded-lg px-4 py-3 text-xs text-[#ef4444]"
-          style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}
-        >
+        <div className="rounded-[var(--radius-badge)] px-4 py-3 text-xs text-red-400 bg-red-500/[0.06] border border-red-500/20">
           {error}
         </div>
       )}

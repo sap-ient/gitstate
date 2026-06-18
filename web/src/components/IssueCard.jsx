@@ -10,26 +10,31 @@ export function IssueCard({ issue, onClick }) {
   return (
     <div
       onClick={() => onClick(issue)}
-      className="rounded-xl p-3.5 cursor-pointer group transition-all duration-150 hover:translate-y-[-1px]"
+      className="rounded-[var(--radius-card)] p-3.5 cursor-pointer group transition-all duration-150 hover:translate-y-[-1px] hover:border-[var(--border2)]"
       style={{
-        background: '#0d1628',
-        border: `1px solid ${isGit ? 'rgba(45,212,191,0.15)' : '#1e2d45'}`,
-        boxShadow: '0 1px 6px rgba(0,0,0,0.25)',
+        background: 'var(--bg)',
+        border: `1px solid ${isGit ? 'rgba(45,212,191,0.15)' : 'var(--border)'}`,
+        boxShadow: '0 1px 6px rgba(0,0,0,0.15)',
       }}
     >
       {/* Source badge row */}
       <div className="flex items-center gap-1.5 mb-2">
         {isGit ? <GitBadge /> : <NativeBadge />}
         {issue.platform && (
-          <span className="text-[10px] font-mono text-[#334155]">{issue.platform}</span>
+          <span className="text-[10px] font-mono text-[var(--text-faint)]">{issue.platform}</span>
         )}
         {issue.manualStateOverride && (
-          <span className="text-[10px] font-mono text-[#f59e0b] ml-auto">overridden</span>
+          <span
+            className="text-[10px] font-mono ml-auto px-1.5 py-0.5 rounded"
+            style={{ color: '#f59e0b', background: 'rgba(245,158,11,0.10)' }}
+          >
+            overridden
+          </span>
         )}
       </div>
 
       {/* Title */}
-      <p className="text-sm font-medium text-[#e2e8f0] leading-snug line-clamp-2 mb-2 group-hover:text-white transition-colors">
+      <p className="text-sm font-medium text-[var(--text)] leading-snug line-clamp-2 mb-2 group-hover:text-white transition-colors">
         {issue.title}
       </p>
 
@@ -45,19 +50,19 @@ export function IssueCard({ issue, onClick }) {
         {issue.assigneeId && (
           <div
             className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)', color: '#0B1120' }}
+            style={{ background: 'linear-gradient(135deg, var(--brand-teal), var(--brand-indigo))', color: '#0B1120' }}
             title={issue.assigneeId}
           >
             {issue.assigneeId.slice(0, 2).toUpperCase()}
           </div>
         )}
         {issue.effortEstimate?.score != null && (
-          <span className="text-[10px] font-mono text-[#64748b]">
+          <span className="text-[10px] font-mono text-[var(--text-faint)]">
             D{issue.effortEstimate.score}
           </span>
         )}
         {issue.pullRequest && (
-          <span className="text-[10px] font-mono text-[#2DD4BF] ml-auto">PR #{issue.pullRequest.number}</span>
+          <span className="text-[10px] font-mono text-[var(--brand-teal)] ml-auto">PR #{issue.pullRequest.number}</span>
         )}
       </div>
     </div>

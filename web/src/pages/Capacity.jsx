@@ -6,10 +6,11 @@
  */
 import { useState } from 'react'
 import { useCapacity } from '../lib/useCapacity.js'
+import { Card, Badge, Button } from '../components/ui/index.js'
 
-function Spinner() {
+function Spinner({ size = 16 }) {
   return (
-    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2">
+    <svg className="animate-spin shrink-0" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" strokeWidth="2">
       <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
     </svg>
   )
@@ -20,7 +21,7 @@ function Initials({ name, email }) {
     ? name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : (email ?? '?').slice(0, 2).toUpperCase()
   return (
-    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#2DD4BF] to-[#6366F1] flex items-center justify-center text-[11px] font-bold text-[#0B1120] select-none shrink-0">
+    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--brand-teal)] to-[var(--brand-indigo)] flex items-center justify-center text-[11px] font-bold text-[#0B1120] select-none shrink-0">
       {text}
     </div>
   )
@@ -28,13 +29,13 @@ function Initials({ name, email }) {
 
 function CapacityBar({ value, max }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0
-  const color = pct > 85 ? '#22c55e' : pct > 50 ? '#2DD4BF' : '#f59e0b'
+  const color = pct > 85 ? '#22c55e' : pct > 50 ? 'var(--brand-teal)' : '#f59e0b'
   return (
     <div className="flex items-center gap-3 flex-1">
-      <div className="flex-1 h-1.5 rounded-full bg-[#1e2d45] overflow-hidden">
+      <div className="flex-1 h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
       </div>
-      <span className="text-xs font-mono text-[#94a3b8] w-12 text-right shrink-0">{value}h</span>
+      <span className="text-xs font-mono text-[var(--text-muted)] w-12 text-right shrink-0">{value}h</span>
     </div>
   )
 }
@@ -59,21 +60,18 @@ function CapacityRow({ member, maxCapacity }) {
   }
 
   return (
-    <div
-      className="rounded-xl p-4 flex flex-col gap-3"
-      style={{ background: '#111827', border: '1px solid #1e2d45' }}
-    >
+    <Card padding="md" className="flex flex-col gap-3">
       <div className="flex items-center gap-3">
         <Initials name={member.name} email={member.email} />
         <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium text-[#e2e8f0] block truncate">{member.name ?? member.email}</span>
+          <span className="text-sm font-medium text-[var(--text)] block truncate">{member.name ?? member.email}</span>
           {member.name && member.email && (
-            <span className="text-xs text-[#475569] truncate block">{member.email}</span>
+            <span className="text-xs text-[var(--text-faint)] truncate block">{member.email}</span>
           )}
         </div>
         <button
           onClick={() => setEditing(v => !v)}
-          className="text-[10px] font-mono text-[#475569] hover:text-[#2DD4BF] transition-colors"
+          className="text-[10px] font-mono text-[var(--text-faint)] hover:text-[var(--brand-teal)] transition-colors"
         >
           {editing ? 'cancel' : 'edit'}
         </button>
@@ -81,77 +79,54 @@ function CapacityRow({ member, maxCapacity }) {
 
       {/* Capacity bar */}
       <div className="flex items-center gap-3">
-        <span className="text-[10px] text-[#475569] uppercase tracking-widest w-20 shrink-0">Effective cap.</span>
+        <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest w-20 shrink-0">Effective cap.</span>
         <CapacityBar value={member.effectiveHours ?? 0} max={maxCapacity} />
       </div>
 
       {/* Detail chips */}
       <div className="flex flex-wrap gap-2">
         {member.hoursPerDay != null && (
-          <span
-            className="text-[10px] font-mono px-2 py-0.5 rounded"
-            style={{ color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid #1e2d45' }}
-          >
-            {member.hoursPerDay}h/day
-          </span>
+          <Badge>{member.hoursPerDay}h/day</Badge>
         )}
         {member.daysPerWeek != null && (
-          <span
-            className="text-[10px] font-mono px-2 py-0.5 rounded"
-            style={{ color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid #1e2d45' }}
-          >
-            {member.daysPerWeek}d/wk
-          </span>
+          <Badge>{member.daysPerWeek}d/wk</Badge>
         )}
         {member.onLeave && (
-          <span
-            className="text-[10px] font-mono px-2 py-0.5 rounded"
-            style={{ color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)' }}
-          >
-            on leave
-          </span>
+          <Badge color="yellow">on leave</Badge>
         )}
       </div>
 
       {/* Availability editor */}
       {editing && (
-        <div
-          className="rounded-lg px-4 py-3 flex flex-col gap-3"
-          style={{ background: '#0d1628', border: '1px solid #1e2d45' }}
-        >
+        <div className="rounded-[var(--radius-badge)] px-4 py-3 flex flex-col gap-3 bg-[var(--bg)] border border-[var(--border)]">
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-[10px] text-[#475569] uppercase tracking-widest">Hours / day</label>
+              <label className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest">Hours / day</label>
               <input
                 type="number"
                 min="1" max="24"
-                className="bg-[#111827] text-xs text-[#e2e8f0] rounded px-2 py-1.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40"
+                className="bg-[var(--bg-surface)] text-xs text-[var(--text)] rounded px-2 py-1.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/40"
                 value={hoursPerDay}
                 onChange={e => setHoursPerDay(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-[10px] text-[#475569] uppercase tracking-widest">Days / week</label>
+              <label className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest">Days / week</label>
               <input
                 type="number"
                 min="1" max="7"
-                className="bg-[#111827] text-xs text-[#e2e8f0] rounded px-2 py-1.5 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40"
+                className="bg-[var(--bg-surface)] text-xs text-[var(--text)] rounded px-2 py-1.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/40"
                 value={daysPerWeek}
                 onChange={e => setDaysPerWeek(e.target.value)}
               />
             </div>
           </div>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex items-center justify-center gap-2 px-3 py-1.5 rounded text-xs font-semibold text-[#0B1120] disabled:opacity-40"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
-          >
-            {saving ? <Spinner /> : 'Save'}
-          </button>
+          <Button size="sm" onClick={handleSave} disabled={saving} leftIcon={saving ? <Spinner size={12} /> : null}>
+            Save
+          </Button>
         </div>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -159,11 +134,11 @@ function LeaveRow({ entry }) {
   const start = entry.startDate ? new Date(entry.startDate).toLocaleDateString() : '—'
   const end   = entry.endDate   ? new Date(entry.endDate).toLocaleDateString()   : '—'
   return (
-    <tr className="border-b border-[#0d1628] hover:bg-[#0d1628]/50 transition-colors">
-      <td className="px-3 py-2.5 text-sm text-[#e2e8f0]">{entry.userName ?? entry.userId ?? '—'}</td>
-      <td className="px-3 py-2.5 text-xs text-[#94a3b8] font-mono">{start}</td>
-      <td className="px-3 py-2.5 text-xs text-[#94a3b8] font-mono">{end}</td>
-      <td className="px-3 py-2.5 text-xs text-[#475569]">{entry.reason ?? entry.type ?? '—'}</td>
+    <tr className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors last:border-0">
+      <td className="px-4 py-2.5 text-sm text-[var(--text)]">{entry.userName ?? entry.userId ?? '—'}</td>
+      <td className="px-4 py-2.5 text-xs text-[var(--text-muted)] font-mono">{start}</td>
+      <td className="px-4 py-2.5 text-xs text-[var(--text-muted)] font-mono">{end}</td>
+      <td className="px-4 py-2.5 text-xs text-[var(--text-faint)]">{entry.reason ?? entry.type ?? '—'}</td>
     </tr>
   )
 }
@@ -184,10 +159,7 @@ function AddLeaveForm({ onAdd }) {
     setErr(null)
     try {
       await onAdd({ userId, startDate, endDate, reason })
-      setUserId('')
-      setStartDate('')
-      setEndDate('')
-      setReason('')
+      setUserId(''); setStartDate(''); setEndDate(''); setReason('')
       setOpen(false)
     } catch (e) {
       setErr(e.message ?? 'Failed to add leave')
@@ -196,77 +168,49 @@ function AddLeaveForm({ onAdd }) {
     }
   }
 
+  const inputCls = "bg-[var(--bg)] text-sm text-[var(--text)] rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/40 transition-colors w-full"
+
   return (
     <div>
-      <button
+      <Button
+        variant={open ? 'outline' : 'primary'}
+        size="sm"
         onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120] transition-all duration-150"
-        style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
+        leftIcon={!open && (
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          </svg>
+        )}
       >
-        <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-        </svg>
         {open ? 'Cancel' : 'Add leave'}
-      </button>
+      </Button>
 
       {open && (
-        <form
-          onSubmit={handleSubmit}
-          className="mt-4 rounded-xl p-5 flex flex-col gap-4"
-          style={{ background: '#111827', border: '1px solid #1e2d45' }}
-        >
-          <div className="grid sm:grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] text-[#475569] uppercase tracking-widest">User ID or email</label>
-              <input
-                required
-                className="bg-[#0d1628] text-sm text-[#e2e8f0] rounded-lg px-3 py-2 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40 transition-colors"
-                placeholder="user@example.com"
-                value={userId}
-                onChange={e => setUserId(e.target.value)}
-              />
+        <form onSubmit={handleSubmit} className="mt-4">
+          <Card padding="md" className="flex flex-col gap-4">
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest">User ID or email</label>
+                <input required className={inputCls} placeholder="user@example.com" value={userId} onChange={e => setUserId(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest">Reason (optional)</label>
+                <input className={inputCls} placeholder="e.g. Annual leave" value={reason} onChange={e => setReason(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest">Start date</label>
+                <input type="date" required className={inputCls} value={startDate} onChange={e => setStartDate(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest">End date</label>
+                <input type="date" required className={inputCls} value={endDate} onChange={e => setEndDate(e.target.value)} />
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] text-[#475569] uppercase tracking-widest">Reason (optional)</label>
-              <input
-                className="bg-[#0d1628] text-sm text-[#e2e8f0] rounded-lg px-3 py-2 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40 transition-colors"
-                placeholder="e.g. Annual leave"
-                value={reason}
-                onChange={e => setReason(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] text-[#475569] uppercase tracking-widest">Start date</label>
-              <input
-                type="date" required
-                className="bg-[#0d1628] text-sm text-[#e2e8f0] rounded-lg px-3 py-2 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40 transition-colors"
-                value={startDate}
-                onChange={e => setStartDate(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] text-[#475569] uppercase tracking-widest">End date</label>
-              <input
-                type="date" required
-                className="bg-[#0d1628] text-sm text-[#e2e8f0] rounded-lg px-3 py-2 border border-[#1e2d45] outline-none focus:border-[#2DD4BF]/40 transition-colors"
-                value={endDate}
-                onChange={e => setEndDate(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {err && (
-            <p className="text-xs text-[#ef4444]">{err}</p>
-          )}
-
-          <button
-            type="submit"
-            disabled={saving || !userId || !startDate || !endDate}
-            className="self-start flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-[#0B1120] disabled:opacity-40"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
-          >
-            {saving ? <Spinner /> : 'Add leave'}
-          </button>
+            {err && <p className="text-xs text-red-400">{err}</p>}
+            <Button type="submit" disabled={saving || !userId || !startDate || !endDate} className="self-start" leftIcon={saving ? <Spinner size={12} /> : null}>
+              Add leave
+            </Button>
+          </Card>
         </form>
       )}
     </div>
@@ -289,26 +233,24 @@ export default function Capacity() {
     <div className="max-w-5xl space-y-8">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-[#e2e8f0] tracking-tight">Capacity</h1>
-        <p className="text-sm text-[#64748b] mt-1">
+        <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Capacity</h1>
+        <p className="text-sm text-[var(--text-faint)] mt-1">
           Effective capacity per member, adjusted for leave and availability.
         </p>
       </div>
 
       {/* Period filter */}
-      <div
-        className="flex items-center rounded-lg p-0.5 gap-0.5 w-fit"
-        style={{ background: '#0d1628', border: '1px solid #1e2d45' }}
-      >
+      <div className="flex items-center rounded-[var(--radius-btn)] p-0.5 gap-0.5 w-fit bg-[var(--bg)] border border-[var(--border)]">
         {PERIODS.map(p => (
           <button
             key={p.id}
             onClick={() => setPeriod(p.id)}
-            className="px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-150"
-            style={{
-              background: period === p.id ? '#1a2d4a' : 'transparent',
-              color: period === p.id ? '#2DD4BF' : '#64748b',
-            }}
+            className={[
+              'px-3 py-1.5 rounded-[6px] text-xs font-medium transition-all duration-150',
+              period === p.id
+                ? 'bg-[var(--bg-surface2)] text-[var(--brand-teal)]'
+                : 'text-[var(--text-faint)] hover:text-[var(--text-muted)]',
+            ].join(' ')}
           >
             {p.label}
           </button>
@@ -317,28 +259,22 @@ export default function Capacity() {
 
       {/* Error */}
       {error && (
-        <div
-          className="rounded-xl px-5 py-4 text-sm text-[#ef4444]"
-          style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}
-        >
-          {error} — the backend may not be running yet.
-        </div>
+        <Card className="border-red-500/20 bg-red-500/[0.04]">
+          <p className="text-sm text-red-400">{error} — the backend may not be running yet.</p>
+        </Card>
       )}
 
       {/* Capacity cards */}
       <section>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-[#e2e8f0]">Team capacity</h2>
+          <h2 className="text-sm font-semibold text-[var(--text)]">Team capacity</h2>
           {capacityLoading && <Spinner />}
         </div>
 
         {!capacityLoading && capacity.length === 0 && !error && (
-          <div
-            className="rounded-xl p-8 text-center"
-            style={{ background: 'rgba(13,22,40,0.4)', border: '1px dashed #1e2d45' }}
-          >
-            <p className="text-xs text-[#475569]">No capacity data yet — sync team members to calculate availability.</p>
-          </div>
+          <Card padding="lg" className="border-dashed text-center">
+            <p className="text-xs text-[var(--text-faint)]">No capacity data yet — sync team members to calculate availability.</p>
+          </Card>
         )}
 
         {capacity.length > 0 && (
@@ -354,8 +290,8 @@ export default function Capacity() {
       <section>
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-sm font-semibold text-[#e2e8f0]">Leave schedule</h2>
-            <p className="text-xs text-[#475569] mt-0.5">Planned absences that reduce effective capacity.</p>
+            <h2 className="text-sm font-semibold text-[var(--text)]">Leave schedule</h2>
+            <p className="text-xs text-[var(--text-faint)] mt-0.5">Planned absences that reduce effective capacity.</p>
           </div>
           <AddLeaveForm onAdd={addLeave} />
         </div>
@@ -363,38 +299,32 @@ export default function Capacity() {
         {leaveLoading && (
           <div className="flex items-center gap-3 py-6">
             <Spinner />
-            <span className="text-xs text-[#475569]">Loading leave schedule…</span>
+            <span className="text-xs text-[var(--text-faint)]">Loading leave schedule…</span>
           </div>
         )}
 
         {!leaveLoading && leave.length === 0 && (
-          <div
-            className="rounded-xl p-8 text-center"
-            style={{ background: 'rgba(13,22,40,0.4)', border: '1px dashed #1e2d45' }}
-          >
-            <p className="text-xs text-[#475569]">No leave scheduled. Add leave to show how it affects capacity.</p>
-          </div>
+          <Card padding="lg" className="border-dashed text-center">
+            <p className="text-xs text-[var(--text-faint)]">No leave scheduled. Add leave to show how it affects capacity.</p>
+          </Card>
         )}
 
         {!leaveLoading && leave.length > 0 && (
-          <div
-            className="rounded-xl overflow-hidden"
-            style={{ border: '1px solid #1e2d45' }}
-          >
+          <Card padding="none" className="overflow-hidden">
             <table className="w-full">
               <thead>
-                <tr style={{ background: '#0d1628' }}>
-                  <th className="text-left px-3 py-2.5 text-[10px] font-medium text-[#475569] uppercase tracking-wider">Member</th>
-                  <th className="text-left px-3 py-2.5 text-[10px] font-medium text-[#475569] uppercase tracking-wider">From</th>
-                  <th className="text-left px-3 py-2.5 text-[10px] font-medium text-[#475569] uppercase tracking-wider">To</th>
-                  <th className="text-left px-3 py-2.5 text-[10px] font-medium text-[#475569] uppercase tracking-wider">Reason</th>
+                <tr className="bg-[var(--bg-surface2)]/50 border-b border-[var(--border)]">
+                  <th className="text-left px-4 py-2.5 text-[10px] font-medium text-[var(--text-faint)] uppercase tracking-wider">Member</th>
+                  <th className="text-left px-4 py-2.5 text-[10px] font-medium text-[var(--text-faint)] uppercase tracking-wider">From</th>
+                  <th className="text-left px-4 py-2.5 text-[10px] font-medium text-[var(--text-faint)] uppercase tracking-wider">To</th>
+                  <th className="text-left px-4 py-2.5 text-[10px] font-medium text-[var(--text-faint)] uppercase tracking-wider">Reason</th>
                 </tr>
               </thead>
-              <tbody style={{ background: '#111827' }}>
+              <tbody>
                 {leave.map((entry, i) => <LeaveRow key={i} entry={entry} />)}
               </tbody>
             </table>
-          </div>
+          </Card>
         )}
       </section>
     </div>

@@ -1,9 +1,14 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './lib/auth.jsx'
+import { useAuth } from './lib/useAuth.js'
 import { AppShell } from './components/AppShell.jsx'
+import MarketingLayout from './components/marketing/MarketingLayout.jsx'
+import Landing from './pages/Landing.jsx'
+import Pricing from './pages/Pricing.jsx'
+import Compare from './pages/Compare.jsx'
+import Docs from './pages/Docs.jsx'
 import Login from './pages/Login.jsx'
 import Signup from './pages/Signup.jsx'
-import Welcome from './pages/Welcome.jsx'
 import Home from './pages/Home.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Projects from './pages/Projects.jsx'
@@ -18,25 +23,38 @@ import Capacity from './pages/Capacity.jsx'
 import Billing from './pages/Billing.jsx'
 import NotFound from './pages/NotFound.jsx'
 
+// Root: the marketing landing for logged-out visitors, the app for authed users.
+function Root() {
+  const { isAuthed } = useAuth()
+  return isAuthed ? <Navigate to="/dashboard" replace /> : <Landing />
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Logged-out landing */}
-          <Route path="/welcome" element={<Welcome />} />
+          {/* Public landing (Landing brings its own MarketingLayout) */}
+          <Route path="/" element={<Root />} />
+          <Route path="/welcome" element={<Navigate to="/" replace />} />
+
+          {/* Public marketing pages share the marketing chrome via <Outlet/> */}
+          <Route element={<MarketingLayout />}>
+            <Route path="/pricing" element={<Pricing />} />
+            <Route path="/compare" element={<Compare />} />
+            <Route path="/docs" element={<Docs />} />
+            <Route path="/docs/:slug" element={<Docs />} />
+          </Route>
 
           {/* Public auth routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
 
-          {/* Invite accept — semi-public: checks auth inside and redirects if needed */}
+          {/* Invite accept — checks auth inside and redirects if needed */}
           <Route path="/invite/accept" element={<InviteAccept />} />
 
           {/* Protected app shell — redirects to /login if not authed */}
           <Route element={<AppShell />}>
-            {/* Post-login home is now the dashboard */}
-            <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/board" element={<Board />} />
             <Route path="/projects" element={<Projects />} />
@@ -47,7 +65,6 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/settings/members" element={<Members />} />
             <Route path="/settings/billing" element={<Billing />} />
-            {/* Legacy home stub still accessible */}
             <Route path="/home" element={<Home />} />
           </Route>
 

@@ -33,11 +33,11 @@ function OrgAvatar({ name, size = 22 }) {
   const letter = name ? name[0].toUpperCase() : '?'
   return (
     <div
-      className="rounded-md flex items-center justify-center shrink-0 text-[11px] font-bold text-[#0B1120]"
+      className="rounded-[var(--radius-badge)] flex items-center justify-center shrink-0 text-[11px] font-bold text-[#0B1120]"
       style={{
         width: size,
         height: size,
-        background: 'linear-gradient(135deg, #2DD4BF, #6366F1)',
+        background: 'linear-gradient(135deg, var(--brand-teal), var(--brand-indigo))',
       }}
     >
       {letter}
@@ -54,7 +54,6 @@ export function OrgSwitcher() {
   const [createLoading, setCreateLoading] = useState(false)
   const dropdownRef = useRef(null)
 
-  // Close dropdown on outside click
   useEffect(() => {
     if (!open) return
     function handler(e) {
@@ -89,44 +88,44 @@ export function OrgSwitcher() {
   const displayName = activeOrg?.name ?? (orgsLoading ? 'Loading…' : 'Select org')
 
   return (
-    <div className="relative px-3 py-2 border-b border-[#1e2d45]" ref={dropdownRef}>
+    <div className="relative px-3 py-2 border-b border-[var(--border)]" ref={dropdownRef}>
       <button
         onClick={() => { setOpen(v => !v); setCreating(false); setNewName(''); setCreateError(null) }}
-        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[#162032] transition-colors duration-150 group"
+        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-[var(--radius-btn)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 group"
         aria-expanded={open}
       >
         <OrgAvatar name={activeOrg?.name ?? '?'} />
         <div className="flex-1 min-w-0 text-left">
-          <p className="text-xs font-semibold text-[#e2e8f0] truncate leading-tight">{displayName}</p>
+          <p className="text-xs font-semibold text-[var(--text)] truncate leading-tight">{displayName}</p>
           {activeOrg?.planKey && (
-            <p className="text-[10px] text-[#64748b] font-mono capitalize">{activeOrg.planKey}</p>
+            <p className="text-[10px] text-[var(--text-faint)] font-mono capitalize">{activeOrg.planKey}</p>
           )}
         </div>
-        <span className="text-[#64748b] group-hover:text-[#94a3b8] transition-colors">
+        <span className="text-[var(--text-faint)] group-hover:text-[var(--text-muted)] transition-colors">
           <ChevronIcon />
         </span>
       </button>
 
       {open && (
-        <div className="absolute left-3 right-3 top-full mt-1 z-50 bg-[#111827] border border-[#1e2d45] rounded-xl shadow-2xl overflow-hidden">
+        <div className="absolute left-3 right-3 top-full mt-1 z-50 bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-card)] shadow-2xl overflow-hidden">
           {/* Org list */}
           {orgs.length > 0 && (
-            <div className="p-1.5 border-b border-[#1e2d45]">
+            <div className="p-1.5 border-b border-[var(--border)]">
               {orgs.map(org => (
                 <button
                   key={org.id}
                   onClick={() => { switchOrg(org.id); setOpen(false) }}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-[#162032] transition-colors duration-150 text-left"
+                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[var(--radius-btn)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 text-left"
                 >
                   <OrgAvatar name={org.name} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-[#e2e8f0] truncate">{org.name}</p>
+                    <p className="text-xs font-medium text-[var(--text)] truncate">{org.name}</p>
                     {org.role && (
-                      <p className="text-[10px] text-[#64748b] font-mono capitalize">{org.role}</p>
+                      <p className="text-[10px] text-[var(--text-faint)] font-mono capitalize">{org.role}</p>
                     )}
                   </div>
                   {activeOrg?.id === org.id && (
-                    <span className="text-[#2DD4BF] shrink-0">
+                    <span className="text-[var(--brand-teal)] shrink-0">
                       <CheckIcon />
                     </span>
                   )}
@@ -140,21 +139,21 @@ export function OrgSwitcher() {
             {!creating ? (
               <button
                 onClick={() => { setCreating(true) }}
-                className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-[#64748b] hover:text-[#e2e8f0] hover:bg-[#162032] transition-colors duration-150"
+                className="w-full flex items-center gap-2 px-2.5 py-2 rounded-[var(--radius-btn)] text-xs text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors duration-150"
               >
                 <PlusIcon />
                 New organization
               </button>
             ) : (
               <form onSubmit={handleCreate} className="px-1 py-1">
-                <p className="text-[10px] font-medium text-[#64748b] mb-1.5 uppercase tracking-wide">New organization</p>
+                <p className="text-[10px] font-medium text-[var(--text-faint)] mb-1.5 uppercase tracking-wide">New organization</p>
                 <input
                   autoFocus
                   type="text"
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
                   placeholder="Organization name"
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-[#0d1628] border border-[#1e2d45] text-xs text-[#e2e8f0] placeholder-[#334155] outline-none focus:border-[#2DD4BF] focus:ring-1 focus:ring-[#2DD4BF]/30 mb-1.5"
+                  className="w-full px-2.5 py-1.5 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] text-xs text-[var(--text)] placeholder-[var(--text-faint)] outline-none focus:border-[var(--brand-teal)] focus:ring-1 focus:ring-[var(--brand-teal)]/30 mb-1.5 transition-all"
                 />
                 {createError && (
                   <p className="text-[10px] text-red-400 mb-1.5">{createError}</p>
@@ -163,15 +162,14 @@ export function OrgSwitcher() {
                   <button
                     type="submit"
                     disabled={createLoading || !newName.trim()}
-                    className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold text-[#0B1120] disabled:opacity-50 transition-all"
-                    style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
+                    className="flex-1 py-1.5 rounded-[var(--radius-btn)] text-[11px] font-semibold text-[#0B1120] disabled:opacity-50 transition-all bg-gradient-to-r from-[var(--brand-teal)] to-[var(--brand-indigo)]"
                   >
                     {createLoading ? 'Creating…' : 'Create'}
                   </button>
                   <button
                     type="button"
                     onClick={() => { setCreating(false); setNewName(''); setCreateError(null) }}
-                    className="px-3 py-1.5 rounded-lg text-[11px] text-[#64748b] hover:text-[#e2e8f0] hover:bg-[#162032] transition-colors"
+                    className="px-3 py-1.5 rounded-[var(--radius-btn)] text-[11px] text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors"
                   >
                     Cancel
                   </button>

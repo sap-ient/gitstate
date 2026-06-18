@@ -4,8 +4,8 @@
  *   points: Array<{ x: number|string, y: number, label?: string }>
  *   width: number (default 600)
  *   height: number (default 200)
- *   color: string (default '#2DD4BF')
- *   areaColor: string (default rgba(45,212,191,0.08))
+ *   color: string (default 'var(--brand-teal)')
+ *   areaColor: string (default rgba(45,212,191,0.07))
  *   xLabel: (point) => string  — optional x axis tick formatter
  *   yLabel: (value) => string  — optional y axis tick formatter
  *   tooltip: (point) => string — optional tooltip text
@@ -33,7 +33,6 @@ export function LineChart({
   const W = width - PAD.left - PAD.right
   const H = height - PAD.top - PAD.bottom
 
-  // Stable mouse handler — captures current width/points via closure at call time
   const handleMouseMove = useCallback((e) => {
     const svg = e.currentTarget
     const rect = svg.getBoundingClientRect()
@@ -47,8 +46,8 @@ export function LineChart({
   if (!points.length) {
     return (
       <div
-        className="flex items-center justify-center rounded-xl text-xs text-[#334155] font-mono"
-        style={{ width, height, background: 'rgba(13,22,40,0.3)', border: '1px dashed #1e2d45' }}
+        className="flex items-center justify-center rounded-[var(--radius-card)] text-xs text-[var(--text-faint)] font-mono border border-dashed border-[var(--border)]"
+        style={{ width, height, background: 'var(--bg)' }}
       >
         {emptyText}
       </div>
@@ -60,16 +59,13 @@ export function LineChart({
   const yMax = Math.max(...ys)
   const yRange = yMax - yMin || 1
 
-  // Map point index → pixel coords
   const toX = i => PAD.left + (W / Math.max(points.length - 1, 1)) * i
   const toY = v => PAD.top + H - ((v - yMin) / yRange) * H
 
-  // Build SVG path
   const pathD = points
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${toX(i).toFixed(1)} ${toY(p.y).toFixed(1)}`)
     .join(' ')
 
-  // Area path (closed polygon to baseline)
   const areaD = [
     `M ${toX(0).toFixed(1)} ${(PAD.top + H).toFixed(1)}`,
     ...points.map((p, i) => `L ${toX(i).toFixed(1)} ${toY(p.y).toFixed(1)}`),
@@ -77,13 +73,11 @@ export function LineChart({
     'Z',
   ].join(' ')
 
-  // Y axis ticks (5 steps)
   const yTicks = Array.from({ length: 5 }, (_, i) => {
     const v = yMin + (yRange / 4) * i
     return { v, y: toY(v) }
   })
 
-  // X axis ticks: show ~6 evenly spaced
   const step = Math.max(1, Math.floor(points.length / 6))
   const xTicks = points
     .map((p, i) => ({ p, i }))
@@ -113,7 +107,7 @@ export function LineChart({
             <text
               x={PAD.left - 8} y={y.toFixed(1)}
               textAnchor="end" dominantBaseline="middle"
-              fontSize="10" fill="#475569"
+              fontSize="10" fill="#64748b"
             >
               {yLabel ? yLabel(v) : Math.round(v)}
             </text>
@@ -139,7 +133,7 @@ export function LineChart({
             key={i}
             x={toX(i).toFixed(1)} y={PAD.top + H + 18}
             textAnchor="middle"
-            fontSize="10" fill="#475569"
+            fontSize="10" fill="#64748b"
           >
             {xLabel ? xLabel(p) : p.x}
           </text>
@@ -155,7 +149,7 @@ export function LineChart({
             />
             <circle
               cx={toX(hovered).toFixed(1)} cy={toY(hovPoint.y).toFixed(1)}
-              r="4" fill={color} stroke="#0B1120" strokeWidth="2"
+              r="4" fill={color} stroke="var(--bg)" strokeWidth="2"
             />
           </>
         )}
@@ -169,14 +163,15 @@ export function LineChart({
             left: Math.min(toX(hovered) + 10, width - 140),
             top: Math.max(toY(hovPoint.y) - 36, 0),
             pointerEvents: 'none',
-            background: '#0d1628',
-            border: '1px solid #1e2d45',
-            borderRadius: 8,
+            background: 'var(--bg-surface3)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-badge)',
             padding: '5px 10px',
             fontSize: 11,
-            color: '#e2e8f0',
+            color: 'var(--text)',
             whiteSpace: 'nowrap',
             zIndex: 10,
+            fontFamily: 'var(--font-mono)',
           }}
         >
           {tooltip ? tooltip(hovPoint) : `${yLabel ? yLabel(hovPoint.y) : hovPoint.y}`}

@@ -22,7 +22,7 @@ const CHARGE_CURRENCY = import.meta.env.VITE_BILLING_CHARGE_CURRENCY ?? 'ZAR'
 
 function Spinner({ size = 20 }) {
   return (
-    <svg className="animate-spin" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2">
+    <svg className="animate-spin" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="var(--brand-teal)" strokeWidth="2">
       <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
     </svg>
   )
@@ -31,7 +31,7 @@ function Spinner({ size = 20 }) {
 function ErrorBanner({ msg }) {
   return (
     <div
-      className="rounded-xl px-5 py-4 text-sm text-[#ef4444]"
+      className="rounded-[var(--radius-card)] px-5 py-4 text-sm text-red-400"
       style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}
     >
       {msg}
@@ -42,16 +42,16 @@ function ErrorBanner({ msg }) {
 function BillingDisabled() {
   return (
     <div
-      className="rounded-xl px-6 py-10 text-center"
-      style={{ background: '#111827', border: '1px dashed #1e2d45' }}
+      className="rounded-[var(--radius-card)] px-6 py-10 text-center"
+      style={{ background: 'var(--bg-surface)', border: '1px dashed var(--border)' }}
     >
-      <div className="w-10 h-10 rounded-full bg-[#1e2d45] flex items-center justify-center mx-auto mb-4">
-        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#475569" strokeWidth="1.8">
+      <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: 'var(--bg-surface2)' }}>
+        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="var(--text-faint)" strokeWidth="1.8">
           <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" />
         </svg>
       </div>
-      <p className="text-sm font-semibold text-[#94a3b8] mb-1">Billing not enabled on this instance</p>
-      <p className="text-xs text-[#475569]">This is an OSS build or billing is not configured. Upgrade to the cloud edition to manage plans and invoices.</p>
+      <p className="text-sm font-semibold text-[var(--text-muted)] mb-1">Billing not enabled on this instance</p>
+      <p className="text-xs text-[var(--text-faint)]">This is an OSS build or billing is not configured. Upgrade to the cloud edition to manage plans and invoices.</p>
     </div>
   )
 }
@@ -60,7 +60,7 @@ function LoadingCenter() {
   return (
     <div className="flex items-center justify-center py-16 gap-3">
       <Spinner />
-      <span className="text-sm text-[#475569]">Loading…</span>
+      <span className="text-sm text-[var(--text-faint)]">Loading…</span>
     </div>
   )
 }
@@ -75,16 +75,19 @@ const TABS = [
 
 function TabBar({ active, onChange }) {
   return (
-    <div className="flex gap-1 p-1 rounded-lg mb-8" style={{ background: '#0d1628', border: '1px solid #1e2d45' }}>
+    <div
+      className="flex gap-1 p-1 rounded-[var(--radius-btn)] mb-8"
+      style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
+    >
       {TABS.map(t => (
         <button
           key={t.id}
           onClick={() => onChange(t.id)}
           className={[
-            'flex-1 text-xs font-semibold py-2 px-4 rounded-md transition-all duration-150',
+            'flex-1 text-xs font-semibold py-2 px-4 rounded-[var(--radius-badge)] transition-all duration-150',
             active === t.id
-              ? 'bg-[#1a2d4a] text-[#2DD4BF]'
-              : 'text-[#64748b] hover:text-[#94a3b8]',
+              ? 'bg-[var(--bg-surface2)] text-[var(--brand-teal)]'
+              : 'text-[var(--text-muted)] hover:text-[var(--text)]',
           ].join(' ')}
         >
           {t.label}
@@ -170,10 +173,10 @@ function PlanCard({ plan, isCurrent, onUpgrade, upgrading }) {
 
   return (
     <div
-      className="relative flex flex-col rounded-xl p-6 transition-all duration-200"
+      className="relative flex flex-col rounded-[var(--radius-card)] p-6 transition-all duration-200"
       style={{
-        background: isCurrent ? 'rgba(45,212,191,0.03)' : '#111827',
-        border: `1px solid ${isCurrent ? accent.border : (popular ? '#6366F180' : '#1e2d45')}`,
+        background: isCurrent ? 'rgba(45,212,191,0.03)' : 'var(--bg-surface)',
+        border: `1px solid ${isCurrent ? accent.border : (popular ? '#6366F180' : 'var(--border)')}`,
         boxShadow: popular ? '0 0 0 1px #6366F130' : undefined,
       }}
     >
@@ -201,13 +204,13 @@ function PlanCard({ plan, isCurrent, onUpgrade, upgrading }) {
 
         <div className="flex items-end gap-2">
           {isFree ? (
-            <span className="text-3xl font-extrabold text-[#e2e8f0]">Free</span>
+            <span className="text-3xl font-extrabold text-[var(--text)]">Free</span>
           ) : (
             <>
-              <span className="text-3xl font-extrabold text-[#e2e8f0]">
+              <span className="text-3xl font-extrabold text-[var(--text)]">
                 {fmtUsd(priceCents)}
               </span>
-              <span className="text-sm text-[#475569] mb-1">/mo</span>
+              <span className="text-sm text-[var(--text-faint)] mb-1">/mo</span>
             </>
           )}
         </div>
@@ -228,28 +231,23 @@ function PlanCard({ plan, isCurrent, onUpgrade, upgrading }) {
 
       {/* Builder seats + stakeholders free */}
       <div
-        className="rounded-lg p-3 mb-5 space-y-2"
-        style={{ background: '#0d1628', border: '1px solid #1a2535' }}
+        className="rounded-[var(--radius-badge)] p-3 mb-5 space-y-2"
+        style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
       >
         <div className="flex items-center justify-between text-xs">
-          <span className="text-[#64748b] font-medium">Builder seats</span>
-          <span className="font-bold text-[#e2e8f0]">
+          <span className="text-[var(--text-muted)] font-medium">Builder seats</span>
+          <span className="font-bold text-[var(--text)]">
             {builderLimit == null || builderLimit === 0 ? 'Unlimited' : builderLimit}
           </span>
         </div>
         <div className="flex items-center justify-between text-xs">
-          <span className="text-[#64748b] font-medium">Stakeholder seats</span>
-          <span
-            className="font-bold"
-            style={{ color: '#2DD4BF' }}
-          >
-            Always free
-          </span>
+          <span className="text-[var(--text-muted)] font-medium">Stakeholder seats</span>
+          <span className="font-bold text-[var(--brand-teal)]">Always free</span>
         </div>
         {storageGb && (
           <div className="flex items-center justify-between text-xs">
-            <span className="text-[#64748b] font-medium">Storage</span>
-            <span className="font-bold text-[#e2e8f0]">{storageGb} GB</span>
+            <span className="text-[var(--text-muted)] font-medium">Storage</span>
+            <span className="font-bold text-[var(--text)]">{storageGb} GB</span>
           </div>
         )}
       </div>
@@ -279,20 +277,23 @@ function PlanCard({ plan, isCurrent, onUpgrade, upgrading }) {
       {/* CTA */}
       {isCurrent ? (
         <div
-          className="w-full py-2.5 rounded-lg text-xs font-semibold text-center"
+          className="w-full py-2.5 rounded-[var(--radius-btn)] text-xs font-semibold text-center"
           style={{ background: `${accent.border}18`, color: accent.text, border: `1px solid ${accent.border}40` }}
         >
           Current plan
         </div>
       ) : isFree ? (
-        <div className="w-full py-2.5 rounded-lg text-xs font-semibold text-center text-[#475569] border border-[#1e2d45]">
+        <div
+          className="w-full py-2.5 rounded-[var(--radius-btn)] text-xs font-semibold text-center text-[var(--text-faint)]"
+          style={{ border: '1px solid var(--border)' }}
+        >
           Downgrade
         </div>
       ) : (
         <button
           onClick={() => onUpgrade(key)}
           disabled={upgrading}
-          className="w-full py-2.5 rounded-lg text-xs font-semibold text-white transition-all duration-150 disabled:opacity-50 flex items-center justify-center gap-2"
+          className="w-full py-2.5 rounded-[var(--radius-btn)] text-xs font-semibold text-white transition-all duration-150 disabled:opacity-50 flex items-center justify-center gap-2"
           style={{ background: `linear-gradient(135deg, ${accent.badge}, ${accent.border})` }}
         >
           {upgrading ? <Spinner size={14} /> : null}
@@ -343,22 +344,22 @@ function PlansTab() {
     <div>
       {/* Header callout: stakeholders free */}
       <div
-        className="rounded-xl px-5 py-4 mb-8 flex items-start gap-4"
+        className="rounded-[var(--radius-card)] px-5 py-4 mb-8 flex items-start gap-4"
         style={{ background: 'linear-gradient(135deg, rgba(45,212,191,0.05), rgba(99,102,241,0.05))', border: '1px solid rgba(45,212,191,0.15)' }}
       >
         <div
           className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center"
           style={{ background: 'rgba(45,212,191,0.1)' }}
         >
-          <svg width="17" height="17" fill="none" viewBox="0 0 24 24" stroke="#2DD4BF" strokeWidth="2">
+          <svg width="17" height="17" fill="none" viewBox="0 0 24 24" stroke="var(--brand-teal)" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
           </svg>
         </div>
         <div>
-          <p className="text-sm font-semibold text-[#e2e8f0] mb-0.5">Clients and stakeholders are always free</p>
-          <p className="text-xs text-[#64748b] leading-relaxed">
-            Pricing is per <strong className="text-[#94a3b8]">builder seat</strong> (devs, PMs, anyone who creates or manages work).
-            Stakeholders, clients, and read-only viewers are <strong className="text-[#2DD4BF]">never counted toward your bill</strong> — invite
+          <p className="text-sm font-semibold text-[var(--text)] mb-0.5">Clients and stakeholders are always free</p>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            Pricing is per <strong className="text-[var(--text)]">builder seat</strong> (devs, PMs, anyone who creates or manages work).
+            Stakeholders, clients, and read-only viewers are <strong className="text-[var(--brand-teal)]">never counted toward your bill</strong> — invite
             as many as you need. That&apos;s the wedge incumbents can&apos;t match.
           </p>
         </div>
@@ -366,15 +367,15 @@ function PlansTab() {
 
       {/* FX notice */}
       <div
-        className="flex items-center gap-2 mb-6 text-xs text-[#475569]"
-        style={{ borderLeft: '2px solid #1e2d45', paddingLeft: '12px' }}
+        className="flex items-center gap-2 mb-6 text-xs text-[var(--text-faint)]"
+        style={{ borderLeft: '2px solid var(--border)', paddingLeft: '12px' }}
       >
-        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="#475569" strokeWidth="2">
+        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="var(--text-faint)" strokeWidth="2">
           <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
         </svg>
-        All prices shown in <strong className="text-[#64748b] ml-1">USD</strong>.
+        All prices shown in <strong className="text-[var(--text-muted)] ml-1">USD</strong>.
         <span className="mx-1">Your card is charged in</span>
-        <strong className="text-[#64748b]">{CHARGE_CURRENCY}</strong>
+        <strong className="text-[var(--text-muted)]">{CHARGE_CURRENCY}</strong>
         <span className="ml-1">using the exchange rate captured at payment time (stored on your invoice).</span>
       </div>
 
@@ -402,7 +403,7 @@ function PlansTab() {
 
 // ── Usage tab ─────────────────────────────────────────────────────────────────
 
-function UsageBar({ label, used, limit, accent = '#2DD4BF', sub }) {
+function UsageBar({ label, used, limit, accent = 'var(--brand-teal)', sub }) {
   const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : 0
   const isOver = limit && used > limit
   const barColor = isOver ? '#ef4444' : accent
@@ -410,22 +411,22 @@ function UsageBar({ label, used, limit, accent = '#2DD4BF', sub }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs">
-        <span className="font-medium text-[#94a3b8]">{label}</span>
-        <span className="font-mono text-[#64748b]">
+        <span className="font-medium text-[var(--text-muted)]">{label}</span>
+        <span className="font-mono text-[var(--text-faint)]">
           {used ?? 0}
           {limit ? <span> / {limit}</span> : null}
-          {!limit && <span className="text-[#475569] ml-1">used</span>}
+          {!limit && <span className="ml-1">used</span>}
         </span>
       </div>
       {limit ? (
-        <div className="h-2 rounded-full bg-[#1e2d45] overflow-hidden">
+        <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
           <div
             className="h-full rounded-full transition-all duration-700"
             style={{ width: `${pct}%`, background: barColor }}
           />
         </div>
       ) : null}
-      {sub && <p className="text-[10px] text-[#475569]">{sub}</p>}
+      {sub && <p className="text-[10px] text-[var(--text-faint)]">{sub}</p>}
       {isOver && (
         <p className="text-[10px] text-red-400 font-semibold">Over limit — upgrade to continue</p>
       )}
@@ -461,18 +462,18 @@ function UsageTab() {
     <div className="space-y-8">
       {/* Period header */}
       <div
-        className="rounded-xl px-6 py-5 flex items-center justify-between"
-        style={{ background: '#111827', border: '1px solid #1e2d45' }}
+        className="rounded-[var(--radius-card)] px-6 py-5 flex items-center justify-between"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
       >
         <div>
-          <p className="text-xs text-[#475569] uppercase tracking-widest font-semibold mb-1">Current billing period</p>
-          <p className="text-sm font-semibold text-[#e2e8f0]">
+          <p className="text-xs text-[var(--text-faint)] uppercase tracking-widest font-semibold mb-1">Current billing period</p>
+          <p className="text-sm font-semibold text-[var(--text)]">
             {fmtDate(periodStart)} — {fmtDate(periodEnd)}
           </p>
         </div>
         <div
           className="text-xs font-bold px-3 py-1.5 rounded-full uppercase tracking-wider"
-          style={{ background: 'rgba(45,212,191,0.1)', color: '#2DD4BF', border: '1px solid rgba(45,212,191,0.25)' }}
+          style={{ background: 'rgba(45,212,191,0.1)', color: 'var(--brand-teal)', border: '1px solid rgba(45,212,191,0.25)' }}
         >
           {planName}
         </div>
@@ -480,10 +481,10 @@ function UsageTab() {
 
       {/* Usage meters */}
       <div
-        className="rounded-xl p-6 space-y-6"
-        style={{ background: '#111827', border: '1px solid #1e2d45' }}
+        className="rounded-[var(--radius-card)] p-6 space-y-6"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
       >
-        <h3 className="text-sm font-semibold text-[#e2e8f0]">Seat usage</h3>
+        <h3 className="text-sm font-semibold text-[var(--text)]">Seat usage</h3>
 
         <UsageBar
           label="Builder seats"
@@ -515,30 +516,30 @@ function UsageTab() {
 
       {/* Stakeholders-free reminder */}
       <div
-        className="flex items-center gap-3 rounded-xl px-5 py-4 text-xs text-[#64748b]"
+        className="flex items-center gap-3 rounded-[var(--radius-card)] px-5 py-4 text-xs text-[var(--text-muted)]"
         style={{ background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.12)' }}
       >
-        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="#2DD4BF" strokeWidth="2">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="var(--brand-teal)" strokeWidth="2">
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
         </svg>
         <span>
-          <strong className="text-[#e2e8f0]">Stakeholders, clients, and viewers are free</strong> — only builders (devs, PMs, and admins) count toward your seat limit.
+          <strong className="text-[var(--text)]">Stakeholders, clients, and viewers are free</strong> — only builders (devs, PMs, and admins) count toward your seat limit.
         </span>
       </div>
 
       {/* Recent usage events */}
       {Array.isArray(events) && events.length > 0 && (
         <div
-          className="rounded-xl p-6"
-          style={{ background: '#111827', border: '1px solid #1e2d45' }}
+          className="rounded-[var(--radius-card)] p-6"
+          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
         >
-          <h3 className="text-sm font-semibold text-[#e2e8f0] mb-4">Recent usage events</h3>
+          <h3 className="text-sm font-semibold text-[var(--text)] mb-4">Recent usage events</h3>
           <div className="space-y-2">
             {events.slice(0, 20).map((ev, i) => (
-              <div key={i} className="flex items-center justify-between py-2 border-b border-[#0d1628] last:border-0 text-xs">
-                <span className="text-[#64748b]">{ev.type ?? ev.event_type ?? '—'}</span>
-                <span className="font-mono text-[#94a3b8]">{ev.quantity ?? ev.value ?? 1}</span>
-                <span className="text-[#475569]">
+              <div key={i} className="flex items-center justify-between py-2 border-b border-[var(--border)] last:border-0 text-xs">
+                <span className="text-[var(--text-muted)]">{ev.type ?? ev.event_type ?? '—'}</span>
+                <span className="font-mono text-[var(--text)]">{ev.quantity ?? ev.value ?? 1}</span>
+                <span className="text-[var(--text-faint)]">
                   {ev.occurredAt ?? ev.occurred_at ? new Date(ev.occurredAt ?? ev.occurred_at).toLocaleDateString() : '—'}
                 </span>
               </div>
@@ -582,27 +583,27 @@ function InvoiceRow({ inv, onClick }) {
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-4 px-4 py-3.5 rounded-lg hover:bg-[#0d1628] transition-colors text-left group"
+      className="w-full flex items-center gap-4 px-4 py-3.5 rounded-[var(--radius-badge)] hover:bg-[var(--bg-surface2)] transition-colors text-left group"
     >
       <div className="shrink-0">
-        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="#475569" strokeWidth="1.8">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="var(--text-faint)" strokeWidth="1.8">
           <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
         </svg>
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-[#e2e8f0] truncate group-hover:text-[#2DD4BF] transition-colors">
+        <p className="text-sm font-semibold text-[var(--text)] truncate group-hover:text-[var(--brand-teal)] transition-colors">
           Invoice #{number}
         </p>
-        <p className="text-xs text-[#475569] mt-0.5">{period} {date ? `· ${new Date(date).toLocaleDateString()}` : ''}</p>
+        <p className="text-xs text-[var(--text-faint)] mt-0.5">{period} {date ? `· ${new Date(date).toLocaleDateString()}` : ''}</p>
       </div>
       <div className="text-right shrink-0">
-        <p className="text-sm font-bold text-[#e2e8f0]">{fmtUsd(usdCents)}</p>
+        <p className="text-sm font-bold text-[var(--text)]">{fmtUsd(usdCents)}</p>
         {zarCents != null && (
-          <p className="text-[10px] text-[#475569] mt-0.5">{fmtZar(zarCents)}</p>
+          <p className="text-[10px] text-[var(--text-faint)] mt-0.5">{fmtZar(zarCents)}</p>
         )}
       </div>
       <InvoiceStatus status={status} />
-      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="#475569" strokeWidth="2" className="shrink-0">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="var(--text-faint)" strokeWidth="2" className="shrink-0">
         <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
       </svg>
     </button>
@@ -658,19 +659,19 @@ function InvoiceLineRow({ line }) {
   return (
     <div
       className={[
-        'rounded-lg px-4 py-3 space-y-1',
+        'rounded-[var(--radius-badge)] px-4 py-3 space-y-1',
         isEstimated ? 'border-l-2' : '',
       ].join(' ')}
       style={{
-        background: isEstimated ? 'rgba(245,158,11,0.04)' : 'rgba(13,22,40,0.5)',
-        border: isEstimated ? '1px solid rgba(245,158,11,0.18)' : '1px solid #1a2535',
+        background: isEstimated ? 'rgba(245,158,11,0.04)' : 'var(--bg-surface3)',
+        border: isEstimated ? '1px solid rgba(245,158,11,0.18)' : '1px solid var(--border)',
         borderLeftColor: isEstimated ? '#f59e0b' : undefined,
       }}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-[#e2e8f0] font-medium">{desc}</span>
+            <span className="text-sm text-[var(--text)] font-medium">{desc}</span>
             {isEstimated && (
               <span
                 className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0"
@@ -681,24 +682,24 @@ function InvoiceLineRow({ line }) {
             )}
           </div>
           {qty !== 1 && unitsCents != null && (
-            <p className="text-[11px] text-[#475569] mt-0.5">
+            <p className="text-[11px] text-[var(--text-faint)] mt-0.5">
               {qty} × {fmtUsd(unitsCents)}
             </p>
           )}
         </div>
         <div className="text-right shrink-0">
-          <span className="text-sm font-bold text-[#e2e8f0]">{fmtUsd(totalCents)}</span>
+          <span className="text-sm font-bold text-[var(--text)]">{fmtUsd(totalCents)}</span>
         </div>
       </div>
 
       {/* Git evidence */}
       {evidenceObj && <GitEvidenceChip evidence={evidenceObj} />}
       {evidenceStr && (
-        <p className="text-[10px] font-mono text-[#475569] mt-1">{evidenceStr}</p>
+        <p className="text-[10px] font-mono text-[var(--text-faint)] mt-1">{evidenceStr}</p>
       )}
 
       {isEstimated && !evidence && (
-        <p className="text-[10px] text-[#64748b] mt-1">
+        <p className="text-[10px] text-[var(--text-muted)] mt-1">
           No git activity detected — this line needs manual confirmation before sending to client.
         </p>
       )}
@@ -739,16 +740,16 @@ function InvoiceDetailPanel({ id, onBack }) {
 
       {/* Invoice header */}
       <div
-        className="rounded-xl px-6 py-5"
-        style={{ background: '#111827', border: '1px solid #1e2d45' }}
+        className="rounded-[var(--radius-card)] px-6 py-5"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
       >
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
-            <p className="text-xs text-[#475569] uppercase tracking-widest font-semibold mb-1">Invoice</p>
-            <h2 className="text-xl font-bold text-[#e2e8f0]">#{number}</h2>
-            <p className="text-xs text-[#64748b] mt-1">{period}</p>
+            <p className="text-xs text-[var(--text-faint)] uppercase tracking-widest font-semibold mb-1">Invoice</p>
+            <h2 className="text-xl font-bold text-[var(--text)] font-display">#{number}</h2>
+            <p className="text-xs text-[var(--text-muted)] mt-1">{period}</p>
             {issuedAt && (
-              <p className="text-xs text-[#475569] mt-0.5">Issued {new Date(issuedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>
+              <p className="text-xs text-[var(--text-faint)] mt-0.5">Issued {new Date(issuedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>
             )}
           </div>
           <InvoiceStatus status={status} />
@@ -756,23 +757,23 @@ function InvoiceDetailPanel({ id, onBack }) {
 
         {/* Amounts: USD billed + ZAR charged + FX rate */}
         <div
-          className="rounded-lg p-4 space-y-2"
-          style={{ background: '#0d1628', border: '1px solid #1a2535' }}
+          className="rounded-[var(--radius-badge)] p-4 space-y-2"
+          style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
         >
           <div className="flex items-center justify-between text-sm">
-            <span className="text-[#64748b]">Billed amount (USD)</span>
-            <span className="font-bold text-[#e2e8f0] text-lg">{fmtUsd(usdCents)}</span>
+            <span className="text-[var(--text-muted)]">Billed amount (USD)</span>
+            <span className="font-bold text-[var(--text)] text-lg">{fmtUsd(usdCents)}</span>
           </div>
           {zarCents != null && (
-            <div className="flex items-center justify-between text-sm border-t border-[#1e2d45] pt-2">
-              <span className="text-[#64748b]">Charged in {CHARGE_CURRENCY}</span>
-              <span className="font-bold text-[#2DD4BF]">{fmtZar(zarCents)}</span>
+            <div className="flex items-center justify-between text-sm border-t border-[var(--border)] pt-2">
+              <span className="text-[var(--text-muted)]">Charged in {CHARGE_CURRENCY}</span>
+              <span className="font-bold text-[var(--brand-teal)]">{fmtZar(zarCents)}</span>
             </div>
           )}
           {fxRate && (
-            <div className="flex items-center justify-between text-xs border-t border-[#1e2d45] pt-2">
-              <span className="text-[#475569]">Exchange rate at charge time</span>
-              <span className="font-mono text-[#475569]">{fmtRate(fxRate)}</span>
+            <div className="flex items-center justify-between text-xs border-t border-[var(--border)] pt-2">
+              <span className="text-[var(--text-faint)]">Exchange rate at charge time</span>
+              <span className="font-mono text-[var(--text-faint)]">{fmtRate(fxRate)}</span>
             </div>
           )}
         </div>
@@ -799,13 +800,13 @@ function InvoiceDetailPanel({ id, onBack }) {
 
       {/* Line items */}
       <div
-        className="rounded-xl p-6"
-        style={{ background: '#111827', border: '1px solid #1e2d45' }}
+        className="rounded-[var(--radius-card)] p-6"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
       >
-        <h3 className="text-sm font-semibold text-[#e2e8f0] mb-4">Line items</h3>
+        <h3 className="text-sm font-semibold text-[var(--text)] mb-4">Line items</h3>
 
         {lines.length === 0 ? (
-          <p className="text-xs text-[#475569] text-center py-4">No line items on this invoice yet.</p>
+          <p className="text-xs text-[var(--text-faint)] text-center py-4">No line items on this invoice yet.</p>
         ) : (
           <div className="space-y-2">
             {lines.map((line, i) => (
@@ -816,12 +817,12 @@ function InvoiceDetailPanel({ id, onBack }) {
 
         {/* Total row */}
         {lines.length > 0 && (
-          <div className="flex items-center justify-between pt-4 mt-4 border-t border-[#1e2d45]">
-            <span className="text-sm font-semibold text-[#94a3b8]">Total</span>
+          <div className="flex items-center justify-between pt-4 mt-4 border-t border-[var(--border)]">
+            <span className="text-sm font-semibold text-[var(--text-muted)]">Total</span>
             <div className="text-right">
-              <p className="text-base font-bold text-[#e2e8f0]">{fmtUsd(usdCents)}</p>
+              <p className="text-base font-bold text-[var(--text)]">{fmtUsd(usdCents)}</p>
               {zarCents != null && (
-                <p className="text-xs text-[#475569] mt-0.5">
+                <p className="text-xs text-[var(--text-faint)] mt-0.5">
                   {fmtZar(zarCents)}
                   {fxRate ? ` at ${fmtRate(fxRate)}` : ''}
                 </p>
@@ -832,7 +833,7 @@ function InvoiceDetailPanel({ id, onBack }) {
       </div>
 
       {/* Git evidence legend */}
-      <div className="text-[10px] text-[#334155] flex flex-wrap gap-x-4 gap-y-1">
+      <div className="text-[10px] text-[var(--text-faint)] flex flex-wrap gap-x-4 gap-y-1">
         <span className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-sm" style={{ background: '#2DD4BF' }} />
           Commit SHA (git-verified)
@@ -871,16 +872,16 @@ function InvoicesTab() {
   if (invoices.length === 0) {
     return (
       <div
-        className="rounded-xl px-6 py-12 text-center"
-        style={{ background: '#111827', border: '1px dashed #1e2d45' }}
+        className="rounded-[var(--radius-card)] px-6 py-12 text-center"
+        style={{ background: 'var(--bg-surface)', border: '1px dashed var(--border)' }}
       >
-        <div className="w-10 h-10 rounded-full bg-[#1e2d45] flex items-center justify-center mx-auto mb-4">
-          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#475569" strokeWidth="1.8">
+        <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: 'var(--bg-surface2)' }}>
+          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="var(--text-faint)" strokeWidth="1.8">
             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
           </svg>
         </div>
-        <p className="text-sm font-semibold text-[#94a3b8] mb-1">No invoices yet</p>
-        <p className="text-xs text-[#475569]">Invoices will appear here once your first billing period closes.</p>
+        <p className="text-sm font-semibold text-[var(--text-muted)] mb-1">No invoices yet</p>
+        <p className="text-xs text-[var(--text-faint)]">Invoices will appear here once your first billing period closes.</p>
       </div>
     )
   }
@@ -888,15 +889,15 @@ function InvoicesTab() {
   return (
     <div>
       <div
-        className="rounded-xl divide-y"
-        style={{ background: '#111827', border: '1px solid #1e2d45', '--tw-divide-color': '#1e2d45' }}
+        className="rounded-[var(--radius-card)] overflow-hidden"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
       >
-        <div className="px-4 py-3">
-          <p className="text-xs font-semibold text-[#475569] uppercase tracking-widest">
+        <div className="px-4 py-3 border-b border-[var(--border)]">
+          <p className="text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest">
             {invoices.length} invoice{invoices.length !== 1 ? 's' : ''}
           </p>
         </div>
-        <div className="divide-y divide-[#1e2d45]">
+        <div className="divide-y divide-[var(--border)]">
           {invoices.map(inv => (
             <InvoiceRow
               key={inv.id ?? inv.number}
@@ -906,7 +907,7 @@ function InvoicesTab() {
           ))}
         </div>
       </div>
-      <p className="text-[10px] text-[#334155] mt-3 text-center">
+      <p className="text-[10px] text-[var(--text-faint)] mt-3 text-center">
         Each invoice shows the USD amount billed and the {CHARGE_CURRENCY} amount charged, with the exchange rate captured at payment time.
       </p>
     </div>
@@ -961,12 +962,12 @@ function PaystackReturn() {
               <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
             </svg>
           </div>
-          <p className="text-base font-semibold text-[#22c55e]">Payment successful</p>
-          <p className="text-sm text-[#64748b] text-center max-w-sm">{message}</p>
+          <p className="text-base font-semibold text-green-400">Payment successful</p>
+          <p className="text-sm text-[var(--text-muted)] text-center max-w-sm">{message}</p>
           <button
             onClick={() => navigate('/settings/billing')}
-            className="mt-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white"
-            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
+            className="mt-2 px-5 py-2.5 rounded-[var(--radius-btn)] text-sm font-semibold text-[#0B1120]"
+            style={{ background: 'linear-gradient(135deg, var(--brand-teal), var(--brand-indigo))' }}
           >
             View your plan
           </button>
@@ -980,10 +981,10 @@ function PaystackReturn() {
             </svg>
           </div>
           <p className="text-base font-semibold text-red-400">Payment not confirmed</p>
-          <p className="text-sm text-[#64748b] text-center max-w-sm">{message}</p>
+          <p className="text-sm text-[var(--text-muted)] text-center max-w-sm">{message}</p>
           <button
             onClick={() => navigate('/settings/billing')}
-            className="mt-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-[#e2e8f0] border border-[#1e2d45] hover:border-[#2DD4BF]/40 transition-colors"
+            className="mt-2 px-5 py-2.5 rounded-[var(--radius-btn)] text-sm font-semibold text-[var(--text)] border border-[var(--border)] hover:border-[var(--brand-teal)]/40 transition-colors"
           >
             Back to billing
           </button>
@@ -1018,8 +1019,8 @@ export default function Billing() {
   return (
     <div className="max-w-5xl">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e2e8f0] tracking-tight">Billing</h1>
-        <p className="text-sm text-[#64748b] mt-1">Plan, usage, and evidence-backed invoices.</p>
+        <h1 className="text-2xl font-bold text-[var(--text)] tracking-tight font-display">Billing</h1>
+        <p className="text-sm text-[var(--text-muted)] mt-1">Plan, usage, and evidence-backed invoices.</p>
       </div>
 
       <TabBar active={tab} onChange={handleTabChange} />

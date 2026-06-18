@@ -7,8 +7,8 @@
 export function GitBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded"
-      style={{ color: '#2DD4BF', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.25)' }}
+      className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded-[var(--radius-badge)] border"
+      style={{ color: 'var(--brand-teal)', background: 'rgba(45,212,191,0.10)', borderColor: 'rgba(45,212,191,0.25)' }}
       title="State derived from git — merged = done, PR open = in progress"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
@@ -23,8 +23,8 @@ export function GitBadge() {
 export function NativeBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded"
-      style={{ color: '#94a3b8', background: 'rgba(148,163,184,0.1)', border: '1px solid rgba(148,163,184,0.2)' }}
+      className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded-[var(--radius-badge)] border"
+      style={{ color: 'var(--text-muted)', background: 'var(--bg-surface3)', borderColor: 'var(--border)' }}
       title="Tracked manually — not derived from git"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
@@ -40,11 +40,11 @@ export function StateChip({ state, derivedState }) {
   const display = derivedState ?? state ?? 'open'
 
   const map = {
-    open:        { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
-    in_progress: { color: '#6366F1', bg: 'rgba(99,102,241,0.12)' },
-    done:        { color: '#2DD4BF', bg: 'rgba(45,212,191,0.12)' },
-    closed:      { color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
-    merged:      { color: '#2DD4BF', bg: 'rgba(45,212,191,0.12)' },
+    open:        { color: '#f59e0b', bg: 'rgba(245,158,11,0.10)' },
+    in_progress: { color: 'var(--brand-indigo)', bg: 'rgba(99,102,241,0.10)' },
+    done:        { color: 'var(--brand-teal)', bg: 'rgba(45,212,191,0.10)' },
+    closed:      { color: 'var(--text-faint)', bg: 'var(--bg-surface3)' },
+    merged:      { color: 'var(--brand-teal)', bg: 'rgba(45,212,191,0.10)' },
   }
 
   const s = map[display] ?? map.open
@@ -68,8 +68,8 @@ export function LabelPills({ labels }) {
       {labels.map((l, i) => (
         <span
           key={i}
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded"
-          style={{ color: '#94a3b8', background: 'rgba(148,163,184,0.1)', border: '1px solid rgba(148,163,184,0.15)' }}
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded-[var(--radius-badge)] border"
+          style={{ color: 'var(--text-muted)', background: 'var(--bg-surface3)', borderColor: 'var(--border)' }}
         >
           {l}
         </span>
