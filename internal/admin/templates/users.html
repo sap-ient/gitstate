@@ -1,0 +1,98 @@
+{{template "layout.html" .}}
+
+{{define "title"}}Users{{end}}
+
+{{define "content"}}
+<div class="page-header">
+  <div>
+    <div class="page-title">Users</div>
+    <div class="page-subtitle">{{.Total}} total users</div>
+  </div>
+</div>
+
+<div class="card">
+  <!-- Search bar — triggers partial reload via htmx -->
+  <div class="search-row">
+    <input
+      class="input" style="flex:1"
+      type="search"
+      name="q"
+      placeholder="Search by email or name…"
+      value="{{.Search}}"
+      hx-get="/admin/users"
+      hx-trigger="input changed delay:350ms, search"
+      hx-target="#users-table"
+      hx-include="[name='q']"
+      hx-push-url="true"
+    />
+  </div>
+
+  <div class="table-wrap" id="users-table">
+    {{template "users-table" .}}
+  </div>
+</div>
+{{end}}
+
+{{define "users-table"}}
+<table>
+  <thead>
+    <tr>
+      <th>Email</th>
+      <th>Name</th>
+      <th>Role</th>
+      <th>Joined</th>
+      <th style="text-align:right">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Users}}
+    <tr id="user-{{.ID}}">
+      <td>
+        {{.Email}}
+        {{if .IsSuperAdmin}}<span class="badge badge-teal" style="margin-left:6px">super</span>{{end}}
+      </td>
+      <td>{{.Name}}</td>
+      <td>
+        {{if .IsSuperAdmin}}
+          <span class="badge badge-teal">Super Admin</span>
+        {{else}}
+          <span class="badge badge-muted">User</span>
+        {{end}}
+      </td>
+      <td style="color:var(--text-muted)">{{formatDate .CreatedAt}}</td>
+      <td style="text-align:right">
+        {{if .IsSuperAdmin}}
+          <button class="btn btn-ghost btn-danger" style="font-size:12px"
+            hx-post="/admin/users/{{.ID}}/demote"
+            hx-confirm="Remove super-admin from {{.Email}}?"
+            hx-target="#user-{{.ID}}"
+            hx-swap="outerHTML">
+            Demote
+          </button>
+        {{else}}
+          <button class="btn btn-ghost" style="font-size:12px"
+            hx-post="/admin/users/{{.ID}}/promote"
+            hx-confirm="Make {{.Email}} a super-admin?"
+            hx-target="#user-{{.ID}}"
+            hx-swap="outerHTML">
+            Promote
+          </button>
+        {{end}}
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:32px">No users found.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="pagination">
+  <span>{{.Total}} users</span>
+  {{if gt .Page 1}}
+  <a href="/admin/users?q={{.Search}}&page={{prev .Page}}" class="btn btn-ghost" style="padding:5px 12px">← Prev</a>
+  {{end}}
+  <span>Page {{.Page}} of {{.TotalPages}}</span>
+  {{if lt .Page .TotalPages}}
+  <a href="/admin/users?q={{.Search}}&page={{next .Page}}" class="btn btn-ghost" style="padding:5px 12px">Next →</a>
+  {{end}}
+</div>
+{{end}}

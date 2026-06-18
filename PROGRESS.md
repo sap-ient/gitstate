@@ -18,8 +18,8 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
 | 3 | Git engine (read, sync, llm, work UI) | ✅ done |
 | 4 | Metrics, reporting (NL→report), capacity/PTO, dashboards | ✅ done |
 | 5 | Billing (EE): Paystack, USD→ZAR, billsim | ✅ done |
-| 6 | Super admin (EE) + security pass | ⏳ dispatched |
-| 7 | Deploy & OSS hygiene | ⬜ |
+| 6 | Super admin (EE) + security pass | ✅ done |
+| 7 | Deploy & OSS hygiene | ⏳ dispatched |
 
 ## Contracts (so parallel agents stay compatible)
 - Module: `github.com/exo/gitstate`. Deps pre-installed in go.mod — **import freely, do NOT `go get`**.
@@ -107,3 +107,12 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
   eebilling.RegisterPaystackRoutes→router. Integrated: `go build ./...` AND `go build -tags ee ./...` both green,
   vet+web+billsim+boot-smoke clean. Committed.
 - EE build: default = OSS (Paystack stub). Cloud = `go build -tags ee`. Billing routes also runtime-gated by Billing.Enabled.
+- W6: super-admin (internal/admin: `RequireSuperAdmin(cfg,db)` [email allowlist or users.is_super_admin],
+  `RegisterAdminRoutes`; server-rendered html/template+htmx+SSE: /admin analytics, /admin/users, /admin/orgs,
+  /admin/events SSE realtime; store/admin.go global aggregates) · ee/admin (BUILD-TAGGED: /admin/orgs/{id} cross-org
+  drilldown + /admin/revenue MRR, EVERY access → audit_log via WriteAudit; stub for !ee) · security (store/audit.go
+  WriteAudit, middleware/ratelimit.go RateLimit+AuthRateLimit, internal/crypto AES-256-GCM, migration 003 repos.token_encrypted,
+  store/repo_tokens.go, store/rls_test.go [S1 cross-org=0 rows, skips w/o DB], docs/security.md). Wired admin+eeadmin routes
+  + RateLimit(300) into chain. Both build tags + vet + go test + boot-smoke green. 3 migrations. Committed.
+  NOTE: collision auto-resolved — EE agent created internal/admin/admin.go w/ RequireSuperAdmin; HTML agent kept it,
+  added routes.go (same signature). No duplicate symbol.

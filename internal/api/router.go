@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/exo/gitstate/internal/admin"
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
 	"github.com/exo/gitstate/internal/middleware"
 
+	eeadmin "github.com/exo/gitstate/ee/admin"
 	eebilling "github.com/exo/gitstate/ee/billing"
 )
 
@@ -36,6 +38,9 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 		RegisterBillingRoutes(mux, database, cfg)
 		// EE Paystack charging: real when built with -tags ee, no-op stub otherwise.
 		eebilling.RegisterPaystackRoutes(mux, database, cfg)
+		// Super-admin console (server-rendered HTML) + EE cross-org (audited).
+		admin.RegisterAdminRoutes(mux, database, cfg)
+		eeadmin.RegisterEEAdminRoutes(mux, database, cfg)
 	}
 
 	// Apply middleware chain.
@@ -48,6 +53,7 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 		mux,
 		middleware.Recoverer,
 		middleware.Logger,
+		middleware.RateLimit(300), // per-IP global rate limit (token bucket)
 		middleware.CORS(corsOrigin),
 		middleware.AuthContext,
 	)
