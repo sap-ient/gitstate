@@ -13,8 +13,8 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
 |---|---|---|
 | 0 | Foundation: skeleton, docs, logo, env/config, migration tool, base schema | ✅ done |
 | 1 | Backbone (Go: config/db-RLS/router) + Web shell (Tailwind/routing/auth UI) | ✅ done |
-| 2 | Auth (JWT+refresh+argon2) · Exchange (USD↔ZAR) · Web auth flows | ⏳ dispatched |
-| 2b | Identity/tenancy: oauth (google/ms) · orgs/members/invites · web org UX | ⬜ |
+| 2 | Auth (JWT+refresh+argon2) · Exchange (USD↔ZAR) · Web auth flows | ✅ done |
+| 2b | Identity/tenancy: oauth (google/ms) · orgs/members/invites · web org UX | ⏳ dispatched |
 | 3 | Git engine (read, sync, llm, work UI) | ⬜ |
 | 4 | Metrics & reporting | ⬜ |
 | 5 | Billing (EE): Paystack, USD→ZAR, billsim | ⬜ |
@@ -49,3 +49,16 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
 - W0: foundation laid; migrate tool builds + smoke-tested; deps pre-added; base schema w/ RLS.
 - W1: Go backbone (config/db-RLS/router/main) + web shell (Tailwind/routing/branded auth UI). Integrated green
   (go build+vet+tidy, npm run build all clean). Committed.
+- W2: auth (JWT HS256 access + rotating refresh w/ family reuse-detection, argon2id; /auth/signup|login|refresh|logout;
+  RequireAuth + UserFromContext) · exchange (USD↔ZAR: exchangerate-api+openexchangerates, TTL cache, fallback,
+  Convert(usdCents)→zarCents, StartRefresher) · web auth lifecycle (refresh-on-401-and-retry, signup strength meter,
+  settings account). Orchestrator wired RegisterAuthRoutes→router (DB-guarded) + exchange refresher→main.
+  Smoke: /healthz, /api/config OK; no-DB boot returns 404 (no panic). Integrated green. Committed.
+
+## Wave 2 contracts (for 2b)
+- `auth.IssueAccessToken(signingKey,userID,email,name,ttl)`, `auth.ParseAccessToken`, `auth.GenerateRefreshToken()`,
+  `auth.HashToken`. `middleware.RequireAuth(signingKey)`, `middleware.UserFromContext(ctx) *AuthUser{ID,Email,Name}`.
+- store: `CreateUser/GetUserByEmail/GetUserByID`, `InsertRefresh/GetRefreshByHash/RotateRefresh/RevokeFamily`,
+  `NewExchangeStore(pool)`. Feature pkgs expose `Register<Feature>Routes(mux, db, cfg)`; orchestrator wires router.go.
+- HTTP auth: signup/login → `{accessToken,refreshToken,user{id,email,name}}`; refresh rotates; logout 204.
+  Web stores `gs_access_token`/`gs_refresh_token`; access JWT carries sub/email/name (+org_id/role when present).

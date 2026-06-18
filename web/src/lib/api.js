@@ -1,28 +1,48 @@
 /**
  * gitstate API client
- * Thin fetch wrappers + token storage. Refresh-token rotation is Wave B.
+ * Token storage, refresh-token rotation with 401 retry, auth helpers.
  */
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
 // ── Token storage ─────────────────────────────────────────────────────────────
 
-const TOKEN_KEY = 'gs_access_token'
+const ACCESS_KEY = 'gs_access_token'
+const REFRESH_KEY = 'gs_refresh_token'
 
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY)
+  return localStorage.getItem(ACCESS_KEY)
+}
+
+export function getRefreshToken() {
+  return localStorage.getItem(REFRESH_KEY)
 }
 
 export function setToken(token) {
   if (token) {
-    localStorage.setItem(TOKEN_KEY, token)
+    localStorage.setItem(ACCESS_KEY, token)
   } else {
-    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(ACCESS_KEY)
   }
 }
 
-export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY)
+export function setRefreshToken(token) {
+  if (token) {
+    localStorage.setItem(REFRESH_KEY, token)
+  } else {
+    localStorage.removeItem(REFRESH_KEY)
+  }
+}
+
+/** Persist both tokens at once (login / signup / refresh). */
+export function setTokenPair(accessToken, refreshToken) {
+  setToken(accessToken)
+  setRefreshToken(refreshToken)
+}
+
+export function clearTokens() {
+  localStorage.removeItem(ACCESS_KEY)
+  localStorage.removeItem(REFRESH_KEY)
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -41,15 +61,58 @@ export class ApiError extends Error {
   }
 }
 
+// ── Refresh state ─────────────────────────────────────────────────────────────
+
+// Singleton promise to avoid multiple concurrent refresh calls
+let refreshingPromise = null
+
+/** Called when refresh fails — clears tokens and triggers redirect. */
+function onAuthFailure() {
+  clearTokens()
+  // Soft navigation so the app re-renders and AppShell redirects to /login
+  window.location.replace('/login')
+}
+
+/** Attempt to refresh the token pair. Returns new accessToken or throws. */
+async function doRefresh() {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) throw new ApiError(401, 'No refresh token')
+
+  const res = await fetch(`${BASE}/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refreshToken }),
+  })
+
+  if (!res.ok) {
+    let errBody = null
+    try { errBody = await res.json() } catch { /* ignore */ }
+    throw new ApiError(res.status, 'Refresh failed', errBody)
+  }
+
+  const data = await res.json()
+  // Persist rotated pair
+  setTokenPair(data.accessToken, data.refreshToken)
+  return data.accessToken
+}
+
 // ── Core fetch ────────────────────────────────────────────────────────────────
 
-async function request(method, path, body, options = {}) {
+/**
+ * Internal raw request — no auto-retry.
+ * @param {string} method
+ * @param {string} path
+ * @param {unknown} body
+ * @param {object} options
+ * @param {string|null} overrideToken  - Use this token instead of stored one (after refresh).
+ */
+async function rawRequest(method, path, body, options = {}, overrideToken = null) {
   const headers = {
     'Content-Type': 'application/json',
     ...options.headers,
   }
 
-  const token = getToken()
+  const token = overrideToken ?? getToken()
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
@@ -61,24 +124,22 @@ async function request(method, path, body, options = {}) {
     signal: options.signal,
   })
 
-  // Store updated token if server rotates it
-  const newToken = res.headers.get('X-Access-Token')
-  if (newToken) setToken(newToken)
+  return res
+}
 
+/**
+ * Parse a response, throwing ApiError on non-2xx.
+ */
+async function parseResponse(res) {
   if (!res.ok) {
     let errBody = null
-    try {
-      errBody = await res.json()
-    } catch {
-      // ignore parse error
-    }
+    try { errBody = await res.json() } catch { /* ignore */ }
     const msg =
       (errBody && (errBody.error || errBody.message)) ||
       `HTTP ${res.status}`
     throw new ApiError(res.status, msg, errBody)
   }
 
-  // 204 No Content
   if (res.status === 204) return null
 
   const ct = res.headers.get('Content-Type') ?? ''
@@ -86,6 +147,34 @@ async function request(method, path, body, options = {}) {
     return res.json()
   }
   return res.text()
+}
+
+/**
+ * Main request function with 401 → refresh → retry logic.
+ */
+async function request(method, path, body, options = {}) {
+  // First attempt
+  let res = await rawRequest(method, path, body, options)
+
+  if (res.status === 401) {
+    // Try to refresh exactly once
+    try {
+      if (!refreshingPromise) {
+        refreshingPromise = doRefresh().finally(() => {
+          refreshingPromise = null
+        })
+      }
+      const newAccessToken = await refreshingPromise
+
+      // Retry the original request with the new token
+      res = await rawRequest(method, path, body, options, newAccessToken)
+    } catch {
+      onAuthFailure()
+      throw new ApiError(401, 'Session expired. Please sign in again.')
+    }
+  }
+
+  return parseResponse(res)
 }
 
 // ── Public helpers ────────────────────────────────────────────────────────────
@@ -109,25 +198,53 @@ export function del(path, options) {
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
 /**
- * @returns {Promise<{ token: string, user: object }>}
+ * Sign up a new account. Stores both tokens.
+ * @returns {Promise<{ accessToken: string, refreshToken: string, user: object }>}
  */
-export async function login(email, password) {
-  const data = await post('/auth/login', { email, password })
-  if (data?.token) setToken(data.token)
+export async function signup(email, name, password) {
+  const res = await fetch(`${BASE}/auth/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, name, password }),
+  })
+  const data = await parseResponse(res)
+  if (data?.accessToken) setTokenPair(data.accessToken, data.refreshToken)
   return data
 }
 
 /**
- * @returns {Promise<{ token: string, user: object }>}
+ * Sign in with email + password. Stores both tokens.
+ * @returns {Promise<{ accessToken: string, refreshToken: string, user: object }>}
  */
-export async function signup(email, password, name) {
-  const data = await post('/auth/signup', { email, password, name })
-  if (data?.token) setToken(data.token)
+export async function login(email, password) {
+  const res = await fetch(`${BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  const data = await parseResponse(res)
+  if (data?.accessToken) setTokenPair(data.accessToken, data.refreshToken)
   return data
 }
 
-export function logout() {
-  clearToken()
+/**
+ * Sign out. Calls /auth/logout with the refresh token, then clears local tokens.
+ * Swallows network errors (tokens are cleared regardless).
+ */
+export async function logout() {
+  const refreshToken = getRefreshToken()
+  if (refreshToken) {
+    try {
+      await fetch(`${BASE}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      })
+    } catch {
+      // Network down — still clear local tokens
+    }
+  }
+  clearTokens()
 }
 
 /**

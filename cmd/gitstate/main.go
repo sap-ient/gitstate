@@ -16,6 +16,7 @@ import (
 	"github.com/exo/gitstate/internal/api"
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
+	"github.com/exo/gitstate/internal/exchange"
 )
 
 func main() {
@@ -54,8 +55,14 @@ func main() {
 		cancel()
 	}
 
+	// Start the USD↔ZAR exchange-rate refresher when a DB and a provider key are present.
+	if database != nil && cfg.Billing.Exchange.APIKey != "" {
+		exchange.New(database, cfg).StartRefresher(ctx)
+		slog.Info("exchange-rate refresher started", "provider", cfg.Billing.Exchange.Provider)
+	}
+
 	// Build router with middleware wired.
-	handler := api.NewRouter(cfg)
+	handler := api.NewRouter(cfg, database)
 
 	addr := cfg.App.HTTPAddr
 	if addr == "" {

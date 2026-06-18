@@ -7,17 +7,24 @@ import (
 	"net/http"
 
 	"github.com/exo/gitstate/internal/config"
+	"github.com/exo/gitstate/internal/db"
 	"github.com/exo/gitstate/internal/middleware"
 )
 
 // NewRouter builds and returns the fully wired http.Handler for gitstate.
 // Middleware chain (outermost → innermost): Recoverer → Logger → CORS → AuthContext → mux.
-func NewRouter(cfg *config.Config) http.Handler {
+func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 	mux := http.NewServeMux()
 
 	// Register handlers.
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /api/config", handleAPIConfig(cfg))
+
+	// Feature route registration (orchestrator-wired; see PROGRESS.md route-wiring rule).
+	// Auth needs the DB; in dev-without-DB boots we skip it rather than nil-panic.
+	if database != nil {
+		RegisterAuthRoutes(mux, database, cfg)
+	}
 
 	// Apply middleware chain.
 	corsOrigin := cfg.App.PublicURL

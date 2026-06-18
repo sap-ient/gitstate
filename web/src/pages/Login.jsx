@@ -55,7 +55,7 @@ export default function Login() {
   const [config, setConfig] = useState(null)
   const [configLoading, setConfigLoading] = useState(true)
 
-  // Already logged in
+  // Already logged in — redirect
   useEffect(() => {
     if (isAuthed) navigate('/', { replace: true })
   }, [isAuthed, navigate])
@@ -76,7 +76,8 @@ export default function Login() {
     setLoading(true)
     try {
       const data = await login(email, password)
-      setToken(data?.token)
+      // data: { accessToken, refreshToken, user }
+      setToken(data?.accessToken, data?.refreshToken)
       navigate('/')
     } catch (err) {
       if (err instanceof ApiError) {
@@ -100,8 +101,10 @@ export default function Login() {
         aria-hidden
         className="pointer-events-none fixed inset-0 overflow-hidden"
       >
-        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full opacity-[0.06]"
-          style={{ background: 'radial-gradient(ellipse at center, #2DD4BF, #6366F1)' }} />
+        <div
+          className="absolute -top-32 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full opacity-[0.06]"
+          style={{ background: 'radial-gradient(ellipse at center, #2DD4BF, #6366F1)' }}
+        />
       </div>
 
       {/* Card */}
@@ -129,7 +132,6 @@ export default function Login() {
                   return (
                     <OAuthButton
                       key={name}
-                      provider={name}
                       href={`${BASE}/auth/oauth/${name}`}
                       icon={meta.icon}
                     >
@@ -208,7 +210,12 @@ export default function Login() {
                   : 'linear-gradient(135deg, #2DD4BF, #6366F1)',
               }}
             >
-              {loading ? 'Signing in…' : 'Sign in'}
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Spinner />
+                  Signing in…
+                </span>
+              ) : 'Sign in'}
             </button>
           </form>
         </div>
@@ -230,5 +237,21 @@ export default function Login() {
         </p>
       </div>
     </div>
+  )
+}
+
+function Spinner() {
+  return (
+    <svg
+      className="animate-spin"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+    >
+      <path strokeLinecap="round" d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+    </svg>
   )
 }

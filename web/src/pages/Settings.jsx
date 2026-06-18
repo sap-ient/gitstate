@@ -1,6 +1,5 @@
-/**
- * Settings page stub — org/member/billing/API settings live here in Wave B3+.
- */
+import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../lib/useAuth.js'
 
 function Section({ title, description, children }) {
   return (
@@ -16,7 +15,7 @@ function Section({ title, description, children }) {
   )
 }
 
-function FieldRow({ label, value, hint }) {
+function FieldRow({ label, value, hint, action }) {
   return (
     <div className="flex items-center gap-4 py-3 border-b border-[#1e2d45] last:border-0">
       <div className="flex-1 min-w-0">
@@ -24,14 +23,35 @@ function FieldRow({ label, value, hint }) {
         {hint && <p className="text-xs text-[#334155] mt-0.5">{hint}</p>}
       </div>
       <div className="text-sm font-mono text-[#64748b] truncate max-w-[200px]">{value ?? '—'}</div>
-      <button className="text-xs text-[#2DD4BF] hover:text-[#5eead4] transition-colors duration-150 shrink-0">
-        Edit
-      </button>
+      {action ?? (
+        <button className="text-xs text-[#2DD4BF] hover:text-[#5eead4] transition-colors duration-150 shrink-0">
+          Edit
+        </button>
+      )}
+    </div>
+  )
+}
+
+function Avatar({ user }) {
+  const initials = user?.name
+    ? user.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+    : user?.email?.slice(0, 2).toUpperCase() ?? '?'
+  return (
+    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#2DD4BF] to-[#6366F1] flex items-center justify-center text-sm font-bold text-[#0B1120] select-none shrink-0">
+      {initials}
     </div>
   )
 }
 
 export default function Settings() {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+
+  async function handleSignOut() {
+    await logout()
+    navigate('/login', { replace: true })
+  }
+
   return (
     <div className="max-w-2xl">
       <div className="mb-8">
@@ -39,10 +59,49 @@ export default function Settings() {
         <p className="text-sm text-[#64748b] mt-1">Workspace and account preferences.</p>
       </div>
 
-      <Section title="Profile" description="Your personal account details.">
-        <FieldRow label="Display name" value="—" hint="Shown on commits and mentions" />
-        <FieldRow label="Email" value="—" hint="Used for auth and notifications" />
-        <FieldRow label="Password" value="••••••••" hint="Last changed: —" />
+      {/* Account section — shows real signed-in user */}
+      <Section title="Account" description="Your personal account details.">
+        {/* Avatar + identity row */}
+        <div className="flex items-center gap-4 pb-4 mb-2 border-b border-[#1e2d45]">
+          <Avatar user={user} />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-[#e2e8f0] truncate">
+              {user?.name ?? 'Unknown'}
+            </p>
+            <p className="text-xs text-[#64748b] truncate mt-0.5">{user?.email ?? ''}</p>
+            {user?.role && (
+              <span className="inline-block mt-1.5 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-[#1a2d4a] text-[#2DD4BF] border border-[#2DD4BF]/20 uppercase tracking-wide">
+                {user.role}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={handleSignOut}
+            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-[#1e2d45] text-[#94a3b8] hover:border-red-500/30 hover:text-red-400 transition-all duration-150 shrink-0"
+          >
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round"
+                d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" />
+            </svg>
+            Sign out
+          </button>
+        </div>
+
+        <FieldRow
+          label="Display name"
+          value={user?.name}
+          hint="Shown on commits and mentions"
+        />
+        <FieldRow
+          label="Email"
+          value={user?.email}
+          hint="Used for auth and notifications"
+        />
+        <FieldRow
+          label="Password"
+          value="••••••••"
+          hint="Change your password"
+        />
       </Section>
 
       <Section title="Organization" description="Your workspace settings. (Wave B2)">
@@ -62,9 +121,7 @@ export default function Settings() {
             <p className="text-sm text-[#e2e8f0]">GitHub</p>
             <p className="text-xs text-[#64748b]">Not connected</p>
           </div>
-          <button
-            className="text-xs font-medium px-3 py-1.5 rounded-lg border border-[#1e2d45] text-[#94a3b8] hover:border-[#2DD4BF]/40 hover:text-[#2DD4BF] transition-all duration-150"
-          >
+          <button className="text-xs font-medium px-3 py-1.5 rounded-lg border border-[#1e2d45] text-[#94a3b8] hover:border-[#2DD4BF]/40 hover:text-[#2DD4BF] transition-all duration-150">
             Connect
           </button>
         </div>
@@ -81,9 +138,7 @@ export default function Settings() {
             <p className="text-sm text-[#e2e8f0]">GitLab</p>
             <p className="text-xs text-[#64748b]">Not connected</p>
           </div>
-          <button
-            className="text-xs font-medium px-3 py-1.5 rounded-lg border border-[#1e2d45] text-[#94a3b8] hover:border-[#2DD4BF]/40 hover:text-[#2DD4BF] transition-all duration-150"
-          >
+          <button className="text-xs font-medium px-3 py-1.5 rounded-lg border border-[#1e2d45] text-[#94a3b8] hover:border-[#2DD4BF]/40 hover:text-[#2DD4BF] transition-all duration-150">
             Connect
           </button>
         </div>

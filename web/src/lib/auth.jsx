@@ -1,6 +1,11 @@
 import { useState, useCallback } from 'react'
 import { AuthCtx } from './useAuth.js'
-import { getToken, setToken as storeToken, logout as apiLogout } from './api.js'
+import {
+  getToken,
+  setTokenPair as storeTokenPair,
+  clearTokens,
+  logout as apiLogout,
+} from './api.js'
 
 function parseJwt(token) {
   try {
@@ -16,30 +21,50 @@ function userFromToken(token) {
   const claims = parseJwt(token)
   if (!claims) return null
   return {
-    userId: claims.user_id ?? claims.sub,
-    orgId: claims.org_id,
-    role: claims.role,
-    email: claims.email,
-    name: claims.name,
+    id: claims.user_id ?? claims.sub ?? null,
+    orgId: claims.org_id ?? null,
+    role: claims.role ?? null,
+    email: claims.email ?? null,
+    name: claims.name ?? null,
   }
 }
 
 export function AuthProvider({ children }) {
-  const [token, setTokenState] = useState(() => getToken())
-  const user = userFromToken(token)
+  const [accessToken, setAccessToken] = useState(() => getToken())
+  const user = userFromToken(accessToken)
 
-  const setToken = useCallback((t) => {
-    storeToken(t)
-    setTokenState(t)
+  /**
+   * Store a full token pair and update React state so the app reflects the new auth status.
+   * Called after login / signup / refresh.
+   */
+  const setToken = useCallback((accessTok, refreshTok) => {
+    storeTokenPair(accessTok, refreshTok ?? null)
+    setAccessToken(accessTok ?? null)
   }, [])
 
-  const logout = useCallback(() => {
-    apiLogout()
-    setTokenState(null)
+  /**
+   * Sign out: call the API (fire-and-forget), then clear all local tokens.
+   */
+  const logout = useCallback(async () => {
+    try {
+      await apiLogout()
+    } catch {
+      // If the API call fails, we still clear local state
+      clearTokens()
+    }
+    setAccessToken(null)
   }, [])
 
   return (
-    <AuthCtx.Provider value={{ token, user, setToken, logout, isAuthed: !!token }}>
+    <AuthCtx.Provider
+      value={{
+        token: accessToken,
+        user,
+        setToken,
+        logout,
+        isAuthed: !!accessToken,
+      }}
+    >
       {children}
     </AuthCtx.Provider>
   )

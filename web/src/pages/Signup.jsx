@@ -4,6 +4,22 @@ import { signup, ApiError } from '../lib/api.js'
 import { useAuth } from '../lib/useAuth.js'
 import { LogoFull } from '../components/Logo.jsx'
 
+function Spinner() {
+  return (
+    <svg
+      className="animate-spin"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+    >
+      <path strokeLinecap="round" d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+    </svg>
+  )
+}
+
 export default function Signup() {
   const navigate = useNavigate()
   const { setToken, isAuthed } = useAuth()
@@ -11,6 +27,7 @@ export default function Signup() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -18,13 +35,28 @@ export default function Signup() {
     if (isAuthed) navigate('/', { replace: true })
   }, [isAuthed, navigate])
 
+  function validate() {
+    if (!name.trim()) return 'Full name is required.'
+    if (!email.trim()) return 'Email is required.'
+    if (password.length < 8) return 'Password must be at least 8 characters.'
+    if (password !== confirm) return 'Passwords do not match.'
+    return null
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
+    const validationErr = validate()
+    if (validationErr) {
+      setError(validationErr)
+      return
+    }
     setError(null)
     setLoading(true)
     try {
-      const data = await signup(email, password, name)
-      setToken(data?.token)
+      // API: POST /auth/signup { email, name, password }
+      //      → { accessToken, refreshToken, user }
+      const data = await signup(email, name.trim(), password)
+      setToken(data?.accessToken, data?.refreshToken)
       navigate('/')
     } catch (err) {
       if (err instanceof ApiError) {
@@ -36,6 +68,9 @@ export default function Signup() {
       setLoading(false)
     }
   }
+
+  // Live confirm-match indicator
+  const confirmMismatch = confirm.length > 0 && confirm !== password
 
   return (
     <div className="min-h-screen bg-[#0B1120] flex flex-col items-center justify-center px-4 py-12">
@@ -60,7 +95,8 @@ export default function Signup() {
             Start tracking your projects from git
           </p>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            {/* Full name */}
             <div>
               <label className="block text-xs font-medium text-[#94a3b8] mb-1.5" htmlFor="name">
                 Full name
@@ -77,6 +113,7 @@ export default function Signup() {
               />
             </div>
 
+            {/* Email */}
             <div>
               <label className="block text-xs font-medium text-[#94a3b8] mb-1.5" htmlFor="email">
                 Email
@@ -93,6 +130,7 @@ export default function Signup() {
               />
             </div>
 
+            {/* Password */}
             <div>
               <label className="block text-xs font-medium text-[#94a3b8] mb-1.5" htmlFor="password">
                 Password
@@ -108,6 +146,34 @@ export default function Signup() {
                 placeholder="At least 8 characters"
                 className="w-full px-3.5 py-2.5 rounded-lg bg-[#0d1628] border border-[#1e2d45] text-sm text-[#e2e8f0] placeholder-[#334155] outline-none focus:border-[#2DD4BF] focus:ring-1 focus:ring-[#2DD4BF]/30 transition-all duration-150"
               />
+              {password.length > 0 && (
+                <PasswordStrength password={password} />
+              )}
+            </div>
+
+            {/* Confirm password */}
+            <div>
+              <label className="block text-xs font-medium text-[#94a3b8] mb-1.5" htmlFor="confirm">
+                Confirm password
+              </label>
+              <input
+                id="confirm"
+                type="password"
+                autoComplete="new-password"
+                required
+                value={confirm}
+                onChange={e => setConfirm(e.target.value)}
+                placeholder="Re-enter your password"
+                className={[
+                  'w-full px-3.5 py-2.5 rounded-lg bg-[#0d1628] border text-sm text-[#e2e8f0] placeholder-[#334155] outline-none transition-all duration-150',
+                  confirmMismatch
+                    ? 'border-red-500/50 focus:border-red-400 focus:ring-1 focus:ring-red-400/20'
+                    : 'border-[#1e2d45] focus:border-[#2DD4BF] focus:ring-1 focus:ring-[#2DD4BF]/30',
+                ].join(' ')}
+              />
+              {confirmMismatch && (
+                <p className="text-xs text-red-400 mt-1">Passwords don&apos;t match.</p>
+              )}
             </div>
 
             {error && (
@@ -129,7 +195,12 @@ export default function Signup() {
                   : 'linear-gradient(135deg, #2DD4BF, #6366F1)',
               }}
             >
-              {loading ? 'Creating account…' : 'Create account'}
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Spinner />
+                  Creating account…
+                </span>
+              ) : 'Create account'}
             </button>
           </form>
 
@@ -155,6 +226,41 @@ export default function Signup() {
           open-source · self-hostable · AGPL-3.0
         </p>
       </div>
+    </div>
+  )
+}
+
+/** Visual password-strength meter. */
+function PasswordStrength({ password }) {
+  const checks = [
+    password.length >= 8,
+    /[A-Z]/.test(password),
+    /[0-9]/.test(password),
+    /[^A-Za-z0-9]/.test(password),
+  ]
+  const strength = checks.filter(Boolean).length
+
+  const label = ['', 'Weak', 'Fair', 'Good', 'Strong'][strength]
+  const colors = ['', '#ef4444', '#f59e0b', '#3b82f6', '#2DD4BF']
+
+  return (
+    <div className="mt-2">
+      <div className="flex gap-1 mb-1">
+        {[1, 2, 3, 4].map(i => (
+          <div
+            key={i}
+            className="h-0.5 flex-1 rounded-full transition-all duration-300"
+            style={{
+              background: i <= strength ? colors[strength] : '#1e2d45',
+            }}
+          />
+        ))}
+      </div>
+      {label && (
+        <p className="text-xs" style={{ color: colors[strength] }}>
+          {label}
+        </p>
+      )}
     </div>
   )
 }
