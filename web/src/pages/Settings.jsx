@@ -123,7 +123,15 @@ export default function Settings() {
         <FieldRow
           label="Plan"
           value={activeOrg?.planKey ? activeOrg.planKey.charAt(0).toUpperCase() + activeOrg.planKey.slice(1) : 'Free'}
-          hint="Billing available in Wave E"
+          hint="Manage your plan and invoices"
+          action={
+            <Link
+              to="/settings/billing"
+              className="text-xs text-[#2DD4BF] hover:text-[#5eead4] transition-colors duration-150 shrink-0"
+            >
+              Billing
+            </Link>
+          }
         />
         <FieldRow
           label="Your role"

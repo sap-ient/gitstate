@@ -17,8 +17,8 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
 | 2b | Identity/tenancy: oauth (google/ms) · orgs/members/invites · web org UX | ✅ done |
 | 3 | Git engine (read, sync, llm, work UI) | ✅ done |
 | 4 | Metrics, reporting (NL→report), capacity/PTO, dashboards | ✅ done |
-| 5 | Billing (EE): Paystack, USD→ZAR, billsim | ⏳ dispatched |
-| 6 | Super admin (EE) + security pass | ⬜ |
+| 5 | Billing (EE): Paystack, USD→ZAR, billsim | ✅ done |
+| 6 | Super admin (EE) + security pass | ⏳ dispatched |
 | 7 | Deploy & OSS hygiene | ⬜ |
 
 ## Contracts (so parallel agents stay compatible)
@@ -97,3 +97,13 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
   time-entries|capacity) · web (Dashboard home, /cycle-time SVG charts, /involvement texture cards "not a productivity
   score", NL query box w/ SQL shown, /capacity editor, burndown). Wired 3 registrars→router. Integrated green
   (build/vet/tidy, web build+lint, boot-smoke; 2 migrations present). Committed.
+- W5: billing. internal/billing core (`RegisterBillingRoutes`, runtime-gated cfg.Billing.Enabled; GenerateInvoice w/
+  per-builder seats [stakeholders free P6] + git-evidence lines + is_estimated/confirmation_required gaps P4;
+  CurrentUsage/PlanCeiling; 13 store funcs in store/billing.go) · ee/billing (BUILD-TAGGED: paystack.go //go:build ee
+  real checkout/webhook/verify, charges ZAR via exchange.Convert, HMAC-SHA512 webhook verify constant-time + idempotent;
+  stub.go //go:build !ee no-op; ee/billing/LICENSE.md) · cmd/billsim (viability sim: -34%@100, +56.6%@1k, +60.5%@10k;
+  LLM cost the lever, ⚠ flags tiers underwater) · web Billing page (USD-billed/ZAR-charged shown, stakeholders-free
+  explicit, evidence/estimated invoice lines, Paystack checkout+return). Wired RegisterBillingRoutes +
+  eebilling.RegisterPaystackRoutes→router. Integrated: `go build ./...` AND `go build -tags ee ./...` both green,
+  vet+web+billsim+boot-smoke clean. Committed.
+- EE build: default = OSS (Paystack stub). Cloud = `go build -tags ee`. Billing routes also runtime-gated by Billing.Enabled.

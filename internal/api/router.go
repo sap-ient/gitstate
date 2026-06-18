@@ -9,6 +9,8 @@ import (
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
 	"github.com/exo/gitstate/internal/middleware"
+
+	eebilling "github.com/exo/gitstate/ee/billing"
 )
 
 // NewRouter builds and returns the fully wired http.Handler for gitstate.
@@ -31,6 +33,9 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 		RegisterMetricsRoutes(mux, database, cfg)
 		RegisterReportRoutes(mux, database, cfg)
 		RegisterCapacityRoutes(mux, database, cfg)
+		RegisterBillingRoutes(mux, database, cfg)
+		// EE Paystack charging: real when built with -tags ee, no-op stub otherwise.
+		eebilling.RegisterPaystackRoutes(mux, database, cfg)
 	}
 
 	// Apply middleware chain.

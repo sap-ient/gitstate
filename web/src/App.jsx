@@ -14,6 +14,7 @@ import Board from './pages/Board.jsx'
 import CycleTime from './pages/CycleTime.jsx'
 import Involvement from './pages/Involvement.jsx'
 import Capacity from './pages/Capacity.jsx'
+import Billing from './pages/Billing.jsx'
 
 export default function App() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/capacity" element={<Capacity />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/settings/members" element={<Members />} />
+            <Route path="/settings/billing" element={<Billing />} />
             {/* Legacy home stub still accessible */}
             <Route path="/home" element={<Home />} />
           </Route>
