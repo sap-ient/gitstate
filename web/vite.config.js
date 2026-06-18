@@ -13,4 +13,15 @@ export default defineConfig({
     tailwindcss(),
     react(),
   ],
+  // Dev: the frontend uses relative API paths; proxy them to the Go backend on :8080
+  // so there's no cross-origin/CORS concern in `npm run dev` / `dev:full`.
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': 'http://localhost:8080',
+      '/auth': 'http://localhost:8080',
+      '/admin': 'http://localhost:8080',
+      '/healthz': 'http://localhost:8080',
+    },
+  },
 })

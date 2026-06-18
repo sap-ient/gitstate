@@ -4,10 +4,12 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -146,10 +148,49 @@ func expandEnv(s string) string {
 	})
 }
 
+// loadDotEnv loads .env.<GITSTATE_ENV> (default dev) then .env from the working
+// directory, setting only vars that aren't already present in the environment.
+func loadDotEnv() {
+	env := os.Getenv("GITSTATE_ENV")
+	if env == "" {
+		env = "dev"
+	}
+	for _, path := range []string{".env." + env, ".env"} {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			k, v, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			k = strings.TrimSpace(k)
+			v = strings.Trim(strings.TrimSpace(v), `"'`)
+			if k != "" {
+				if _, exists := os.LookupEnv(k); !exists {
+					_ = os.Setenv(k, v)
+				}
+			}
+		}
+		_ = f.Close()
+	}
+}
+
 // Load reads config from the file named by CONFIG_FILE env var (defaults to "config.yaml"),
 // expands ${ENV_VAR} references, then overlays raw env vars. Env always wins.
 // Returns a valid *Config even if the file is absent (pure env-var config is fine).
 func Load() (*Config, error) {
+	// Load .env.<GITSTATE_ENV> then .env (like cmd/migrate), so `go run ./cmd/gitstate`
+	// and `go run ./cmd/seed` pick up local config without exporting vars by hand.
+	// Existing env vars are never overwritten (real env still wins).
+	loadDotEnv()
+
 	cfg := defaultConfig()
 
 	configFile := os.Getenv("CONFIG_FILE")
