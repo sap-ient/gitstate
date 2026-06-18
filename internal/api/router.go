@@ -28,6 +28,9 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 		RegisterOrgRoutes(mux, database, cfg)
 		RegisterProjectRoutes(mux, database, cfg)
 		RegisterSyncRoutes(mux, database, cfg)
+		RegisterMetricsRoutes(mux, database, cfg)
+		RegisterReportRoutes(mux, database, cfg)
+		RegisterCapacityRoutes(mux, database, cfg)
 	}
 
 	// Apply middleware chain.

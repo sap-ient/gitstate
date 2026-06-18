@@ -16,8 +16,8 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
 | 2 | Auth (JWT+refresh+argon2) · Exchange (USD↔ZAR) · Web auth flows | ✅ done |
 | 2b | Identity/tenancy: oauth (google/ms) · orgs/members/invites · web org UX | ✅ done |
 | 3 | Git engine (read, sync, llm, work UI) | ✅ done |
-| 4 | Metrics & reporting | ⏳ dispatched |
-| 5 | Billing (EE): Paystack, USD→ZAR, billsim | ⬜ |
+| 4 | Metrics, reporting (NL→report), capacity/PTO, dashboards | ✅ done |
+| 5 | Billing (EE): Paystack, USD→ZAR, billsim | ⏳ dispatched |
 | 6 | Super admin (EE) + security pass | ⬜ |
 | 7 | Deploy & OSS hygiene | ⬜ |
 
@@ -89,3 +89,11 @@ avoid parallel git-index races). Waves & scope: see [`roadmap.md` §4](./roadmap
 - sync: `RegisterSyncRoutes`; issues store `UpsertIssue/ListIssues/SetDerivedState/CreateNativeIssue/GetIssue`.
 - llm: `llm.New(cfg)`, `EstimateDifficulty(ctx,diff,meta)`, `SynthesizeStatus`; estimates store `SaveEstimate/GetEstimateForPR|Issue`.
 - projects: `RegisterProjectRoutes`, store `ListProjects/CreateProject` (org-scoped via WithOrg).
+- W4: metrics (`RegisterMetricsRoutes`; ComputeCycleTimes/Involvement[texture, no score field anywhere]/EstimateForPR;
+  /api/metrics/cycle-time|involvement|estimate) · reporting (`RegisterReportRoutes`; Dashboard/Burndown/AnswerQuery
+  NL→report w/ 4-layer safety: constrained prompt → SELECT-only validateSQL → read-only tx+5s timeout → RLS via WithOrg;
+  /api/reports/dashboard|burndown|query; added internal/llm/complete.go) · capacity (migration 20260618_002_capacity.sql:
+  leave_entries/availability/time_entries +RLS; EffectiveCapacity=available−approvedLeave; /api/leave|availability|
+  time-entries|capacity) · web (Dashboard home, /cycle-time SVG charts, /involvement texture cards "not a productivity
+  score", NL query box w/ SQL shown, /capacity editor, burndown). Wired 3 registrars→router. Integrated green
+  (build/vet/tidy, web build+lint, boot-smoke; 2 migrations present). Committed.

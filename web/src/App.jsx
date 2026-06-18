@@ -4,12 +4,16 @@ import { AppShell } from './components/AppShell.jsx'
 import Login from './pages/Login.jsx'
 import Signup from './pages/Signup.jsx'
 import Home from './pages/Home.jsx'
+import Dashboard from './pages/Dashboard.jsx'
 import Projects from './pages/Projects.jsx'
 import Settings from './pages/Settings.jsx'
 import Members from './pages/Members.jsx'
 import InviteAccept from './pages/InviteAccept.jsx'
 import Repos from './pages/Repos.jsx'
 import Board from './pages/Board.jsx'
+import CycleTime from './pages/CycleTime.jsx'
+import Involvement from './pages/Involvement.jsx'
+import Capacity from './pages/Capacity.jsx'
 
 export default function App() {
   return (
@@ -25,16 +29,23 @@ export default function App() {
 
           {/* Protected app shell — redirects to /login if not authed */}
           <Route element={<AppShell />}>
-            <Route index element={<Home />} />
-            <Route path="/projects" element={<Projects />} />
+            {/* Post-login home is now the dashboard */}
+            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/board" element={<Board />} />
+            <Route path="/projects" element={<Projects />} />
             <Route path="/repos" element={<Repos />} />
+            <Route path="/cycle-time" element={<CycleTime />} />
+            <Route path="/involvement" element={<Involvement />} />
+            <Route path="/capacity" element={<Capacity />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/settings/members" element={<Members />} />
+            {/* Legacy home stub still accessible */}
+            <Route path="/home" element={<Home />} />
           </Route>
 
           {/* Catch-all */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

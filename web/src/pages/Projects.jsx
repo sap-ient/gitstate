@@ -1,9 +1,11 @@
 /**
  * Projects page — list projects, create new ones, link to filtered board.
+ * Shows burndown chart when a project card is selected.
  */
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjects } from '../lib/useProjects.js'
+import { BurndownChart } from '../components/BurndownChart.jsx'
 
 function CreateProjectModal({ onClose, onCreate }) {
   const [name, setName] = useState('')
@@ -156,11 +158,12 @@ export default function Projects() {
   const navigate = useNavigate()
   const { projects, loading, error, createProject } = useProjects()
   const [showCreate, setShowCreate] = useState(false)
+  const [selectedProjectId, setSelectedProjectId] = useState(null)
 
   const handleProjectClick = useCallback((project) => {
-    // Navigate to board filtered by this project
-    navigate(`/board?project=${project.id}`)
-  }, [navigate])
+    // Toggle burndown panel; navigate to board on double-click / navigate button
+    setSelectedProjectId(prev => prev === project.id ? null : project.id)
+  }, [])
 
   return (
     <div className="max-w-4xl">
@@ -233,11 +236,49 @@ export default function Projects() {
 
       {/* Project grid */}
       {!loading && projects.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {projects.map(p => (
-            <ProjectCard key={p.id} project={p} onClick={handleProjectClick} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {projects.map(p => (
+              <div
+                key={p.id}
+                style={{
+                  outline: selectedProjectId === p.id ? '2px solid rgba(45,212,191,0.35)' : 'none',
+                  borderRadius: 12,
+                }}
+              >
+                <ProjectCard project={p} onClick={handleProjectClick} />
+              </div>
+            ))}
+          </div>
+
+          {/* Burndown panel — shown below grid when a project is selected */}
+          {selectedProjectId && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-[#e2e8f0]">
+                  Burndown — {projects.find(p => p.id === selectedProjectId)?.name ?? ''}
+                </h2>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => navigate(`/board?project=${selectedProjectId}`)}
+                    className="text-xs font-medium text-[#2DD4BF] hover:underline"
+                  >
+                    Open board
+                  </button>
+                  <button
+                    onClick={() => setSelectedProjectId(null)}
+                    className="text-[#475569] hover:text-[#94a3b8] transition-colors"
+                  >
+                    <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <BurndownChart projectId={selectedProjectId} />
+            </div>
+          )}
+        </>
       )}
 
       {/* Create modal */}
