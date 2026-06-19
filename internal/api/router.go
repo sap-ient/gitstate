@@ -31,6 +31,8 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 	// Public, unauthenticated client-invoice share view (token-scoped, read-only).
 	if database != nil {
 		RegisterPublicInvoiceRoute(mux, database)
+		// Inbound GitHub/GitLab webhook receiver (signature-verified, no session auth).
+		RegisterWebhookReceiver(mux, database)
 	}
 
 	// Feature route registration (orchestrator-wired; see PROGRESS.md route-wiring rule).
@@ -52,6 +54,8 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 		RegisterPlanningRoutes(mux, database, cfg)
 		RegisterInvoiceRoutes(mux, database, cfg)
 		RegisterNotificationRoutes(mux, database, cfg)
+		RegisterWebhookRoutes(mux, database, cfg)
+		RegisterImportRoutes(mux, database, cfg)
 		RegisterReportRoutes(mux, database, cfg)
 		RegisterCapacityRoutes(mux, database, cfg)
 		RegisterBillingRoutes(mux, database, cfg)

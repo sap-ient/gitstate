@@ -73,44 +73,57 @@ type windowResp struct {
 
 type doraResp struct {
 	// Change failure rate — REAL, from SZZ. The hero stat.
-	ChangeFailureRate    *float64           `json:"changeFailureRate"` // [0,1] or null (no merged PRs)
-	ChangeFailureReal    bool               `json:"changeFailureReal"` // always true — derived from SZZ
-	ChangeFailureNote    string             `json:"changeFailureNote"`
-	MergedPRs            int                `json:"mergedPrs"`
-	BugFixChanges        int                `json:"bugFixChanges"`
-	BugFixLines          int                `json:"bugFixLines"`
-	ChangeFailureTrend   []cfPointResp      `json:"changeFailureTrend"`
+	ChangeFailureRate  *float64      `json:"changeFailureRate"` // [0,1] or null (no merged PRs)
+	ChangeFailureReal  bool          `json:"changeFailureReal"` // always true — derived from SZZ
+	ChangeFailureNote  string        `json:"changeFailureNote"`
+	MergedPRs          int           `json:"mergedPrs"`
+	BugFixChanges      int           `json:"bugFixChanges"`
+	BugFixLines        int           `json:"bugFixLines"`
+	ChangeFailureTrend []cfPointResp `json:"changeFailureTrend"`
 
 	// Lead time — REAL, from cycle_times / PR spans.
 	LeadTimeP50Hours *float64        `json:"leadTimeP50Hours"`
 	LeadTimeP90Hours *float64        `json:"leadTimeP90Hours"`
 	LeadTimeTrend    []leadPointResp `json:"leadTimeTrend"`
 
-	// Deploy frequency — PROXY (merge-based). Honestly marked.
+	// Deploy frequency — REAL (deploys/week) when deployments exist, else a
+	// clearly-marked merge-based PROXY.
 	DeployFrequency proxyMetric `json:"deployFrequency"`
 
-	// MTTR — placeholder, needs CI. Honestly marked.
+	// MTTR — REAL (mean incident resolution hours) when incidents exist, else an
+	// honest needs-CI placeholder.
 	MTTR needsCIMetric `json:"mttr"`
+
+	// CI change-failure rate — REAL (failed deploys ÷ total deploys) when
+	// deployments exist. Sits alongside the SZZ change-failure signal. Null when
+	// no deployments.
+	CIChangeFailureRate *float64 `json:"ciChangeFailureRate"`
+	CIDeploys           int      `json:"ciDeploys"`
+	CIDeployFailures    int      `json:"ciDeployFailures"`
+	HasCIData           bool     `json:"hasCiData"`
 }
 
 type proxyMetric struct {
-	Value   *float64 `json:"value"` // merges per week
-	Unit    string   `json:"unit"`
-	Proxy   bool     `json:"proxy"`
-	Note    string   `json:"note"`
+	Value *float64 `json:"value"` // deploys/week (real) or merges/week (proxy)
+	Unit  string   `json:"unit"`
+	Proxy bool     `json:"proxy"` // true = merge-based proxy; false = real CI deploys
+	Real  bool     `json:"real"`  // true = backed by deployments table
+	Note  string   `json:"note"`
 }
 
 type needsCIMetric struct {
-	Value   *float64 `json:"value"` // always null until CI is connected
+	Value   *float64 `json:"value"` // real MTTR hours when incidents exist, else null
 	Unit    string   `json:"unit"`
-	NeedsCI bool     `json:"needsCI"`
+	NeedsCI bool     `json:"needsCI"` // true = honest placeholder (no incident data)
+	Real    bool     `json:"real"`    // true = backed by incidents table
 	Note    string   `json:"note"`
+	Open    int      `json:"open"` // incidents still open in window (texture)
 }
 
 type cfPointResp struct {
-	Week     string  `json:"week"`
-	Merged   int     `json:"merged"`
-	BugFixes int     `json:"bugFixes"`
+	Week     string   `json:"week"`
+	Merged   int      `json:"merged"`
+	BugFixes int      `json:"bugFixes"`
 	Rate     *float64 `json:"rate"` // bugFixes/merged for the week, or null
 }
 
@@ -137,12 +150,12 @@ type reviewerLoadResp struct {
 }
 
 type busFactorResp struct {
-	TruckFactor       int             `json:"truckFactor"`
-	TotalSurviving    int             `json:"totalSurviving"`
-	OwnerShare        []ownerResp     `json:"ownerShare"`
-	Areas             []areaResp      `json:"areas"`
-	SingleOwnerAreas  []areaResp      `json:"singleOwnerAreas"` // areas where one author owns ≥80%
-	Note              string          `json:"note"`
+	TruckFactor      int         `json:"truckFactor"`
+	TotalSurviving   int         `json:"totalSurviving"`
+	OwnerShare       []ownerResp `json:"ownerShare"`
+	Areas            []areaResp  `json:"areas"`
+	SingleOwnerAreas []areaResp  `json:"singleOwnerAreas"` // areas where one author owns ≥80%
+	Note             string      `json:"note"`
 }
 
 type ownerResp struct {
@@ -194,6 +207,7 @@ func (h *engHealthHandlers) engHealth(w http.ResponseWriter, r *http.Request) {
 	var (
 		lead     store.LeadTimeStats
 		delivery store.DeliveryCounts
+		ci       store.CIDelivery
 		cfTrend  []store.ChangeFailurePoint
 		review   store.ReviewHealth
 		bus      store.BusFactor
@@ -206,6 +220,9 @@ func (h *engHealthHandlers) engHealth(w http.ResponseWriter, r *http.Request) {
 			return e
 		}
 		if delivery, e = store.DeliverySignals(r.Context(), tx, orgID, win); e != nil {
+			return e
+		}
+		if ci, e = store.CIDeliverySignals(r.Context(), tx, orgID, win); e != nil {
 			return e
 		}
 		if cfTrend, e = store.ChangeFailureTrend(r.Context(), tx, orgID, win); e != nil {
@@ -228,7 +245,7 @@ func (h *engHealthHandlers) engHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := assembleEngHealth(win, lead, delivery, cfTrend, review, bus, debt)
+	resp := assembleEngHealth(win, lead, delivery, ci, cfTrend, review, bus, debt)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -238,6 +255,7 @@ func assembleEngHealth(
 	win store.EngHealthWindow,
 	lead store.LeadTimeStats,
 	delivery store.DeliveryCounts,
+	ci store.CIDelivery,
 	cfTrend []store.ChangeFailurePoint,
 	review store.ReviewHealth,
 	bus store.BusFactor,
@@ -291,25 +309,65 @@ func assembleEngHealth(
 		})
 	}
 
-	// Deploy frequency PROXY: merged PRs per week over the window.
-	resp.Dora.DeployFrequency = proxyMetric{
-		Unit:  "merges/week",
-		Proxy: true,
-		Note:  "merge-based proxy — connect CI for true deployment frequency",
-	}
-	if days > 0 && delivery.MergedPRs > 0 {
-		perWeek := round1(float64(delivery.MergedPRs) / (float64(days) / 7.0))
-		resp.Dora.DeployFrequency.Value = &perWeek
-	} else if delivery.MergedPRs == 0 {
-		zero := 0.0
-		resp.Dora.DeployFrequency.Value = &zero
+	// Deploy frequency — REAL when deployments exist, else merge-based PROXY.
+	if ci.HasDeployments {
+		resp.Dora.DeployFrequency = proxyMetric{
+			Unit: "deploys/week",
+			Real: true,
+			Note: "real: deployments ingested via webhooks/CI in this window",
+		}
+		dDays := ci.WindowDays
+		if dDays <= 0 {
+			dDays = days
+		}
+		if dDays > 0 {
+			perWeek := round1(float64(ci.Deploys) / (float64(dDays) / 7.0))
+			resp.Dora.DeployFrequency.Value = &perWeek
+		}
+	} else {
+		resp.Dora.DeployFrequency = proxyMetric{
+			Unit:  "merges/week",
+			Proxy: true,
+			Note:  "merge-based proxy — connect CI for true deployment frequency",
+		}
+		if days > 0 && delivery.MergedPRs > 0 {
+			perWeek := round1(float64(delivery.MergedPRs) / (float64(days) / 7.0))
+			resp.Dora.DeployFrequency.Value = &perWeek
+		} else if delivery.MergedPRs == 0 {
+			zero := 0.0
+			resp.Dora.DeployFrequency.Value = &zero
+		}
 	}
 
-	// MTTR: honest placeholder.
-	resp.Dora.MTTR = needsCIMetric{
-		Unit:    "hours",
-		NeedsCI: true,
-		Note:    "needs CI/incident data — not yet ingested by gitstate",
+	// MTTR — REAL when incidents exist, else honest placeholder.
+	if ci.HasIncidents {
+		resp.Dora.MTTR = needsCIMetric{
+			Unit: "hours",
+			Real: true,
+			Open: ci.IncidentsOpen,
+			Note: "real: mean incident resolution time (resolved incidents in window)",
+		}
+		if ci.IncidentsResolved > 0 {
+			mttr := round1(ci.MTTRHours)
+			resp.Dora.MTTR.Value = &mttr
+		}
+	} else {
+		resp.Dora.MTTR = needsCIMetric{
+			Unit:    "hours",
+			NeedsCI: true,
+			Note:    "needs CI/incident data — record deployments/incidents for real MTTR",
+		}
+	}
+
+	// CI change-failure rate — REAL (failed deploys ÷ total deploys) when present.
+	if ci.HasDeployments {
+		resp.Dora.HasCIData = true
+		resp.Dora.CIDeploys = ci.Deploys
+		resp.Dora.CIDeployFailures = ci.DeployFailures
+		if ci.Deploys > 0 {
+			r := clamp01(float64(ci.DeployFailures) / float64(ci.Deploys))
+			resp.Dora.CIChangeFailureRate = &r
+		}
 	}
 
 	// ── Review health ─────────────────────────────────────────────────────────
@@ -386,7 +444,8 @@ func assembleEngHealth(
 	}
 	resp.TechDebt = hot
 
-	resp.HasDeepData = bus.TotalSurviving > 0 || delivery.BugFixes > 0 || len(debt) > 0
+	resp.HasDeepData = bus.TotalSurviving > 0 || delivery.BugFixes > 0 || len(debt) > 0 ||
+		ci.HasDeployments || ci.HasIncidents
 
 	return resp
 }

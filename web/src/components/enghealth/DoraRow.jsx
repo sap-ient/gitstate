@@ -58,6 +58,14 @@ function HeroChangeFailure({ dora, loading }) {
         Derived from SZZ blame — the share of shipped changes a later fix had to repair.
         This is gitstate's real defect signal, not a CI guess.
       </p>
+      {dora?.hasCiData && (
+        <div className="mt-2 flex items-center gap-2 relative">
+          <ProvenanceTag kind="live" note="Real: failed deployments ÷ total deployments in window (CI-grounded)." />
+          <span className="text-[11px] font-mono text-[var(--text-faint)]">
+            CI change-failure {fmtPct(dora.ciChangeFailureRate)} · {fmtNum(dora.ciDeployFailures)}/{fmtNum(dora.ciDeploys)} deploys
+          </span>
+        </div>
+      )}
     </Card>
   )
 }
@@ -194,18 +202,29 @@ export function DoraRow({ dora, loading }) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <MetricCard
-          label="Deploy frequency" accent="var(--text)"
+          label="Deploy frequency"
+          accent={d.deployFrequency?.real ? 'var(--brand-teal)' : 'var(--text)'}
           icon={<Rocket size={11} />} sub={d.deployFrequency?.unit || 'merges/week'}
           value={d.deployFrequency?.value == null ? '—' : fmtRate(d.deployFrequency.value, '')}
           loading={loading}
-          tag={<ProvenanceTag kind="proxy" note={d.deployFrequency?.note || 'merge-based proxy — connect CI for true deploys'} />}
+          tag={
+            d.deployFrequency?.real
+              ? <ProvenanceTag kind="live" note={d.deployFrequency?.note || 'real: deployments ingested via webhooks/CI'} />
+              : <ProvenanceTag kind="proxy" note={d.deployFrequency?.note || 'merge-based proxy — connect CI for true deploys'} />
+          }
         />
         <MetricCard
-          label="MTTR" accent="var(--text-faint)"
-          icon={<Wrench size={11} />} sub="time to restore"
-          value="—"
+          label="MTTR"
+          accent={d.mttr?.real ? 'var(--brand-indigo)' : 'var(--text-faint)'}
+          icon={<Wrench size={11} />}
+          sub={d.mttr?.real && d.mttr?.open > 0 ? `${d.mttr.open} open` : 'time to restore'}
+          value={d.mttr?.real ? fmtHours(d.mttr?.value) : '—'}
           loading={loading}
-          tag={<ProvenanceTag kind="needsCI" note={d.mttr?.note || 'needs CI/incident data — not yet ingested'} />}
+          tag={
+            d.mttr?.real
+              ? <ProvenanceTag kind="live" note={d.mttr?.note || 'real: mean incident resolution time'} />
+              : <ProvenanceTag kind="needsCI" note={d.mttr?.note || 'needs CI/incident data — not yet ingested'} />
+          }
         />
         <Card padding="md" className="sm:col-span-2 flex items-center gap-4">
           <div className="min-w-0">

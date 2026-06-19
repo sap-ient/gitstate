@@ -271,6 +271,9 @@ func main() {
 	// ── 10b. Client invoicing: demo clients + one generated invoice ───────
 	s.seedInvoicing(org.ID, projects)
 
+	// ── 10c. Deployments + incidents → REAL DORA deploy-freq + MTTR ────────
+	deployStats := s.seedDeployments(org.ID, repos)
+
 	// ── 11. Capacity: availability · leave types · leave · balances · time ─
 	s.seedAvailability(org.ID)
 	leaveTypes := s.seedLeaveTypes(org.ID)
@@ -281,6 +284,8 @@ func main() {
 	// ── Summary ───────────────────────────────────────────────────────────
 	s.printSummary(org, adminEmail, len(repos), len(projects),
 		commitStats, prStats, issueStats, leaveCount, timeCount)
+	fmt.Printf("   deployments: %d (%d failed) · incidents: %d resolved\n",
+		deployStats.deploys, deployStats.failures, deployStats.incidents)
 }
 
 // ── commit generation ───────────────────────────────────────────────────────
@@ -1497,6 +1502,175 @@ func (s *seeder) seedInvoicing(orgID string, projects []*projectRow) {
 		}
 		return nil
 	}))
+}
+
+// ── deployments + incidents (real DORA deploy-freq + MTTR) ────────────────────
+
+type deployTally struct {
+	deploys   int
+	failures  int
+	incidents int
+}
+
+// seedDeployments lays down ~40 CI/CD deployments across the repos over the
+// history window (mostly success, ~15% failures) plus a few incidents — most
+// resolved (failure→recovery), one or two left open — so Engineering Health
+// renders REAL deploy frequency, CI change-failure rate, and MTTR in the demo.
+// Failures open an incident that a later same-repo success deployment resolves,
+// yielding realistic MTTR samples.
+func (s *seeder) seedDeployments(orgID string, repos []*store.Repo) deployTally {
+	var tally deployTally
+
+	type depGen struct {
+		repoID     string
+		source     string
+		status     string
+		env        string
+		sha        string
+		extID      string
+		deployedAt time.Time
+	}
+
+	const totalDeploys = 42
+	gens := make([]depGen, 0, totalDeploys)
+
+	// Spread deployments across the last ~120 days (recent enough to land inside
+	// the dashboard's default 90-day window, with some older ones for trend).
+	const deployWindowDays = 120
+	for i := 0; i < totalDeploys; i++ {
+		repo := repos[rng.Intn(len(repos))]
+		daysBack := rng.Intn(deployWindowDays)
+		hour := 9 + rng.Intn(9) // working-hours deploys
+		at := now.AddDate(0, 0, -daysBack).Truncate(24 * time.Hour).Add(time.Duration(hour) * time.Hour)
+
+		status := "success"
+		if rng.Float64() < 0.15 { // ~15% failure rate
+			status = "failure"
+		}
+		source := "github_actions"
+		if repo.Platform == "gitlab" {
+			source = "gitlab_ci"
+		}
+		gens = append(gens, depGen{
+			repoID:     repo.ID,
+			source:     source,
+			status:     status,
+			env:        "production",
+			sha:        randHexSHA(),
+			extID:      fmt.Sprintf("seed-dep-%d", i),
+			deployedAt: at,
+		})
+		tally.deploys++
+		if status == "failure" {
+			tally.failures++
+		}
+	}
+	// Deterministic chronological order so incident open→resolve pairing is sane.
+	sort.Slice(gens, func(i, j int) bool { return gens[i].deployedAt.Before(gens[j].deployedAt) })
+
+	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		const q = `
+			INSERT INTO deployments (org_id, repo_id, environment, status, sha, source, external_id, deployed_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (org_id, source, external_id) DO UPDATE SET
+				status = EXCLUDED.status, deployed_at = EXCLUDED.deployed_at`
+		batch := &pgx.Batch{}
+		for _, g := range gens {
+			batch.Queue(q, orgID, g.repoID, g.env, g.status, g.sha, g.source, g.extID, g.deployedAt)
+		}
+		br := tx.SendBatch(s.ctx, batch)
+		defer br.Close()
+		for range gens {
+			if _, err := br.Exec(); err != nil {
+				return fmt.Errorf("seed: insert deployment: %w", err)
+			}
+		}
+		return nil
+	}))
+
+	// Incidents: walk deployments per repo; a failure opens an incident, the next
+	// success on the same repo resolves it (→ MTTR sample). Leave the most recent
+	// still-failing repo (if any) with an open incident for an honest "1 open".
+	type incGen struct {
+		repoID     string
+		title      string
+		severity   string
+		openedAt   time.Time
+		resolvedAt *time.Time
+	}
+	openByRepo := map[string]*incGen{}
+	var incidents []incGen
+	for _, g := range gens {
+		if g.status == "failure" {
+			if openByRepo[g.repoID] == nil {
+				openByRepo[g.repoID] = &incGen{
+					repoID:   g.repoID,
+					title:    "Failed production deploy",
+					severity: pickSeverity(),
+					openedAt: g.deployedAt,
+				}
+			}
+		} else { // success → resolve any open incident on this repo
+			if inc := openByRepo[g.repoID]; inc != nil {
+				// Resolve 1–8h after the failure for a realistic MTTR.
+				res := inc.openedAt.Add(time.Duration(60+rng.Intn(420)) * time.Minute)
+				if res.After(g.deployedAt) {
+					res = g.deployedAt
+				}
+				inc.resolvedAt = &res
+				incidents = append(incidents, *inc)
+				openByRepo[g.repoID] = nil
+			}
+		}
+	}
+	// Any still-open incidents (repo ended on a failure) stay open (resolved=NULL).
+	for _, inc := range openByRepo {
+		if inc != nil {
+			incidents = append(incidents, *inc)
+		}
+	}
+
+	if len(incidents) > 0 {
+		s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+			const q = `
+				INSERT INTO incidents (org_id, repo_id, title, opened_at, resolved_at, severity)
+				VALUES ($1, $2, $3, $4, $5, $6)`
+			batch := &pgx.Batch{}
+			for _, inc := range incidents {
+				batch.Queue(q, orgID, inc.repoID, inc.title, inc.openedAt, inc.resolvedAt, inc.severity)
+			}
+			br := tx.SendBatch(s.ctx, batch)
+			defer br.Close()
+			for range incidents {
+				if _, err := br.Exec(); err != nil {
+					return fmt.Errorf("seed: insert incident: %w", err)
+				}
+			}
+			return nil
+		}))
+	}
+	tally.incidents = len(incidents)
+	return tally
+}
+
+func pickSeverity() string {
+	switch rng.Intn(3) {
+	case 0:
+		return "minor"
+	case 1:
+		return "major"
+	default:
+		return "critical"
+	}
+}
+
+func randHexSHA() string {
+	const hexd = "0123456789abcdef"
+	b := make([]byte, 40)
+	for i := range b {
+		b[i] = hexd[rng.Intn(16)]
+	}
+	return string(b)
 }
 
 // ── capacity ────────────────────────────────────────────────────────────────

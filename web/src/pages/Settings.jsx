@@ -4,9 +4,11 @@ import {
   User, Building2, Plug, AlertTriangle, LogOut, Users, CreditCard,
   ChevronRight, Pencil, Sparkles, KeyRound, Server, Check, Loader2,
   CalendarDays, Link2, Unlink, ArrowUpFromLine, ArrowDownToLine, Bell,
+  Webhook, Copy, RefreshCw, Rocket, Eye, EyeOff, CircleDot,
 } from 'lucide-react'
 import { useAuth } from '../lib/useAuth.js'
 import { useOrg } from '../lib/useOrg.js'
+import { useWebhooks } from '../lib/useWebhooks.js'
 import { Card, Badge, Button } from '../components/ui/index.js'
 import { Reveal } from '../components/Reveal.jsx'
 import { NotificationsBody } from '../components/notifications/NotificationsSection.jsx'
@@ -431,6 +433,203 @@ function CalendarSection({ delay }) {
   )
 }
 
+// ── Webhooks & CI/CD ─────────────────────────────────────────────────────────
+
+function CopyField({ label, value }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch { /* clipboard blocked — ignore */ }
+  }
+  return (
+    <div>
+      {label && <label className="block text-[11px] font-medium text-[var(--text-muted)] mb-1">{label}</label>}
+      <div className="flex items-center gap-2">
+        <code className="flex-1 min-w-0 truncate rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text-dim)] font-mono">
+          {value || '—'}
+        </code>
+        <Button variant="outline" size="sm" onClick={copy} disabled={!value}
+          leftIcon={copied ? <Check size={13} className="text-[var(--brand-teal)]" /> : <Copy size={13} />}
+          className="shrink-0">
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function lastEventLabel(iso) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  return `${Math.floor(hrs / 24)}d ago`
+}
+
+const GITHUB_SETUP = [
+  'In your repo → Settings → Webhooks → Add webhook.',
+  'Paste the Payload URL above (it already carries your org id).',
+  'Content type: application/json.',
+  'Paste the Secret into the “Secret” field (used for HMAC-SHA256 signing).',
+  'Select events: Pushes, Pull requests, Issues, Deployment statuses, Workflow runs.',
+]
+const GITLAB_SETUP = [
+  'In your project → Settings → Webhooks.',
+  'Paste the URL above.',
+  'Paste the Secret into the “Secret token” field.',
+  'Enable triggers: Push, Merge request, Issues, Pipeline, Deployment events.',
+]
+
+function WebhookProviderRow({ p, brand, label, setup, rotating, onRotate, revealed }) {
+  const [showSecret, setShowSecret] = useState(false)
+  const last = lastEventLabel(p.lastEventAt)
+  return (
+    <div className="py-4 border-t border-[var(--border)] first:border-t-0 first:pt-0 space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] flex items-center justify-center shrink-0">
+          {brand}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-[var(--text)]">{label}</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            {p.secretSet ? (
+              <Badge color="teal">configured</Badge>
+            ) : (
+              <span className="text-xs text-[var(--text-faint)]">not configured</span>
+            )}
+            {last ? (
+              <span className="inline-flex items-center gap-1 text-[11px] text-[var(--text-faint)]">
+                <CircleDot size={10} className="text-[var(--brand-teal)]" /> last event {last}
+              </span>
+            ) : p.secretSet ? (
+              <span className="text-[11px] text-[var(--text-faint)]">no events received yet</span>
+            ) : null}
+          </div>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => onRotate(p.provider)} disabled={rotating}
+          leftIcon={rotating ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+          className="shrink-0">
+          {p.secretSet ? 'Rotate secret' : 'Generate secret'}
+        </Button>
+      </div>
+
+      <CopyField label="Payload URL" value={p.payloadUrl} />
+
+      {revealed && (
+        <div className="rounded-[var(--radius-btn)] border border-[var(--brand-teal)]/30 bg-[var(--brand-teal)]/[0.05] p-3 space-y-2">
+          <div className="flex items-center gap-2 text-[11px] text-[var(--brand-teal)] font-medium">
+            <KeyRound size={12} /> New secret — copy it now, it won’t be shown again.
+          </div>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 min-w-0 truncate rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text)] font-mono">
+              {showSecret ? revealed : '•'.repeat(Math.min(revealed.length, 48))}
+            </code>
+            <button type="button" onClick={() => setShowSecret(v => !v)}
+              className="p-2 text-[var(--text-faint)] hover:text-[var(--text)] transition-colors shrink-0">
+              {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <CopyField value={revealed} />
+        </div>
+      )}
+
+      <details className="group">
+        <summary className="cursor-pointer text-[11px] text-[var(--text-faint)] hover:text-[var(--text-dim)] transition-colors list-none flex items-center gap-1">
+          <ChevronRight size={12} className="transition-transform group-open:rotate-90" /> Setup instructions
+        </summary>
+        <ol className="mt-2 ml-1 space-y-1 text-[11px] text-[var(--text-faint)] list-decimal list-inside">
+          {setup.map((s, i) => <li key={i}>{s}</li>)}
+        </ol>
+      </details>
+    </div>
+  )
+}
+
+function WebhooksSection({ delay }) {
+  const { data, loading, error, rotate } = useWebhooks()
+  const [rotating, setRotating] = useState('')
+  const [revealed, setRevealed] = useState({}) // provider → one-time secret
+  const [rotateErr, setRotateErr] = useState(null)
+
+  async function onRotate(provider) {
+    setRotating(provider); setRotateErr(null)
+    try {
+      const res = await rotate(provider)
+      setRevealed(r => ({ ...r, [provider]: res.secret }))
+    } catch (e) {
+      setRotateErr(e.message ?? 'Failed to generate secret')
+    } finally {
+      setRotating('')
+    }
+  }
+
+  const providers = Array.isArray(data?.providers) ? data.providers : []
+  const github = providers.find(p => p.provider === 'github')
+  const gitlab = providers.find(p => p.provider === 'gitlab')
+
+  return (
+    <SectionCard
+      icon={Webhook}
+      title="Webhooks & CI/CD"
+      description="Real-time sync (push/PR/issue) and CI/CD deploys → real DORA deploy frequency & MTTR on Engineering Health."
+      delay={delay}
+    >
+      {loading && !data ? (
+        <div className="flex items-center gap-2 py-4 text-xs text-[var(--text-faint)]">
+          <Loader2 size={14} className="animate-spin" /> Loading…
+        </div>
+      ) : error ? (
+        <p className="text-xs text-red-400 py-2">{error}</p>
+      ) : (
+        <>
+          <div className="flex items-start gap-2 rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-3 mb-1 text-[11px] text-[var(--text-faint)] leading-relaxed">
+            <Rocket size={13} className="mt-0.5 text-[var(--brand-teal)] shrink-0" />
+            <span>
+              Point your provider at the payload URL and set the secret. Commits, PRs and issues
+              sync the moment they happen — no polling. Deployment & pipeline events become real
+              deploys (and failures open incidents), powering true DORA deploy frequency and MTTR.
+            </span>
+          </div>
+          {github && (
+            <WebhookProviderRow
+              p={github} label="GitHub" setup={GITHUB_SETUP}
+              rotating={rotating === 'github'} onRotate={onRotate} revealed={revealed.github}
+              brand={
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="var(--text)" aria-hidden>
+                  <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+                </svg>
+              }
+            />
+          )}
+          {gitlab && (
+            <WebhookProviderRow
+              p={gitlab} label="GitLab" setup={GITLAB_SETUP}
+              rotating={rotating === 'gitlab'} onRotate={onRotate} revealed={revealed.gitlab}
+              brand={
+                <svg width="17" height="17" viewBox="0 0 380 380" fill="none">
+                  <path d="M282.8 170.3L195.5 7.7C193.3 3 189 0 184.2 0s-9.1 3-11.3 7.7L97 156.2l187.8-.6-2 14.7z" fill="#e24329" />
+                  <path d="M97 156.2L9.7 318.8c-2.2 4.7-.8 10.3 3.4 13.4 2 1.5 4.4 2.3 6.8 2.3 2.6 0 5.2-.9 7.2-2.7l157.1-131.9L97 156.2z" fill="#fc6d26" />
+                  <path d="M282.8 170.3l-98.6-.9 15.1 35.2 81.8 51.2L282.8 170.3z" fill="#e24329" />
+                  <path d="M280.1 319.8l-96.4-120.1-86.4 100.3 90.4 75.9c4.1 3.4 9.9 3.4 14 0l78.4-56.1z" fill="#fc6d26" />
+                </svg>
+              }
+            />
+          )}
+          {rotateErr && <p className="text-xs text-red-400 mt-2">{rotateErr}</p>}
+        </>
+      )}
+    </SectionCard>
+  )
+}
+
 export default function Settings() {
   const { user, logout } = useAuth()
   const { activeOrg, orgRole } = useOrg()
@@ -554,6 +753,8 @@ export default function Settings() {
       >
         <NotificationsBody />
       </SectionCard>
+
+      <WebhooksSection delay={0.245} />
 
       <SectionCard icon={AlertTriangle} title="Danger zone" description="Irreversible actions." delay={0.25} tone="danger">
         <div className="flex items-center justify-between py-2">

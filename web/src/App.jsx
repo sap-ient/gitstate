@@ -27,6 +27,7 @@ import EngHealth from './pages/EngHealth.jsx'
 import Planning from './pages/Planning.jsx'
 import Invoices from './pages/Invoices.jsx'
 import InvoiceShare from './pages/InvoiceShare.jsx'
+import Import from './pages/Import.jsx'
 import NotFound from './pages/NotFound.jsx'
 
 // Root: the marketing landing for logged-out visitors, the app for authed users.
@@ -68,6 +69,7 @@ export default function App() {
             <Route path="/board" element={<Board />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/repos" element={<Repos />} />
+            <Route path="/import" element={<Import />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/contribution" element={<Contribution />} />
             <Route path="/cycle-time" element={<CycleTime />} />

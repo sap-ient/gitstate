@@ -149,10 +149,10 @@ func LeadTimeSamples(ctx context.Context, tx pgx.Tx, orgID string, w EngHealthWi
 // DeliveryCounts holds the raw counts behind change-failure rate and the
 // merge-based deploy-frequency proxy. Rates are derived in Go.
 type DeliveryCounts struct {
-	MergedPRs    int // merged PRs in the window (the change-failure denominator + deploy proxy)
-	BugFixes     int // DISTINCT bug-fix commits (SZZ fix_sha) detected in the window
-	BugFixLines  int // total blamed lines across those fixes (severity texture)
-	WindowDays   int // span of the window in days (for the per-week deploy proxy)
+	MergedPRs   int // merged PRs in the window (the change-failure denominator + deploy proxy)
+	BugFixes    int // DISTINCT bug-fix commits (SZZ fix_sha) detected in the window
+	BugFixLines int // total blamed lines across those fixes (severity texture)
+	WindowDays  int // span of the window in days (for the per-week deploy proxy)
 }
 
 // DeliverySignals reads the counts behind the DORA-ish delivery metrics:
@@ -279,15 +279,59 @@ func ChangeFailureTrend(ctx context.Context, tx pgx.Tx, orgID string, w EngHealt
 	return out, nil
 }
 
+// ── Real DORA CI signals (deployments + incidents) ─────────────────────────────
+
+// CIDelivery bundles the REAL deploy-frequency / change-failure / MTTR inputs
+// that only the deployments + incidents tables (fed by webhooks / manual entry /
+// seed) can provide — the two DORA metrics git history alone cannot. When the
+// org has no deployments/incidents in the window, HasDeployments / HasIncidents
+// are false and the api layer keeps the honest merge-proxy / needs-CI tags.
+type CIDelivery struct {
+	HasDeployments    bool
+	Deploys           int
+	DeployFailures    int
+	WindowDays        int
+	HasIncidents      bool
+	IncidentsResolved int
+	IncidentsOpen     int
+	MTTRHours         float64
+}
+
+// CIDeliverySignals reads the deployment + incident facts for the window. Must
+// run inside db.WithOrg. Reuses the deployments/incidents store aggregates.
+func CIDeliverySignals(ctx context.Context, tx pgx.Tx, orgID string, w EngHealthWindow) (CIDelivery, error) {
+	var out CIDelivery
+
+	ds, err := DeploymentStatsForWindow(ctx, tx, orgID, w.From, w.To)
+	if err != nil {
+		return CIDelivery{}, err
+	}
+	out.Deploys = ds.Total
+	out.DeployFailures = ds.Failures
+	out.WindowDays = ds.WindowDays
+	out.HasDeployments = ds.Total > 0
+
+	ms, err := MTTRForWindow(ctx, tx, orgID, w.From, w.To)
+	if err != nil {
+		return CIDelivery{}, err
+	}
+	out.IncidentsResolved = ms.ResolvedCount
+	out.IncidentsOpen = ms.OpenCount
+	out.MTTRHours = ms.MeanHours
+	out.HasIncidents = ms.ResolvedCount > 0 || ms.OpenCount > 0
+
+	return out, nil
+}
+
 // ── Review health ─────────────────────────────────────────────────────────────
 
 // ReviewHealth holds the review-health signals derived from cycle_times and
 // pull_requests. Latency samples are seconds; the median is derived in Go.
 type ReviewHealth struct {
-	ReviewLatencySecs   []float64       // review_secs samples for merged PRs in window
-	MergedPRs           int             // merged PRs in window
-	MergedWithoutReview int             // merged PRs with NULL/0 review_secs (proxy)
-	ReviewerLoad        []ReviewerLoad  // reviews_done per member (from involvement)
+	ReviewLatencySecs   []float64      // review_secs samples for merged PRs in window
+	MergedPRs           int            // merged PRs in window
+	MergedWithoutReview int            // merged PRs with NULL/0 review_secs (proxy)
+	ReviewerLoad        []ReviewerLoad // reviews_done per member (from involvement)
 }
 
 // ReviewerLoad is one member's review burden (PRs reviewed) over the window.
@@ -384,12 +428,12 @@ func ReviewSignals(ctx context.Context, tx pgx.Tx, orgID string, w EngHealthWind
 // AreaOwnership is one code "area" (top path segment) with its dominant author
 // by surviving lines and how concentrated ownership is.
 type AreaOwnership struct {
-	Area            string  `json:"area"`
-	TopAuthor       string  `json:"topAuthor"`
-	TopSurviving    int     `json:"topSurviving"`
-	TotalSurviving  int     `json:"totalSurviving"`
-	OwnershipPct    float64 `json:"ownershipPct"` // topSurviving / totalSurviving, [0,1]
-	ContributorN    int     `json:"contributorN"` // distinct authors with surviving lines here
+	Area           string  `json:"area"`
+	TopAuthor      string  `json:"topAuthor"`
+	TopSurviving   int     `json:"topSurviving"`
+	TotalSurviving int     `json:"totalSurviving"`
+	OwnershipPct   float64 `json:"ownershipPct"` // topSurviving / totalSurviving, [0,1]
+	ContributorN   int     `json:"contributorN"` // distinct authors with surviving lines here
 }
 
 // BusFactor bundles the org-wide truck-factor and the per-area ownership table.
@@ -611,13 +655,13 @@ func BusFactorAnalysis(ctx context.Context, tx pgx.Tx, orgID string, areaDepth i
 // returns the raw measured inputs.
 type DebtHotspot struct {
 	Path        string  `json:"path"`
-	Churn       int     `json:"churn"`        // additions + deletions across the window
-	Touches     int     `json:"touches"`      // (commit,file) rows
-	TestTouches int     `json:"testTouches"`  // touches flagged is_test
-	TestRatio   float64 `json:"testRatio"`    // testTouches/touches, [0,1]
-	BugFixes    int     `json:"bugFixes"`     // distinct SZZ fix_sha implicating commits that touched this path
-	BugLines    int     `json:"bugLines"`     // total blamed lines on this path
-	Authors     int     `json:"authors"`      // distinct authors (bus-factor texture)
+	Churn       int     `json:"churn"`       // additions + deletions across the window
+	Touches     int     `json:"touches"`     // (commit,file) rows
+	TestTouches int     `json:"testTouches"` // touches flagged is_test
+	TestRatio   float64 `json:"testRatio"`   // testTouches/touches, [0,1]
+	BugFixes    int     `json:"bugFixes"`    // distinct SZZ fix_sha implicating commits that touched this path
+	BugLines    int     `json:"bugLines"`    // total blamed lines on this path
+	Authors     int     `json:"authors"`     // distinct authors (bus-factor texture)
 }
 
 // DebtHotspots returns the top churn-heavy paths in the window joined to their

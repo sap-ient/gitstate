@@ -111,6 +111,15 @@ const NAV = [
   },
   { group: 'end' },
   {
+    label: 'Import',
+    to: '/import',
+    icon: (
+      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+      </svg>
+    ),
+  },
+  {
     label: 'Invoices',
     to: '/invoices',
     icon: (
