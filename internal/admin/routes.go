@@ -119,16 +119,43 @@ var funcMap = template.FuncMap{
 // ── Template loader (singleton) ───────────────────────────────────────────────
 
 var (
-	tmplOnce sync.Once
-	tmpl     *template.Template
-	tmplErr  error
+	tmplOnce  sync.Once
+	pageTmpls map[string]*template.Template
+	tmplErr   error
 )
 
-func getTemplates() (*template.Template, error) {
+// getTemplates returns the template set for a given page. Each page is parsed in
+// ITS OWN set (layout.html + that page) so the per-page {{define "content"}} /
+// "title" / "topbar" blocks don't collide across pages (a single shared set would
+// let the last-parsed page's blocks win, making every page render identically).
+func getTemplates(page string) (*template.Template, error) {
 	tmplOnce.Do(func() {
-		tmpl, tmplErr = template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
+		pageTmpls = map[string]*template.Template{}
+		for _, pg := range []string{"analytics", "users", "orgs"} {
+			t, err := template.New("").Funcs(funcMap).
+				ParseFS(templateFS, "templates/layout.html", "templates/"+pg+".html")
+			if err != nil {
+				tmplErr = err
+				return
+			}
+			pageTmpls[pg] = t
+		}
+		// login is a standalone page (its own {{define "login.html"}}), parsed alone.
+		if lt, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/login.html"); err != nil {
+			tmplErr = err
+			return
+		} else {
+			pageTmpls["login"] = lt
+		}
 	})
-	return tmpl, tmplErr
+	if tmplErr != nil {
+		return nil, tmplErr
+	}
+	t := pageTmpls[page]
+	if t == nil {
+		return nil, fmt.Errorf("admin: no template set for page %q", page)
+	}
+	return t, nil
 }
 
 // ── Handlers struct ───────────────────────────────────────────────────────────
@@ -219,7 +246,7 @@ type analyticsData struct {
 }
 
 func (h *adminHandlers) analytics(w http.ResponseWriter, r *http.Request) {
-	t, err := getTemplates()
+	t, err := getTemplates("analytics")
 	if err != nil {
 		renderErr(w, "template error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -262,7 +289,7 @@ type usersData struct {
 }
 
 func (h *adminHandlers) users(w http.ResponseWriter, r *http.Request) {
-	t, err := getTemplates()
+	t, err := getTemplates("users")
 	if err != nil {
 		renderErr(w, "template error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -315,7 +342,7 @@ type orgsData struct {
 }
 
 func (h *adminHandlers) orgs(w http.ResponseWriter, r *http.Request) {
-	t, err := getTemplates()
+	t, err := getTemplates("orgs")
 	if err != nil {
 		renderErr(w, "template error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -505,7 +532,7 @@ func (h *adminHandlers) realtimePusher() {
 			continue
 		}
 
-		t, err := getTemplates()
+		t, err := getTemplates("analytics")
 		if err != nil {
 			continue
 		}

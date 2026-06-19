@@ -83,7 +83,7 @@ func (h *adminHandlers) renderLogin(w http.ResponseWriter, data loginData) {
 }
 
 func (h *adminHandlers) renderLoginStatus(w http.ResponseWriter, status int, data loginData) {
-	t, err := getTemplates()
+	t, err := getTemplates("login")
 	if err != nil {
 		renderErr(w, "template error: "+err.Error(), http.StatusInternalServerError)
 		return
