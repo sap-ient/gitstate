@@ -30,11 +30,15 @@ package main
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -260,6 +264,9 @@ func main() {
 
 	// ── 10. Involvement texture (per member/project, monthly) ─────────────
 	s.seedInvolvement(org.ID, projects, commitStats)
+
+	// ── 10b. Client invoicing: demo clients + one generated invoice ───────
+	s.seedInvoicing(org.ID, projects)
 
 	// ── 11. Capacity: availability · leave types · leave · balances · time ─
 	s.seedAvailability(org.ID)
@@ -1151,6 +1158,200 @@ func (s *seeder) seedInvolvement(orgID string, projects []*projectRow, ct commit
 		for j := 0; j < n; j++ {
 			if _, err := br.Exec(); err != nil {
 				return fmt.Errorf("seed: batch insert involvement: %w", err)
+			}
+		}
+		return nil
+	}))
+}
+
+// ── client invoicing ──────────────────────────────────────────────────────────
+//
+// Creates 1–2 demo clients, links the first project to the primary client, then
+// GENERATES one demo invoice straight from the seeded merged PRs + their LLM
+// effort estimates — exactly as the /api/invoices/generate endpoint would. Each
+// line groups a repo's merged PRs, prices effort×rate, and carries the real git
+// evidence ([{prTitle, repo, mergedAt, sha}]). This is the "…and the invoice"
+// wedge in action so the page is never empty.
+func (s *seeder) seedInvoicing(orgID string, projects []*projectRow) {
+	const rateCents = 18000 // $180 / effort point for the demo client
+
+	// 1. Clients (idempotent on (org_id, name)).
+	var primaryClientID string
+	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		const q = `
+			INSERT INTO clients (org_id, name, contact_email, rate_cents, notes)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (org_id, name) DO UPDATE SET
+				contact_email = EXCLUDED.contact_email,
+				rate_cents    = EXCLUDED.rate_cents,
+				notes         = EXCLUDED.notes
+			RETURNING id`
+		if err := tx.QueryRow(s.ctx, q, orgID,
+			"Northwind Trading Co.", "ap@northwind.example",
+			rateCents, "Retainer client — billed monthly off merged delivery.").Scan(&primaryClientID); err != nil {
+			return err
+		}
+		var second string
+		return tx.QueryRow(s.ctx, q, orgID,
+			"Helix Robotics", "finance@helix.example",
+			15000, "Project-based engagement.").Scan(&second)
+	}))
+
+	// 2. Link the first project to the primary client.
+	if len(projects) > 0 {
+		s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+			_, err := tx.Exec(s.ctx,
+				`UPDATE projects SET client_id = $2 WHERE org_id = $1 AND id = $3`,
+				orgID, primaryClientID, projects[0].ID)
+			return err
+		}))
+	}
+
+	// 3. Gather merged PRs in the last 30 days with their effort estimates and a
+	//    representative commit sha, grouped per repo into invoice line items.
+	type evItem struct {
+		PRTitle  string `json:"prTitle"`
+		Repo     string `json:"repo"`
+		MergedAt string `json:"mergedAt"`
+		SHA      string `json:"sha"`
+	}
+	type lineAgg struct {
+		repo     string
+		points   float64
+		count    int
+		evidence []evItem
+	}
+	periodStart := now.AddDate(0, 0, -30)
+	aggByRepo := map[string]*lineAgg{}
+	var order []string
+
+	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		const q = `
+			SELECT r.full_name, COALESCE(pr.title,''),
+			       COALESCE((SELECT c.sha FROM commits c
+			                  WHERE c.org_id = pr.org_id AND c.repo_id = pr.repo_id
+			                  ORDER BY c.committed_at DESC LIMIT 1), ''),
+			       pr.merged_at, COALESCE(ee.difficulty, 0)
+			FROM pull_requests pr
+			JOIN repos r ON r.id = pr.repo_id
+			LEFT JOIN LATERAL (
+			    SELECT difficulty FROM effort_estimates e
+			    WHERE e.org_id = pr.org_id AND e.pr_id = pr.id
+			    ORDER BY e.created_at DESC LIMIT 1
+			) ee ON true
+			WHERE pr.org_id = $1 AND pr.state = 'merged'
+			  AND pr.merged_at IS NOT NULL AND pr.merged_at >= $2
+			ORDER BY r.full_name, pr.merged_at`
+		rows, err := tx.Query(s.ctx, q, orgID, periodStart)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var repo, title, sha string
+			var mergedAt time.Time
+			var diff float64
+			if err := rows.Scan(&repo, &title, &sha, &mergedAt, &diff); err != nil {
+				return err
+			}
+			g := aggByRepo[repo]
+			if g == nil {
+				g = &lineAgg{repo: repo}
+				aggByRepo[repo] = g
+				order = append(order, repo)
+			}
+			pts := diff
+			if pts <= 0 {
+				pts = 1
+			}
+			g.points += pts
+			g.count++
+			g.evidence = append(g.evidence, evItem{
+				PRTitle: title, Repo: repo, MergedAt: mergedAt.Format(time.RFC3339), SHA: sha,
+			})
+		}
+		return rows.Err()
+	}))
+
+	if len(order) == 0 {
+		return // no merged delivery in window — skip the demo invoice
+	}
+	sort.Strings(order)
+
+	// 4. Insert the invoice header (status 'sent' with a share token so the demo
+	//    "Copy share link" + public view work out of the box) + its lines.
+	tokenBytes := make([]byte, 32)
+	_, _ = cryptorand.Read(tokenBytes)
+	shareToken := base64.RawURLEncoding.EncodeToString(tokenBytes)
+
+	subtotal := 0
+	type lineRow struct {
+		desc     string
+		points   float64
+		amount   int
+		evidence []evItem
+	}
+	var lineRows []lineRow
+	for _, repo := range order {
+		g := aggByRepo[repo]
+		pts := math.Round(g.points*10) / 10
+		amount := int(math.Round(pts * float64(rateCents)))
+		subtotal += amount
+		noun := "merged PR"
+		if g.count != 1 {
+			noun = "merged PRs"
+		}
+		lineRows = append(lineRows, lineRow{
+			desc:     fmt.Sprintf("%s — %d %s delivered", repo, g.count, noun),
+			points:   pts,
+			amount:   amount,
+			evidence: g.evidence,
+		})
+	}
+
+	var projectID *string
+	if len(projects) > 0 {
+		projectID = &projects[0].ID
+	}
+
+	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		const insHdr = `
+			INSERT INTO client_invoices
+				(org_id, client_id, project_id, number, status, period_start, period_end,
+				 currency, subtotal_cents, total_cents, share_token, issued_at, notes)
+			VALUES ($1, $2, $3, $4, 'sent', $5, $6, 'USD', $7, $7, $8, now(),
+			        'Auto-generated from merged delivery — every line is backed by git evidence.')
+			ON CONFLICT (org_id, number) DO UPDATE SET status = EXCLUDED.status
+			RETURNING id`
+		var invoiceID string
+		if err := tx.QueryRow(s.ctx, insHdr, orgID, primaryClientID, projectID,
+			fmt.Sprintf("INV-%d-001", now.Year()),
+			periodStart, now, subtotal, shareToken).Scan(&invoiceID); err != nil {
+			return err
+		}
+
+		// Clear any prior lines (idempotent re-seed) then insert fresh.
+		if _, err := tx.Exec(s.ctx,
+			`DELETE FROM client_invoice_lines WHERE org_id = $1 AND invoice_id = $2`,
+			orgID, invoiceID); err != nil {
+			return err
+		}
+		const insLine = `
+			INSERT INTO client_invoice_lines
+				(org_id, invoice_id, description, effort_points, quantity,
+				 unit_rate_cents, amount_cents, evidence, sort)
+			VALUES ($1, $2, $3, $4, 1, $5, $6, $7::jsonb, $8)`
+		batch := &pgx.Batch{}
+		for i, lr := range lineRows {
+			ev, _ := json.Marshal(lr.evidence)
+			batch.Queue(insLine, orgID, invoiceID, lr.desc, lr.points,
+				rateCents, lr.amount, string(ev), i)
+		}
+		br := tx.SendBatch(s.ctx, batch)
+		defer br.Close()
+		for range lineRows {
+			if _, err := br.Exec(); err != nil {
+				return fmt.Errorf("seed: insert invoice line: %w", err)
 			}
 		}
 		return nil

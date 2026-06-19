@@ -23,6 +23,10 @@ import Contribution from './pages/Contribution.jsx'
 import Involvement from './pages/Involvement.jsx'
 import Capacity from './pages/Capacity.jsx'
 import Billing from './pages/Billing.jsx'
+import EngHealth from './pages/EngHealth.jsx'
+import Planning from './pages/Planning.jsx'
+import Invoices from './pages/Invoices.jsx'
+import InvoiceShare from './pages/InvoiceShare.jsx'
 import NotFound from './pages/NotFound.jsx'
 
 // Root: the marketing landing for logged-out visitors, the app for authed users.
@@ -55,6 +59,9 @@ export default function App() {
           {/* Invite accept — checks auth inside and redirects if needed */}
           <Route path="/invite/accept" element={<InviteAccept />} />
 
+          {/* Public, unauthenticated client-invoice share view (token in URL) */}
+          <Route path="/i/:token" element={<InvoiceShare />} />
+
           {/* Protected app shell — redirects to /login if not authed */}
           <Route element={<AppShell />}>
             <Route path="/dashboard" element={<Dashboard />} />
@@ -64,8 +71,11 @@ export default function App() {
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/contribution" element={<Contribution />} />
             <Route path="/cycle-time" element={<CycleTime />} />
+            <Route path="/eng-health" element={<EngHealth />} />
             <Route path="/involvement" element={<Involvement />} />
             <Route path="/capacity" element={<Capacity />} />
+            <Route path="/planning" element={<Planning />} />
+            <Route path="/invoices" element={<Invoices />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/settings/members" element={<Members />} />
             <Route path="/settings/billing" element={<Billing />} />

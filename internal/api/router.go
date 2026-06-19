@@ -28,6 +28,11 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 	// Public docs API (embedded markdown; no DB required).
 	RegisterDocsRoutes(mux)
 
+	// Public, unauthenticated client-invoice share view (token-scoped, read-only).
+	if database != nil {
+		RegisterPublicInvoiceRoute(mux, database)
+	}
+
 	// Feature route registration (orchestrator-wired; see PROGRESS.md route-wiring rule).
 	// These need the DB; in dev-without-DB boots we skip them rather than nil-panic.
 	if database != nil {
@@ -43,6 +48,9 @@ func NewRouter(cfg *config.Config, database *db.DB) http.Handler {
 		RegisterMetricsRoutes(mux, database, cfg)
 		RegisterAnalyticsRoutes(mux, database, cfg)
 		RegisterContributionRoutes(mux, database, cfg)
+		RegisterEngHealthRoutes(mux, database, cfg)
+		RegisterPlanningRoutes(mux, database, cfg)
+		RegisterInvoiceRoutes(mux, database, cfg)
 		RegisterReportRoutes(mux, database, cfg)
 		RegisterCapacityRoutes(mux, database, cfg)
 		RegisterBillingRoutes(mux, database, cfg)

@@ -74,6 +74,15 @@ const NAV = [
     ),
   },
   {
+    label: 'Eng Health',
+    to: '/eng-health',
+    icon: (
+      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h3l2.25 6 4-13 2.25 7H21" />
+      </svg>
+    ),
+  },
+  {
     label: 'Involvement',
     to: '/involvement',
     icon: (
@@ -91,7 +100,25 @@ const NAV = [
       </svg>
     ),
   },
+  {
+    label: 'Planning',
+    to: '/planning',
+    icon: (
+      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h11M3 12h15M3 18h8" />
+      </svg>
+    ),
+  },
   { group: 'end' },
+  {
+    label: 'Invoices',
+    to: '/invoices',
+    icon: (
+      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h3M5.25 21V4.5A1.5 1.5 0 0 1 6.75 3h10.5a1.5 1.5 0 0 1 1.5 1.5V21l-2.25-1.5L15 21l-1.5-1.5L12 21l-1.5-1.5L9 21l-1.5-1.5L5.25 21Z" />
+      </svg>
+    ),
+  },
   {
     label: 'Members',
     to: '/settings/members',
