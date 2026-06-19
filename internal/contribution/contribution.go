@@ -47,48 +47,53 @@ const DefaultRangeDays = 90
 
 // Dimension names — the canonical keys used everywhere (weights, JSON, scoring).
 const (
-	DimShipped   = "shipped"
-	DimReview    = "review"
-	DimEffort    = "effort"
-	DimQuality   = "quality"
-	DimOwnership = "ownership"
+	DimShipped    = "shipped"
+	DimReview     = "review"
+	DimEffort     = "effort"
+	DimQuality    = "quality"
+	DimOwnership  = "ownership"
+	DimDurability = "durability"
 )
 
 // dimOrder fixes a stable iteration order for deterministic output.
-var dimOrder = []string{DimShipped, DimReview, DimEffort, DimQuality, DimOwnership}
+var dimOrder = []string{DimShipped, DimReview, DimEffort, DimQuality, DimOwnership, DimDurability}
 
 // ── Weights ───────────────────────────────────────────────────────────────────
 
 // Weights are the org's relative emphasis per dimension. Any non-negative scale
 // is accepted; Normalized() rescales them to sum 1 for the composite. Defaults
-// mirror the migration (shipped 30, review 20, effort 20, quality 15, ownership 15).
+// mirror the migration (shipped 30, review 20, effort 20, quality 15, ownership 15,
+// durability 15 — added by 20260619_010).
 type Weights struct {
-	Shipped   float64 `json:"shipped"`
-	Review    float64 `json:"review"`
-	Effort    float64 `json:"effort"`
-	Quality   float64 `json:"quality"`
-	Ownership float64 `json:"ownership"`
+	Shipped    float64 `json:"shipped"`
+	Review     float64 `json:"review"`
+	Effort     float64 `json:"effort"`
+	Quality    float64 `json:"quality"`
+	Ownership  float64 `json:"ownership"`
+	Durability float64 `json:"durability"`
 }
 
 // DefaultWeights matches contribution_weights' column defaults.
 func DefaultWeights() Weights {
-	return Weights{Shipped: 30, Review: 20, Effort: 20, Quality: 15, Ownership: 15}
+	return Weights{Shipped: 30, Review: 20, Effort: 20, Quality: 15, Ownership: 15, Durability: 15}
 }
 
-// Normalized returns weights rescaled so the five components sum to 1. Negative
+// Normalized returns weights rescaled so the six components sum to 1. Negative
 // inputs are clamped to 0. If every weight is 0 (or negative), the dimensions
-// are weighted equally (1/5 each) so the composite is still meaningful.
+// are weighted equally (1/6 each) so the composite is still meaningful.
 func (w Weights) Normalized() Weights {
-	s := nz(w.Shipped) + nz(w.Review) + nz(w.Effort) + nz(w.Quality) + nz(w.Ownership)
+	s := nz(w.Shipped) + nz(w.Review) + nz(w.Effort) + nz(w.Quality) + nz(w.Ownership) + nz(w.Durability)
 	if s <= 0 {
-		return Weights{Shipped: 0.2, Review: 0.2, Effort: 0.2, Quality: 0.2, Ownership: 0.2}
+		eq := 1.0 / 6.0
+		return Weights{Shipped: eq, Review: eq, Effort: eq, Quality: eq, Ownership: eq, Durability: eq}
 	}
 	return Weights{
-		Shipped:   nz(w.Shipped) / s,
-		Review:    nz(w.Review) / s,
-		Effort:    nz(w.Effort) / s,
-		Quality:   nz(w.Quality) / s,
-		Ownership: nz(w.Ownership) / s,
+		Shipped:    nz(w.Shipped) / s,
+		Review:     nz(w.Review) / s,
+		Effort:     nz(w.Effort) / s,
+		Quality:    nz(w.Quality) / s,
+		Ownership:  nz(w.Ownership) / s,
+		Durability: nz(w.Durability) / s,
 	}
 }
 
@@ -106,15 +111,15 @@ func nz(v float64) float64 {
 // "effort" counts already exclude unmerged work (the gate). The pure scoring
 // layer takes these as given and only normalizes + weights.
 type RawMember struct {
-	UserID    string
-	Name      string
-	Email     string
-	Login     string // primary git login for this identity (for evidence lookup)
-	IsAgentBot bool  // a bot/agent identity — shown separately, never inflates a human
+	UserID     string
+	Name       string
+	Email      string
+	Login      string // primary git login for this identity (for evidence lookup)
+	IsAgentBot bool   // a bot/agent identity — shown separately, never inflates a human
 
 	// shipped (ACCEPTED work only)
-	MergedPRs      int
-	IssuesClosed   int
+	MergedPRs       int
+	IssuesClosed    int
 	FeaturesShipped int
 
 	// review
@@ -127,12 +132,47 @@ type RawMember struct {
 	Reverts       int     // revert/hotfix/rollback commits authored
 	AvgCycleHours float64 // mean lead time of merged PRs, hours (0 = unknown)
 
+	// quality — deep signals (0 when the git-analysis pipeline hasn't run):
+	BugsIntroduced   int // SZZ: changes later implicated as bug-introducing (more ⇒ worse)
+	BugLines         int // SZZ: total lines of those introductions
+	TestFileTouches  int // commit_files touches flagged is_test
+	TotalFileTouches int // all commit_files touches
+
 	// ownership
 	AreasOwned int
+
+	// durability — git-blame line survival (0 when not yet computed):
+	SurvivingLines int
+	AuthoredLines  int
 
 	// authorship transparency
 	HumanCommits int
 	AgentCommits int
+}
+
+// SurvivalPct is the surviving fraction of authored lines in [0,1] (0 when no
+// blame data). It is the texture shown in the durability raw.
+func (m RawMember) SurvivalPct() float64 {
+	if m.AuthoredLines <= 0 {
+		return 0
+	}
+	p := float64(m.SurvivingLines) / float64(m.AuthoredLines)
+	if p < 0 {
+		return 0
+	}
+	if p > 1 {
+		return 1
+	}
+	return p
+}
+
+// TestCoupling is tested-file-touches / total-file-touches in [0,1] (0 when no
+// per-commit file data). Higher ⇒ the member touches tests more often.
+func (m RawMember) TestCoupling() float64 {
+	if m.TotalFileTouches <= 0 {
+		return 0
+	}
+	return float64(m.TestFileTouches) / float64(m.TotalFileTouches)
 }
 
 // AgentPct is the share of this member's commits that were agent-authored.
@@ -249,48 +289,127 @@ func Normalize(values []float64, method NormMethod) []float64 {
 	return out
 }
 
+// QualityInputs bundles every quality signal for one member. The deep signals
+// (bugsIntroduced/bugLines from SZZ, testTouches/totalTouches from commit_files)
+// are 0 when the git-analysis pipeline hasn't run — in which case QualityRaw
+// degrades cleanly to the revert/hotfix + cycle-time behaviour.
+type QualityInputs struct {
+	Reverts        int
+	MergedPRs      int
+	AvgCycleHours  float64
+	BugsIntroduced int
+	BugLines       int
+	TestTouches    int
+	TotalTouches   int
+}
+
 // QualityRaw turns a member's quality inputs into a single raw value where
-// HIGHER IS BETTER, before normalization. Quality SCORE INVERTS the bad signals:
-// fewer reverts and a faster (lower) cycle time both raise the raw value.
+// HIGHER IS BETTER, before normalization. Quality SCORE INVERTS the bad signals
+// and rewards the good one:
 //
-//	revertPenalty = reverts (per accepted PR if known; absolute otherwise)
-//	cyclePenalty  = avgCycleHours
+//   - fewer reverts/hotfixes        ⇒ higher (existing heuristic)
+//   - faster (lower) cycle time     ⇒ higher (existing heuristic)
+//   - fewer SZZ bug-introductions   ⇒ higher (NEW: gaming-resistant — you can't
+//     fake "my changes didn't cause later bug-fixes")
+//   - more test-coupling            ⇒ higher (NEW: touching tests is rewarded)
 //
-// We combine them as a decaying "health" value in [0,1]:
+// We combine the PENALTIES (reverts, cycle, bugs) into a decaying health in (0,1]:
 //
-//	health = 1 / (1 + revertPenalty + cycleWeight*normalizedCycle)
+//	health = 1 / (1 + revertRate + cycle + bugRate)
 //
-// so 0 reverts + instant cycle ⇒ ~1 (best), and lots of reverts / very slow
-// cycle ⇒ →0 (worst). The exact constant doesn't matter for the final score
-// because Normalize re-ranks across the cohort; what matters is the MONOTONIC
-// inversion, which this guarantees and the tests assert.
-func QualityRaw(reverts int, mergedPRs int, avgCycleHours float64) float64 {
-	revertRate := float64(reverts)
-	if mergedPRs > 0 {
-		revertRate = float64(reverts) / float64(mergedPRs)
+// then apply a BOUNDED test-coupling multiplier in [1, 1+maxTestBoost] so tests
+// raise — never lower — the value, and an all-tests member can't run away with it:
+//
+//	raw = health * (1 + maxTestBoost*testCoupling)
+//
+// So 0 reverts + instant cycle + 0 bugs + lots of tests ⇒ best; many reverts/bugs
+// + slow cycle + no tests ⇒ →0. The exact constants don't matter for the final
+// score because Normalize re-ranks across the cohort; what matters is the
+// MONOTONIC inversion (more bugs ⇒ lower) and the bounded test boost, which this
+// guarantees and the tests assert.
+func QualityRaw(in QualityInputs) float64 {
+	revertRate := float64(in.Reverts)
+	if in.MergedPRs > 0 {
+		revertRate = float64(in.Reverts) / float64(in.MergedPRs)
 	}
 	// Compress cycle hours so an enormous outlier can't dominate (days→~1).
 	cycle := 0.0
-	if avgCycleHours > 0 {
-		cycle = avgCycleHours / (avgCycleHours + 24.0) // 0 at instant, →1 as it grows
+	if in.AvgCycleHours > 0 {
+		cycle = in.AvgCycleHours / (in.AvgCycleHours + 24.0) // 0 at instant, →1 as it grows
 	}
-	health := 1.0 / (1.0 + revertRate + cycle)
+	// SZZ bug penalty: normalized per merged PR when known (so a prolific shipper
+	// isn't punished for raw volume), absolute otherwise; compressed so a huge bug
+	// count can't make health negative or NaN.
+	bugRate := float64(in.BugsIntroduced)
+	if in.MergedPRs > 0 {
+		bugRate = float64(in.BugsIntroduced) / float64(in.MergedPRs)
+	}
+	if bugRate < 0 {
+		bugRate = 0
+	}
+
+	health := 1.0 / (1.0 + revertRate + cycle + bugRate)
 	if math.IsNaN(health) || health < 0 {
 		return 0
 	}
-	return health
+
+	// Bounded test-coupling boost: tests can lift quality by up to maxTestBoost
+	// (50%) but never reduce it. testCoupling already ∈ [0,1].
+	const maxTestBoost = 0.5
+	tc := 0.0
+	if in.TotalTouches > 0 {
+		tc = float64(in.TestTouches) / float64(in.TotalTouches)
+		if tc < 0 {
+			tc = 0
+		} else if tc > 1 {
+			tc = 1
+		}
+	}
+	raw := health * (1.0 + maxTestBoost*tc)
+	if math.IsNaN(raw) || raw < 0 {
+		return 0
+	}
+	return raw
 }
 
-// DimensionScores holds the five 0–100 normalized dimension scores for one member.
+// DurabilityRaw turns a member's blame line-survival into a raw value where
+// HIGHER IS BETTER, before normalization: it rewards code that PERSISTS.
+//
+//	raw = survivalFraction * survivingLines
+//
+// i.e. the surviving FRACTION (quality of persistence) scaled by the VOLUME of
+// surviving lines (so a tiny but fully-surviving change doesn't outrank a large
+// durable contribution). Someone whose lines were all overwritten has 0 surviving
+// lines ⇒ raw 0, even with massive churn — exactly the anti-gaming property we
+// want. authoredLines==0 (no blame data) ⇒ raw 0.
+func DurabilityRaw(survivingLines, authoredLines int) float64 {
+	if authoredLines <= 0 || survivingLines <= 0 {
+		return 0
+	}
+	frac := float64(survivingLines) / float64(authoredLines)
+	if frac < 0 {
+		frac = 0
+	} else if frac > 1 {
+		frac = 1
+	}
+	raw := frac * float64(survivingLines)
+	if math.IsNaN(raw) || raw < 0 {
+		return 0
+	}
+	return raw
+}
+
+// DimensionScores holds the six 0–100 normalized dimension scores for one member.
 type DimensionScores struct {
-	Shipped   float64
-	Review    float64
-	Effort    float64
-	Quality   float64
-	Ownership float64
+	Shipped    float64
+	Review     float64
+	Effort     float64
+	Quality    float64
+	Ownership  float64
+	Durability float64
 }
 
-// Composite combines the five normalized dimension scores into a single 0–100
+// Composite combines the six normalized dimension scores into a single 0–100
 // number using the (already-normalized) weights. Because every input is 0–100
 // and the weights sum to 1, the result is bounded to 0–100.
 func Composite(d DimensionScores, w Weights) float64 {
@@ -299,7 +418,8 @@ func Composite(d DimensionScores, w Weights) float64 {
 		d.Review*wn.Review +
 		d.Effort*wn.Effort +
 		d.Quality*wn.Quality +
-		d.Ownership*wn.Ownership
+		d.Ownership*wn.Ownership +
+		d.Durability*wn.Durability
 	return round1(c)
 }
 
@@ -311,17 +431,24 @@ func shippedRaw(m RawMember) float64 {
 	return float64(m.MergedPRs) + float64(m.IssuesClosed) + float64(m.FeaturesShipped)
 }
 
-// ── Extension hooks (NOT YET WIRED — see comments) ─────────────────────────────
+// ── Extension hooks (now backed by the git-analysis pipeline) ──────────────────
 //
-// There is currently no per-commit file-path or blame data in the schema, so we
-// do NOT fabricate line-survival or test-coupling signals. These interfaces are
-// the clean plug-in points for when real-repo sync lands; the engine already
-// folds their output into the quality/effort raws via the hooks below.
+// The blame line-survival, SZZ bug-introduction, and per-commit test-coupling
+// signals are now REAL: the git-analysis pipeline populates author_survival,
+// bug_introductions, and commit_files, which the store folds into RawMember
+// (SurvivingLines/AuthoredLines, BugsIntroduced/BugLines, TestFileTouches/
+// TotalFileTouches). The pure scoring layer turns those into the `durability`
+// dimension (DurabilityRaw) and the enhanced `quality` raw (QualityRaw). When the
+// pipeline hasn't run the fields are all 0, so durability scores 0 and quality
+// degrades cleanly to the revert/cycle-time behaviour.
+//
+// The interfaces below remain as optional per-window OVERRIDES for a future
+// service that wants to compute these in-process rather than read the tables;
+// they are unused by the default Service.
 
 // BlameSurvival measures how much of a member's authored code still survives in
-// HEAD (a strong "did this work last?" outcome signal). TODO: implement once
-// `git blame` history is synced per repo; until then the Service leaves it nil
-// and blame survival contributes nothing.
+// HEAD (a strong "did this work last?" outcome signal). Superseded by the
+// author_survival table for the default Service; kept as an optional override.
 type BlameSurvival interface {
 	// SurvivalRate returns, in [0,1], the fraction of the member's added lines in
 	// the window that are still present at HEAD. Higher = more durable work.
@@ -329,9 +456,8 @@ type BlameSurvival interface {
 }
 
 // SZZQuality flags bug-introducing changes via the SZZ algorithm (which commits
-// a later fix/revert blames). TODO: implement once blame + fix-commit linkage is
-// synced; until then quality relies on the revert/hotfix message heuristic and
-// cycle-time health only.
+// a later fix/revert blames). Superseded by the bug_introductions table for the
+// default Service; kept as an optional override.
 type SZZQuality interface {
 	// BugIntroRate returns, in [0,1], the share of the member's merged changes
 	// later implicated as bug-introducing. LOWER is better (inverted into quality).
@@ -372,12 +498,22 @@ func Profiles(raw []RawMember, method NormMethod, w Weights) []Member {
 	effort := make([]float64, n)
 	quality := make([]float64, n)
 	ownership := make([]float64, n)
+	durability := make([]float64, n)
 	for i, m := range raw {
 		shipped[i] = shippedRaw(m)
 		review[i] = float64(m.ReviewsDone)
 		effort[i] = m.EffortPoints
-		quality[i] = QualityRaw(m.Reverts, m.MergedPRs, m.AvgCycleHours) // already inverted (higher=better)
+		quality[i] = QualityRaw(QualityInputs{ // already inverted (higher=better)
+			Reverts:        m.Reverts,
+			MergedPRs:      m.MergedPRs,
+			AvgCycleHours:  m.AvgCycleHours,
+			BugsIntroduced: m.BugsIntroduced,
+			BugLines:       m.BugLines,
+			TestTouches:    m.TestFileTouches,
+			TotalTouches:   m.TotalFileTouches,
+		})
 		ownership[i] = float64(m.AreasOwned)
+		durability[i] = DurabilityRaw(m.SurvivingLines, m.AuthoredLines)
 	}
 
 	// Within-project normalization (0–100) per dimension.
@@ -386,14 +522,16 @@ func Profiles(raw []RawMember, method NormMethod, w Weights) []Member {
 	eN := Normalize(effort, method)
 	qN := Normalize(quality, method)
 	oN := Normalize(ownership, method)
+	dN := Normalize(durability, method)
 
 	for i, m := range raw {
 		dims := DimensionScores{
-			Shipped:   sN[i],
-			Review:    rN[i],
-			Effort:    eN[i],
-			Quality:   qN[i],
-			Ownership: oN[i],
+			Shipped:    sN[i],
+			Review:     rN[i],
+			Effort:     eN[i],
+			Quality:    qN[i],
+			Ownership:  oN[i],
+			Durability: dN[i],
 		}
 		members[i] = Member{
 			UserID:     m.UserID,
@@ -477,7 +615,7 @@ func (s *Service) GetWeights(ctx context.Context, orgID string) (Weights, error)
 		if err != nil {
 			return err
 		}
-		w = Weights{Shipped: row.Shipped, Review: row.Review, Effort: row.Effort, Quality: row.Quality, Ownership: row.Ownership}
+		w = Weights{Shipped: row.Shipped, Review: row.Review, Effort: row.Effort, Quality: row.Quality, Ownership: row.Ownership, Durability: row.Durability}
 		return nil
 	})
 	if err != nil {
@@ -491,17 +629,18 @@ func (s *Service) SetWeights(ctx context.Context, orgID string, w Weights) (Weig
 	var out Weights
 	err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		row, err := store.UpsertContributionWeights(ctx, tx, store.ContributionWeights{
-			OrgID:     orgID,
-			Shipped:   nz(w.Shipped),
-			Review:    nz(w.Review),
-			Effort:    nz(w.Effort),
-			Quality:   nz(w.Quality),
-			Ownership: nz(w.Ownership),
+			OrgID:      orgID,
+			Shipped:    nz(w.Shipped),
+			Review:     nz(w.Review),
+			Effort:     nz(w.Effort),
+			Quality:    nz(w.Quality),
+			Ownership:  nz(w.Ownership),
+			Durability: nz(w.Durability),
 		})
 		if err != nil {
 			return err
 		}
-		out = Weights{Shipped: row.Shipped, Review: row.Review, Effort: row.Effort, Quality: row.Quality, Ownership: row.Ownership}
+		out = Weights{Shipped: row.Shipped, Review: row.Review, Effort: row.Effort, Quality: row.Quality, Ownership: row.Ownership, Durability: row.Durability}
 		return nil
 	})
 	if err != nil {
@@ -535,7 +674,7 @@ func (s *Service) Compute(ctx context.Context, orgID string, p Period) (Report, 
 		return Report{}, err
 	}
 
-	weights := Weights{Shipped: w.Shipped, Review: w.Review, Effort: w.Effort, Quality: w.Quality, Ownership: w.Ownership}
+	weights := Weights{Shipped: w.Shipped, Review: w.Review, Effort: w.Effort, Quality: w.Quality, Ownership: w.Ownership, Durability: w.Durability}
 	members := Profiles(toRawMembers(raw), s.method, weights)
 	return Report{Period: p, Weights: weights, Members: members}, nil
 }
@@ -545,21 +684,27 @@ func toRawMembers(rows []store.ContribAggregate) []RawMember {
 	out := make([]RawMember, len(rows))
 	for i, r := range rows {
 		out[i] = RawMember{
-			UserID:          r.UserID,
-			Name:            r.Name,
-			Email:           r.Email,
-			Login:           r.Login,
-			IsAgentBot:      r.IsAgentBot,
-			MergedPRs:       r.MergedPRs,
-			IssuesClosed:    r.IssuesClosed,
-			FeaturesShipped: r.FeaturesShipped,
-			ReviewsDone:     r.ReviewsDone,
-			EffortPoints:    r.EffortPoints,
-			Reverts:         r.Reverts,
-			AvgCycleHours:   r.AvgCycleHours,
-			AreasOwned:      r.AreasOwned,
-			HumanCommits:    r.HumanCommits,
-			AgentCommits:    r.AgentCommits,
+			UserID:           r.UserID,
+			Name:             r.Name,
+			Email:            r.Email,
+			Login:            r.Login,
+			IsAgentBot:       r.IsAgentBot,
+			MergedPRs:        r.MergedPRs,
+			IssuesClosed:     r.IssuesClosed,
+			FeaturesShipped:  r.FeaturesShipped,
+			ReviewsDone:      r.ReviewsDone,
+			EffortPoints:     r.EffortPoints,
+			Reverts:          r.Reverts,
+			AvgCycleHours:    r.AvgCycleHours,
+			BugsIntroduced:   r.BugsIntroduced,
+			BugLines:         r.BugLines,
+			TestFileTouches:  r.TestFileTouches,
+			TotalFileTouches: r.TotalFileTouches,
+			AreasOwned:       r.AreasOwned,
+			SurvivingLines:   r.SurvivingLines,
+			AuthoredLines:    r.AuthoredLines,
+			HumanCommits:     r.HumanCommits,
+			AgentCommits:     r.AgentCommits,
 		}
 	}
 	return out
@@ -570,10 +715,13 @@ func toRawMembers(rows []store.ContribAggregate) []RawMember {
 // Evidence holds the real rows backing each dimension for one member — the
 // drill-down that keeps texture honest (decisions P2: never a hidden rank).
 type Evidence struct {
-	Shipped []store.ContribEvidenceItem `json:"shipped"`
-	Review  []store.ContribEvidenceItem `json:"review"`
-	Quality []store.ContribEvidenceItem `json:"quality"`
-	Effort  []store.ContribEvidenceItem `json:"effort"`
+	Shipped    []store.ContribEvidenceItem    `json:"shipped"`
+	Review     []store.ContribEvidenceItem    `json:"review"`
+	Quality    []store.ContribEvidenceItem    `json:"quality"`
+	Effort     []store.ContribEvidenceItem    `json:"effort"`
+	Durability []store.DurabilityEvidenceItem `json:"durability"`
+	// BugIntros are the SZZ bug-introductions surfaced under the quality dimension.
+	BugIntros []store.BugIntroEvidenceItem `json:"bugIntroductions"`
 }
 
 // MemberDetail is one scored member PLUS the evidence backing each dimension.
@@ -609,7 +757,7 @@ func (s *Service) ComputeMember(ctx context.Context, orgID, userID string, p Per
 		if err != nil {
 			return err
 		}
-		ev = Evidence{Shipped: e.Shipped, Review: e.Review, Quality: e.Quality, Effort: e.Effort}
+		ev = Evidence{Shipped: e.Shipped, Review: e.Review, Quality: e.Quality, Effort: e.Effort, Durability: e.Durability, BugIntros: e.BugIntros}
 		return nil
 	})
 	if err != nil {

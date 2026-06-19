@@ -110,19 +110,27 @@ type effortRawJSON struct {
 	EffortPoints float64 `json:"effortPoints"`
 }
 type qualityRawJSON struct {
-	Reverts       int     `json:"reverts"`
-	AvgCycleHours float64 `json:"avgCycleHours"`
+	Reverts        int     `json:"reverts"`
+	AvgCycleHours  float64 `json:"avgCycleHours"`
+	BugsIntroduced int     `json:"bugsIntroduced"`
+	TestCoupling   float64 `json:"testCoupling"`
 }
 type ownershipRawJSON struct {
 	AreasOwned int `json:"areasOwned"`
 }
+type durabilityRawJSON struct {
+	SurvivingLines int     `json:"survivingLines"`
+	AuthoredLines  int     `json:"authoredLines"`
+	SurvivalPct    float64 `json:"survivalPct"`
+}
 
 type dimensionsJSON struct {
-	Shipped   dimDetailJSON `json:"shipped"`
-	Review    dimDetailJSON `json:"review"`
-	Effort    dimDetailJSON `json:"effort"`
-	Quality   dimDetailJSON `json:"quality"`
-	Ownership dimDetailJSON `json:"ownership"`
+	Shipped    dimDetailJSON `json:"shipped"`
+	Review     dimDetailJSON `json:"review"`
+	Effort     dimDetailJSON `json:"effort"`
+	Quality    dimDetailJSON `json:"quality"`
+	Ownership  dimDetailJSON `json:"ownership"`
+	Durability dimDetailJSON `json:"durability"`
 }
 
 type authorshipJSON struct {
@@ -142,11 +150,12 @@ type memberJSON struct {
 }
 
 type weightsJSON struct {
-	Shipped   float64 `json:"shipped"`
-	Review    float64 `json:"review"`
-	Effort    float64 `json:"effort"`
-	Quality   float64 `json:"quality"`
-	Ownership float64 `json:"ownership"`
+	Shipped    float64 `json:"shipped"`
+	Review     float64 `json:"review"`
+	Effort     float64 `json:"effort"`
+	Quality    float64 `json:"quality"`
+	Ownership  float64 `json:"ownership"`
+	Durability float64 `json:"durability"`
 }
 
 func toMemberJSON(m contribution.Member) memberJSON {
@@ -164,8 +173,12 @@ func toMemberJSON(m contribution.Member) memberJSON {
 			Effort: dimDetailJSON{Score: m.Dimensions.Effort, Raw: effortRawJSON{EffortPoints: m.Raw.EffortPoints}},
 			Quality: dimDetailJSON{Score: m.Dimensions.Quality, Raw: qualityRawJSON{
 				Reverts: m.Raw.Reverts, AvgCycleHours: round1(m.Raw.AvgCycleHours),
+				BugsIntroduced: m.Raw.BugsIntroduced, TestCoupling: round2(m.Raw.TestCoupling()),
 			}},
 			Ownership: dimDetailJSON{Score: m.Dimensions.Ownership, Raw: ownershipRawJSON{AreasOwned: m.Raw.AreasOwned}},
+			Durability: dimDetailJSON{Score: m.Dimensions.Durability, Raw: durabilityRawJSON{
+				SurvivingLines: m.Raw.SurvivingLines, AuthoredLines: m.Raw.AuthoredLines, SurvivalPct: round2(m.Raw.SurvivalPct()),
+			}},
 		},
 		Authorship: authorshipJSON{
 			HumanCommits: m.Raw.HumanCommits,
@@ -176,11 +189,15 @@ func toMemberJSON(m contribution.Member) memberJSON {
 }
 
 func toWeightsJSON(w contribution.Weights) weightsJSON {
-	return weightsJSON{Shipped: w.Shipped, Review: w.Review, Effort: w.Effort, Quality: w.Quality, Ownership: w.Ownership}
+	return weightsJSON{Shipped: w.Shipped, Review: w.Review, Effort: w.Effort, Quality: w.Quality, Ownership: w.Ownership, Durability: w.Durability}
 }
 
 func round1(v float64) float64 {
 	return float64(int64(v*10+0.5)) / 10
+}
+
+func round2(v float64) float64 {
+	return float64(int64(v*100+0.5)) / 100
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -250,10 +267,12 @@ func (h *contributionHandlers) member(w http.ResponseWriter, r *http.Request) {
 		"dimensions": mj.Dimensions,
 		"authorship": mj.Authorship,
 		"evidence": map[string]any{
-			"shipped": evItems(detail.Evidence.Shipped),
-			"review":  evItems(detail.Evidence.Review),
-			"quality": evItems(detail.Evidence.Quality),
-			"effort":  evItems(detail.Evidence.Effort),
+			"shipped":          evItems(detail.Evidence.Shipped),
+			"review":           evItems(detail.Evidence.Review),
+			"quality":          evItems(detail.Evidence.Quality),
+			"effort":           evItems(detail.Evidence.Effort),
+			"durability":       durabilityItems(detail.Evidence.Durability),
+			"bugIntroductions": bugIntroItems(detail.Evidence.BugIntros),
 		},
 	})
 }
@@ -262,6 +281,22 @@ func (h *contributionHandlers) member(w http.ResponseWriter, r *http.Request) {
 func evItems(in []store.ContribEvidenceItem) []store.ContribEvidenceItem {
 	if in == nil {
 		return []store.ContribEvidenceItem{}
+	}
+	return in
+}
+
+// durabilityItems guarantees [] (never null) for the durability evidence list.
+func durabilityItems(in []store.DurabilityEvidenceItem) []store.DurabilityEvidenceItem {
+	if in == nil {
+		return []store.DurabilityEvidenceItem{}
+	}
+	return in
+}
+
+// bugIntroItems guarantees [] (never null) for the SZZ bug-introduction list.
+func bugIntroItems(in []store.BugIntroEvidenceItem) []store.BugIntroEvidenceItem {
+	if in == nil {
+		return []store.BugIntroEvidenceItem{}
 	}
 	return in
 }
@@ -305,13 +340,13 @@ func (h *contributionHandlers) putWeights(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if body.Shipped < 0 || body.Review < 0 || body.Effort < 0 || body.Quality < 0 || body.Ownership < 0 {
+	if body.Shipped < 0 || body.Review < 0 || body.Effort < 0 || body.Quality < 0 || body.Ownership < 0 || body.Durability < 0 {
 		writeError(w, http.StatusBadRequest, "weights must be non-negative")
 		return
 	}
 	out, err := h.svc.SetWeights(r.Context(), orgID, contribution.Weights{
 		Shipped: body.Shipped, Review: body.Review, Effort: body.Effort,
-		Quality: body.Quality, Ownership: body.Ownership,
+		Quality: body.Quality, Ownership: body.Ownership, Durability: body.Durability,
 	})
 	if err != nil {
 		slog.Error("contribution set weights", "err", err)

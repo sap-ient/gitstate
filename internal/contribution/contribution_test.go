@@ -105,7 +105,7 @@ func TestComposite_WeightedSum(t *testing.T) {
 }
 
 func TestComposite_BoundedZeroTo100(t *testing.T) {
-	d := DimensionScores{Shipped: 100, Review: 100, Effort: 100, Quality: 100, Ownership: 100}
+	d := DimensionScores{Shipped: 100, Review: 100, Effort: 100, Quality: 100, Ownership: 100, Durability: 100}
 	if got := Composite(d, DefaultWeights()); !almostEqual(got, 100) {
 		t.Errorf("all-100 composite = %v, want 100", got)
 	}
@@ -116,18 +116,35 @@ func TestComposite_BoundedZeroTo100(t *testing.T) {
 }
 
 func TestWeights_NormalizedSumsToOne(t *testing.T) {
+	// Six dimensions (durability added) must still normalize to sum 1.
 	w := DefaultWeights().Normalized()
-	sum := w.Shipped + w.Review + w.Effort + w.Quality + w.Ownership
+	sum := w.Shipped + w.Review + w.Effort + w.Quality + w.Ownership + w.Durability
 	if !almostEqual(sum, 1) {
 		t.Errorf("normalized weights sum = %v, want 1", sum)
+	}
+	if !almostEqual(DefaultWeights().Durability, 15) {
+		t.Errorf("default durability weight = %v, want 15", DefaultWeights().Durability)
+	}
+}
+
+func TestWeights_SixDimNormalizedSumsToOne(t *testing.T) {
+	// Arbitrary six-way weights normalize to sum 1 with durability carrying share.
+	w := Weights{Shipped: 1, Review: 2, Effort: 3, Quality: 4, Ownership: 5, Durability: 6}.Normalized()
+	sum := w.Shipped + w.Review + w.Effort + w.Quality + w.Ownership + w.Durability
+	if !almostEqual(sum, 1) {
+		t.Errorf("six-dim normalized sum = %v, want 1", sum)
+	}
+	if !almostEqual(w.Durability, 6.0/21.0) {
+		t.Errorf("durability share = %v, want %v", w.Durability, 6.0/21.0)
 	}
 }
 
 func TestWeights_AllZeroFallsBackToEqual(t *testing.T) {
 	w := Weights{}.Normalized()
-	for _, v := range []float64{w.Shipped, w.Review, w.Effort, w.Quality, w.Ownership} {
-		if !almostEqual(v, 0.2) {
-			t.Errorf("all-zero weights → %v, want 0.2 each", v)
+	eq := 1.0 / 6.0
+	for _, v := range []float64{w.Shipped, w.Review, w.Effort, w.Quality, w.Ownership, w.Durability} {
+		if !almostEqual(v, eq) {
+			t.Errorf("all-zero weights → %v, want %v each", v, eq)
 		}
 	}
 }
@@ -174,16 +191,16 @@ func TestMergeGate_UnmergedScoresZero(t *testing.T) {
 // ── Quality inversion ──────────────────────────────────────────────────────────
 
 func TestQualityRaw_InvertsReverts(t *testing.T) {
-	clean := QualityRaw(0, 10, 5)  // no reverts
-	dirty := QualityRaw(5, 10, 5)  // many reverts, same cycle
+	clean := QualityRaw(QualityInputs{Reverts: 0, MergedPRs: 10, AvgCycleHours: 5}) // no reverts
+	dirty := QualityRaw(QualityInputs{Reverts: 5, MergedPRs: 10, AvgCycleHours: 5}) // many reverts, same cycle
 	if !(clean > dirty) {
 		t.Errorf("fewer reverts should score HIGHER: clean=%v dirty=%v", clean, dirty)
 	}
 }
 
 func TestQualityRaw_InvertsCycleTime(t *testing.T) {
-	fast := QualityRaw(0, 10, 2)   // fast cycle
-	slow := QualityRaw(0, 10, 200) // slow cycle, same reverts
+	fast := QualityRaw(QualityInputs{Reverts: 0, MergedPRs: 10, AvgCycleHours: 2})   // fast cycle
+	slow := QualityRaw(QualityInputs{Reverts: 0, MergedPRs: 10, AvgCycleHours: 200}) // slow cycle, same reverts
 	if !(fast > slow) {
 		t.Errorf("faster cycle should score HIGHER: fast=%v slow=%v", fast, slow)
 	}
@@ -203,6 +220,160 @@ func TestQuality_InversionFlowsToScore(t *testing.T) {
 	}
 	if !(byID["a"].Dimensions.Quality > byID["b"].Dimensions.Quality) {
 		t.Errorf("clean member quality (%v) should beat dirty member (%v)",
+			byID["a"].Dimensions.Quality, byID["b"].Dimensions.Quality)
+	}
+}
+
+// ── Quality: SZZ bug-introductions ───────────────────────────────────────────────
+
+func TestQualityRaw_InvertsSZZBugs(t *testing.T) {
+	// More bug-introductions ⇒ LOWER quality (same reverts/cycle/tests).
+	clean := QualityRaw(QualityInputs{MergedPRs: 10, BugsIntroduced: 0})
+	buggy := QualityRaw(QualityInputs{MergedPRs: 10, BugsIntroduced: 8})
+	if !(clean > buggy) {
+		t.Errorf("fewer SZZ bugs should score HIGHER: clean=%v buggy=%v", clean, buggy)
+	}
+}
+
+func TestQuality_SZZInversionFlowsToScore(t *testing.T) {
+	// Member A introduced no bugs; member B introduced many — A's quality wins.
+	raw := []RawMember{
+		{UserID: "a", Name: "A", MergedPRs: 10, BugsIntroduced: 0},
+		{UserID: "b", Name: "B", MergedPRs: 10, BugsIntroduced: 9, BugLines: 400},
+	}
+	got := Profiles(raw, NormPercentile, Weights{Quality: 1})
+	byID := map[string]Member{}
+	for _, m := range got {
+		byID[m.UserID] = m
+	}
+	if !(byID["a"].Dimensions.Quality > byID["b"].Dimensions.Quality) {
+		t.Errorf("no-bug member quality (%v) should beat buggy member (%v)",
+			byID["a"].Dimensions.Quality, byID["b"].Dimensions.Quality)
+	}
+}
+
+// ── Quality: test-coupling boost ─────────────────────────────────────────────────
+
+func TestQualityRaw_TestCouplingBoost(t *testing.T) {
+	// Touching tests can only RAISE quality, all else equal.
+	noTests := QualityRaw(QualityInputs{MergedPRs: 10, TestTouches: 0, TotalTouches: 100})
+	withTests := QualityRaw(QualityInputs{MergedPRs: 10, TestTouches: 50, TotalTouches: 100})
+	if !(withTests > noTests) {
+		t.Errorf("more test-coupling should score HIGHER: withTests=%v noTests=%v", withTests, noTests)
+	}
+}
+
+func TestQualityRaw_TestCouplingBounded(t *testing.T) {
+	// The boost is bounded: an all-tests member tops out at health*(1+0.5), so a
+	// member can't run away with quality purely by churning test files.
+	health := QualityRaw(QualityInputs{MergedPRs: 10, TotalTouches: 0}) // base health (no test data)
+	allTests := QualityRaw(QualityInputs{MergedPRs: 10, TestTouches: 100, TotalTouches: 100})
+	if allTests > health*1.5+1e-9 {
+		t.Errorf("test boost not bounded: allTests=%v exceeds health*1.5=%v", allTests, health*1.5)
+	}
+	if !(allTests > health) {
+		t.Errorf("full test-coupling should still beat none: allTests=%v health=%v", allTests, health)
+	}
+}
+
+// ── Durability dimension (blame line survival) ──────────────────────────────────
+
+func TestDurabilityRaw_SurvivalFraction(t *testing.T) {
+	// raw = (surviving/authored) * surviving. Higher survival fraction AND higher
+	// surviving volume both raise it.
+	if got := DurabilityRaw(0, 100); got != 0 {
+		t.Errorf("all overwritten (0 surviving) → %v, want 0 even with churn", got)
+	}
+	if got := DurabilityRaw(50, 0); got != 0 {
+		t.Errorf("no authored lines (no blame data) → %v, want 0", got)
+	}
+	// 100/100: frac 1, raw = 1*100 = 100. 50/100: frac .5, raw = .5*50 = 25.
+	full := DurabilityRaw(100, 100)
+	half := DurabilityRaw(50, 100)
+	if !almostEqual(full, 100) {
+		t.Errorf("full survival raw = %v, want 100", full)
+	}
+	if !almostEqual(half, 25) {
+		t.Errorf("half survival raw = %v, want 25", half)
+	}
+	if !(full > half) {
+		t.Errorf("higher survival should score HIGHER: full=%v half=%v", full, half)
+	}
+}
+
+func TestDurability_PersistenceBeatsChurn(t *testing.T) {
+	// "Churner" wrote a LOT but it was all overwritten (0 surviving); "Durable"
+	// wrote less but it persists. Durable must win on durability — the core
+	// anti-gaming property.
+	raw := []RawMember{
+		{UserID: "churner", Name: "Churner", AuthoredLines: 10000, SurvivingLines: 0},
+		{UserID: "durable", Name: "Durable", AuthoredLines: 500, SurvivingLines: 450},
+	}
+	got := Profiles(raw, NormPercentile, Weights{Durability: 1})
+	byID := map[string]Member{}
+	for _, m := range got {
+		byID[m.UserID] = m
+	}
+	if byID["churner"].Dimensions.Durability != 0 {
+		t.Errorf("churner durability = %v, want 0 (all lines overwritten)", byID["churner"].Dimensions.Durability)
+	}
+	if !(byID["durable"].Dimensions.Durability > byID["churner"].Dimensions.Durability) {
+		t.Errorf("durable (%v) should beat churner (%v) on durability",
+			byID["durable"].Dimensions.Durability, byID["churner"].Dimensions.Durability)
+	}
+	if byID["churner"].Composite != 0 {
+		t.Errorf("churner composite = %v, want 0 (durability-only weighting)", byID["churner"].Composite)
+	}
+}
+
+func TestSurvivalPct(t *testing.T) {
+	cases := []struct {
+		surviving, authored int
+		want                float64
+	}{
+		{0, 0, 0},   // no blame data
+		{0, 100, 0}, // all overwritten
+		{50, 100, 0.5},
+		{100, 100, 1},
+		{150, 100, 1}, // clamped
+	}
+	for _, c := range cases {
+		m := RawMember{SurvivingLines: c.surviving, AuthoredLines: c.authored}
+		if got := m.SurvivalPct(); !almostEqual(got, c.want) {
+			t.Errorf("SurvivalPct(s=%d,a=%d) = %v, want %v", c.surviving, c.authored, got, c.want)
+		}
+	}
+}
+
+// ── Empty deep-tables / all-zero graceful path ───────────────────────────────────
+
+func TestDeepSignals_EmptyTablesGraceful(t *testing.T) {
+	// When the git-analysis pipeline hasn't run, all deep fields are 0: durability
+	// scores 0 across the board, quality still works off reverts/cycle, and the
+	// composite is well-defined (no NaN/panic). The page must render cleanly.
+	raw := []RawMember{
+		{UserID: "a", Name: "A", MergedPRs: 5, Reverts: 0, AvgCycleHours: 4},
+		{UserID: "b", Name: "B", MergedPRs: 3, Reverts: 2, AvgCycleHours: 80},
+	}
+	got := Profiles(raw, NormPercentile, DefaultWeights())
+	for _, m := range got {
+		if m.Dimensions.Durability != 0 {
+			t.Errorf("%s durability = %v, want 0 (empty tables)", m.UserID, m.Dimensions.Durability)
+		}
+		if m.Raw.BugsIntroduced != 0 || m.Raw.TestCoupling() != 0 {
+			t.Errorf("%s deep quality raws nonzero with empty tables", m.UserID)
+		}
+		if math.IsNaN(m.Composite) || m.Composite < 0 || m.Composite > 100 {
+			t.Errorf("%s composite out of range / NaN: %v", m.UserID, m.Composite)
+		}
+	}
+	// Quality still differentiates off the legacy signals.
+	byID := map[string]Member{}
+	for _, m := range got {
+		byID[m.UserID] = m
+	}
+	if !(byID["a"].Dimensions.Quality > byID["b"].Dimensions.Quality) {
+		t.Errorf("legacy quality should still differentiate: a=%v b=%v",
 			byID["a"].Dimensions.Quality, byID["b"].Dimensions.Quality)
 	}
 }
@@ -241,7 +412,7 @@ func TestAgentPct(t *testing.T) {
 		want         float64
 	}{
 		{20, 0, 0},
-		{0, 0, 0},   // no commits → 0, not div-by-zero
+		{0, 0, 0}, // no commits → 0, not div-by-zero
 		{50, 50, 50},
 		{0, 10, 100},
 		{1, 3, 75},

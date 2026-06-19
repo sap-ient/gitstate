@@ -31,18 +31,20 @@ import (
 
 // ContributionWeights mirrors a contribution_weights row (relative, non-negative).
 type ContributionWeights struct {
-	OrgID     string
-	Shipped   float64
-	Review    float64
-	Effort    float64
-	Quality   float64
-	Ownership float64
-	UpdatedAt time.Time
+	OrgID      string
+	Shipped    float64
+	Review     float64
+	Effort     float64
+	Quality    float64
+	Ownership  float64
+	Durability float64
+	UpdatedAt  time.Time
 }
 
-// defaultContributionWeights matches the column defaults in the migration.
+// defaultContributionWeights matches the column defaults in the migration
+// (durability added by 20260619_010, DEFAULT 15).
 func defaultContributionWeights(orgID string) ContributionWeights {
-	return ContributionWeights{OrgID: orgID, Shipped: 30, Review: 20, Effort: 20, Quality: 15, Ownership: 15}
+	return ContributionWeights{OrgID: orgID, Shipped: 30, Review: 20, Effort: 20, Quality: 15, Ownership: 15, Durability: 15}
 }
 
 // GetContributionWeights returns the org's weights, or the migration defaults
@@ -50,12 +52,12 @@ func defaultContributionWeights(orgID string) ContributionWeights {
 func GetContributionWeights(ctx context.Context, tx pgx.Tx, orgID string) (ContributionWeights, error) {
 	const q = `
 		SELECT org_id::text, shipped::float8, review::float8, effort::float8,
-		       quality::float8, ownership::float8, updated_at
+		       quality::float8, ownership::float8, COALESCE(durability,15)::float8, updated_at
 		FROM contribution_weights
 		WHERE org_id = $1`
 	var w ContributionWeights
 	err := tx.QueryRow(ctx, q, orgID).Scan(
-		&w.OrgID, &w.Shipped, &w.Review, &w.Effort, &w.Quality, &w.Ownership, &w.UpdatedAt,
+		&w.OrgID, &w.Shipped, &w.Review, &w.Effort, &w.Quality, &w.Ownership, &w.Durability, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return defaultContributionWeights(orgID), nil
@@ -70,20 +72,21 @@ func GetContributionWeights(ctx context.Context, tx pgx.Tx, orgID string) (Contr
 // Must run inside db.WithOrg.
 func UpsertContributionWeights(ctx context.Context, tx pgx.Tx, w ContributionWeights) (ContributionWeights, error) {
 	const q = `
-		INSERT INTO contribution_weights (org_id, shipped, review, effort, quality, ownership, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now())
+		INSERT INTO contribution_weights (org_id, shipped, review, effort, quality, ownership, durability, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 		ON CONFLICT (org_id) DO UPDATE SET
 			shipped    = EXCLUDED.shipped,
 			review     = EXCLUDED.review,
 			effort     = EXCLUDED.effort,
 			quality    = EXCLUDED.quality,
 			ownership  = EXCLUDED.ownership,
+			durability = EXCLUDED.durability,
 			updated_at = now()
 		RETURNING org_id::text, shipped::float8, review::float8, effort::float8,
-		          quality::float8, ownership::float8, updated_at`
+		          quality::float8, ownership::float8, COALESCE(durability,15)::float8, updated_at`
 	var out ContributionWeights
-	err := tx.QueryRow(ctx, q, w.OrgID, w.Shipped, w.Review, w.Effort, w.Quality, w.Ownership).Scan(
-		&out.OrgID, &out.Shipped, &out.Review, &out.Effort, &out.Quality, &out.Ownership, &out.UpdatedAt,
+	err := tx.QueryRow(ctx, q, w.OrgID, w.Shipped, w.Review, w.Effort, w.Quality, w.Ownership, w.Durability).Scan(
+		&out.OrgID, &out.Shipped, &out.Review, &out.Effort, &out.Quality, &out.Ownership, &out.Durability, &out.UpdatedAt,
 	)
 	if err != nil {
 		return ContributionWeights{}, fmt.Errorf("store: upsert contribution weights: %w", err)
@@ -112,6 +115,42 @@ type ContribAggregate struct {
 	AreasOwned      int
 	HumanCommits    int
 	AgentCommits    int
+
+	// ── Deep git signals (from the git-analysis pipeline; 0 when not yet run) ──
+	// durability — git-blame line survival, summed across the org's repos.
+	SurvivingLines int
+	AuthoredLines  int
+	// quality / SZZ — changes later implicated as bug-introducing.
+	BugsIntroduced int // count of bug_introductions rows for the member
+	BugLines       int // SUM(lines) of those introductions
+	// quality / test-coupling — from commit_files.
+	TestFileTouches  int // file touches flagged is_test
+	TotalFileTouches int // all file touches
+}
+
+// TestCoupling is tested-file-touches / total-file-touches in [0,1] (0 when no
+// per-commit file data exists). Higher ⇒ the member touches tests more often.
+func (a ContribAggregate) TestCoupling() float64 {
+	if a.TotalFileTouches <= 0 {
+		return 0
+	}
+	return float64(a.TestFileTouches) / float64(a.TotalFileTouches)
+}
+
+// SurvivalPct is the surviving fraction of authored lines in [0,1] (0 when no
+// blame data exists).
+func (a ContribAggregate) SurvivalPct() float64 {
+	if a.AuthoredLines <= 0 {
+		return 0
+	}
+	p := float64(a.SurvivingLines) / float64(a.AuthoredLines)
+	if p < 0 {
+		return 0
+	}
+	if p > 1 {
+		return 1
+	}
+	return p
 }
 
 // revertPredicate matches revert / hotfix / rollback commit messages (the only
@@ -366,7 +405,16 @@ func LoadContributionAggregates(ctx context.Context, tx pgx.Tx, orgID string, fr
 		rows.Close()
 	}
 
-	// 5) Backfill user_id/name for identities we matched only by login/email but
+	// 5) Deep git signals (durability / SZZ / test-coupling). These tables are
+	//    populated by the git-analysis pipeline and may be EMPTY (analysis not yet
+	//    run) — in which case every member keeps the zero defaults and the page
+	//    still renders. All three key by lower(author_email) (the engine's
+	//    identity), org-scoped via RLS + the bound org_id.
+	if err := loadDeepSignals(ctx, tx, orgID, byIdent); err != nil {
+		return nil, err
+	}
+
+	// 6) Backfill user_id/name for identities we matched only by login/email but
 	//    that DO have a user row (so the UI gets a real userId).
 	if err := backfillUsers(ctx, tx, byIdent); err != nil {
 		return nil, err
@@ -394,6 +442,144 @@ func LoadContributionAggregates(ctx context.Context, tx pgx.Tx, orgID string, fr
 type contribAcc struct {
 	ContribAggregate
 	seen bool
+}
+
+// loadDeepSignals folds the git-analysis pipeline's three tables — author_survival
+// (blame line-survival), bug_introductions (SZZ), and commit_files (per-commit
+// churn + test flag) — into the per-identity accumulators, keyed by
+// lower(author_email). All three tables are org-scoped (RLS + bound org_id) and
+// may be EMPTY when analysis hasn't run yet; in that case this is a no-op and the
+// members keep their zero defaults (graceful, never an error). We do NOT call the
+// git-analysis package — these queries are defined here so this compiles alone.
+//
+// Identity matching: we reuse the accumulator whose Email matches (case-insensitive);
+// otherwise we attach the signal to an email-keyed accumulator so a member who
+// only appears in the deep tables still surfaces (durability is a strong outcome
+// signal even for someone who didn't merge a PR in the window).
+func loadDeepSignals(ctx context.Context, tx pgx.Tx, orgID string, byIdent map[string]*contribAcc) error {
+	// mergeByEmail returns the accumulator for an email identity: reuse an existing
+	// one whose Email matches, else create/return one keyed by lower(email).
+	mergeByEmail := func(email string) *contribAcc {
+		le := lowerASCII(email)
+		if le == "" {
+			return nil
+		}
+		for _, a := range byIdent {
+			if a.Email != "" && equalFoldASCII(a.Email, email) {
+				a.seen = true
+				return a
+			}
+		}
+		a := byIdent[le]
+		if a == nil {
+			a = &contribAcc{}
+			a.Email = email
+			byIdent[le] = a
+		}
+		if a.Email == "" {
+			a.Email = email
+		}
+		a.seen = true
+		return a
+	}
+
+	// a) Durability — blame line survival, summed across the org's repos.
+	{
+		const q = `
+			SELECT lower(author_email::text) AS ident,
+			       COALESCE(SUM(surviving_lines),0)::bigint AS surviving,
+			       COALESCE(SUM(authored_lines),0)::bigint  AS authored
+			FROM author_survival
+			WHERE org_id = $1 AND author_email IS NOT NULL AND author_email <> ''
+			GROUP BY 1`
+		rows, err := tx.Query(ctx, q, orgID)
+		if err != nil {
+			return fmt.Errorf("store: contribution durability agg: %w", err)
+		}
+		for rows.Next() {
+			var ident string
+			var surviving, authored int64
+			if err := rows.Scan(&ident, &surviving, &authored); err != nil {
+				rows.Close()
+				return fmt.Errorf("store: scan durability agg: %w", err)
+			}
+			if a := mergeByEmail(ident); a != nil {
+				a.SurvivingLines = int(surviving)
+				a.AuthoredLines = int(authored)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: contribution durability agg rows: %w", err)
+		}
+		rows.Close()
+	}
+
+	// b) SZZ — bug-introducing changes (count + lines). More ⇒ lower quality.
+	{
+		const q = `
+			SELECT lower(author_email::text) AS ident,
+			       COUNT(*)::bigint                    AS bugs,
+			       COALESCE(SUM(lines),0)::bigint      AS bug_lines
+			FROM bug_introductions
+			WHERE org_id = $1 AND author_email IS NOT NULL AND author_email <> ''
+			GROUP BY 1`
+		rows, err := tx.Query(ctx, q, orgID)
+		if err != nil {
+			return fmt.Errorf("store: contribution szz agg: %w", err)
+		}
+		for rows.Next() {
+			var ident string
+			var bugs, bugLines int64
+			if err := rows.Scan(&ident, &bugs, &bugLines); err != nil {
+				rows.Close()
+				return fmt.Errorf("store: scan szz agg: %w", err)
+			}
+			if a := mergeByEmail(ident); a != nil {
+				a.BugsIntroduced = int(bugs)
+				a.BugLines = int(bugLines)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: contribution szz agg rows: %w", err)
+		}
+		rows.Close()
+	}
+
+	// c) Test-coupling — tested-file-touches / total-file-touches from commit_files.
+	{
+		const q = `
+			SELECT lower(author_email::text) AS ident,
+			       COUNT(*) FILTER (WHERE is_test)::bigint AS test_touches,
+			       COUNT(*)::bigint                        AS total_touches
+			FROM commit_files
+			WHERE org_id = $1 AND author_email IS NOT NULL AND author_email <> ''
+			GROUP BY 1`
+		rows, err := tx.Query(ctx, q, orgID)
+		if err != nil {
+			return fmt.Errorf("store: contribution test-coupling agg: %w", err)
+		}
+		for rows.Next() {
+			var ident string
+			var testTouches, totalTouches int64
+			if err := rows.Scan(&ident, &testTouches, &totalTouches); err != nil {
+				rows.Close()
+				return fmt.Errorf("store: scan test-coupling agg: %w", err)
+			}
+			if a := mergeByEmail(ident); a != nil {
+				a.TestFileTouches = int(testTouches)
+				a.TotalFileTouches = int(totalTouches)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: contribution test-coupling agg rows: %w", err)
+		}
+		rows.Close()
+	}
+
+	return nil
 }
 
 // mergeByLogin returns the accumulator for a PR identity: it reuses an existing
@@ -509,10 +695,27 @@ type ContribEvidenceItem struct {
 
 // ContribEvidence bundles the per-dimension evidence rows for one member.
 type ContribEvidence struct {
-	Shipped []ContribEvidenceItem
-	Review  []ContribEvidenceItem
-	Quality []ContribEvidenceItem
-	Effort  []ContribEvidenceItem
+	Shipped    []ContribEvidenceItem
+	Review     []ContribEvidenceItem
+	Quality    []ContribEvidenceItem
+	Effort     []ContribEvidenceItem
+	Durability []DurabilityEvidenceItem
+	BugIntros  []BugIntroEvidenceItem
+}
+
+// DurabilityEvidenceItem is one repo's blame line-survival for the member.
+type DurabilityEvidenceItem struct {
+	Repo           string `json:"repo"`
+	SurvivingLines int    `json:"survivingLines"`
+	AuthoredLines  int    `json:"authoredLines"`
+}
+
+// BugIntroEvidenceItem is one SZZ-implicated change the member authored (the bad
+// quality signal, shown so the score is never a hidden rank).
+type BugIntroEvidenceItem struct {
+	FixSha        string `json:"fixSha"`
+	IntroducedSha string `json:"introducedSha"`
+	Lines         int    `json:"lines"`
 }
 
 // LoadContributionEvidence returns the real rows that back each dimension for one
@@ -627,6 +830,67 @@ func LoadContributionEvidence(ctx context.Context, tx pgx.Tx, orgID, email, logi
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return ContribEvidence{}, fmt.Errorf("store: contribution evidence quality rows: %w", err)
+		}
+		rows.Close()
+	}
+
+	// durability: per-repo blame line-survival for the member (deep signal; empty
+	// when the git-analysis pipeline hasn't run). Keyed by author_email.
+	{
+		const q = `
+			SELECT COALESCE(r.full_name,''),
+			       COALESCE(s.surviving_lines,0),
+			       COALESCE(s.authored_lines,0)
+			FROM author_survival s
+			LEFT JOIN repos r ON r.id = s.repo_id
+			WHERE s.org_id = $1
+			  AND lower(COALESCE(s.author_email::text,'')) = lower($2)
+			ORDER BY s.surviving_lines DESC
+			LIMIT $3`
+		rows, err := tx.Query(ctx, q, orgID, email, limit)
+		if err != nil {
+			return ContribEvidence{}, fmt.Errorf("store: contribution evidence durability: %w", err)
+		}
+		for rows.Next() {
+			var it DurabilityEvidenceItem
+			if err := rows.Scan(&it.Repo, &it.SurvivingLines, &it.AuthoredLines); err != nil {
+				rows.Close()
+				return ContribEvidence{}, fmt.Errorf("store: scan evidence durability: %w", err)
+			}
+			ev.Durability = append(ev.Durability, it)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return ContribEvidence{}, fmt.Errorf("store: contribution evidence durability rows: %w", err)
+		}
+		rows.Close()
+	}
+
+	// quality / SZZ: the member's bug-introducing changes (the bad signal the
+	// quality score inverts). Keyed by author_email. Empty when no SZZ data.
+	{
+		const q = `
+			SELECT COALESCE(fix_sha,''), COALESCE(introduced_sha,''), COALESCE(lines,0)
+			FROM bug_introductions
+			WHERE org_id = $1
+			  AND lower(COALESCE(author_email::text,'')) = lower($2)
+			ORDER BY detected_at DESC
+			LIMIT $3`
+		rows, err := tx.Query(ctx, q, orgID, email, limit)
+		if err != nil {
+			return ContribEvidence{}, fmt.Errorf("store: contribution evidence szz: %w", err)
+		}
+		for rows.Next() {
+			var it BugIntroEvidenceItem
+			if err := rows.Scan(&it.FixSha, &it.IntroducedSha, &it.Lines); err != nil {
+				rows.Close()
+				return ContribEvidence{}, fmt.Errorf("store: scan evidence szz: %w", err)
+			}
+			ev.BugIntros = append(ev.BugIntros, it)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return ContribEvidence{}, fmt.Errorf("store: contribution evidence szz rows: %w", err)
 		}
 		rows.Close()
 	}
