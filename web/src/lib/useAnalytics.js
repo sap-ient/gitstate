@@ -10,6 +10,10 @@
  *   useCommitsOverTime(filters, bucket) → { data, loading, error, refetch }  data: [{date,count}]
  *   useContributors(filters)     → { data, loading, error, refetch }   data: [{login,...}]
  *   useRepoStats(filters)        → { data, loading, error, refetch }   data: [{repoId,...}]
+ *   usePullRequests(filters)     → { data, loading, error, refetch }   data: {total,merged,...,throughput:[]}
+ *   useIssueFlow(filters)        → { data, loading, error, refetch }   data: {open,...,opened:[],closedSeries:[],byProject:[]}
+ *   useAgentShare(filters)       → { data, loading, error, refetch }   data: {agentCommits,humanCommits,agentPct,overTime:[]}
+ *   useProjects(filters)         → { data, loading, error, refetch }   data: [{projectId,name,...}]
  *   useDayCommits(date, filters) → { data, loading, error }            data: [{sha,...}]  (date null = idle)
  */
 import { useReducer, useEffect, useCallback, useRef } from 'react'
@@ -105,6 +109,26 @@ export function useContributors(filters = {}) {
 
 export function useRepoStats(filters = {}) {
   return useAnalyticsResource('repos', filters, [], asArray)
+}
+
+/** Pull-request analytics: totals, merge-rate, lead-time, throughput. data: object|null */
+export function usePullRequests(filters = {}) {
+  return useAnalyticsResource('pull-requests', filters, null, (raw) => raw ?? null)
+}
+
+/** Issue-flow: state breakdown + opened/closedSeries over time + byProject. data: object|null */
+export function useIssueFlow(filters = {}) {
+  return useAnalyticsResource('issue-flow', filters, null, (raw) => raw ?? null)
+}
+
+/** Agent vs human commit split (+ over time). data: object|null */
+export function useAgentShare(filters = {}) {
+  return useAnalyticsResource('agent-share', filters, null, (raw) => raw ?? null)
+}
+
+/** Per-project table. data: [{projectId,name,commits,...}] */
+export function useProjects(filters = {}) {
+  return useAnalyticsResource('projects', filters, [], asArray)
 }
 
 /**

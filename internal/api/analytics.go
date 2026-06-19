@@ -29,6 +29,10 @@ import (
 //	GET /api/analytics/commits-over-time   → []{date, count} (?bucket=day|week)
 //	GET /api/analytics/contributors        → leaderboard
 //	GET /api/analytics/repos               → per-repo table
+//	GET /api/analytics/pull-requests       → PR totals, merge-rate, lead-time, throughput
+//	GET /api/analytics/issue-flow          → issue state breakdown + opened/closed series + by-project
+//	GET /api/analytics/agent-share         → agent vs human commit split (+ over time)
+//	GET /api/analytics/projects            → per-project table
 //	GET /api/analytics/day/{date}          → drill-down: commits on YYYY-MM-DD
 func RegisterAnalyticsRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Config) {
 	svc := analytics.New(database)
@@ -45,6 +49,10 @@ func RegisterAnalyticsRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Co
 	mux.Handle("GET /api/analytics/commits-over-time", auth(http.HandlerFunc(h.commitsOverTime)))
 	mux.Handle("GET /api/analytics/contributors", auth(http.HandlerFunc(h.contributors)))
 	mux.Handle("GET /api/analytics/repos", auth(http.HandlerFunc(h.repos)))
+	mux.Handle("GET /api/analytics/pull-requests", auth(http.HandlerFunc(h.pullRequests)))
+	mux.Handle("GET /api/analytics/issue-flow", auth(http.HandlerFunc(h.issueFlow)))
+	mux.Handle("GET /api/analytics/agent-share", auth(http.HandlerFunc(h.agentShare)))
+	mux.Handle("GET /api/analytics/projects", auth(http.HandlerFunc(h.projects)))
 	mux.Handle("GET /api/analytics/day/{date}", auth(http.HandlerFunc(h.day)))
 }
 
@@ -144,6 +152,66 @@ func (h *analyticsHandlers) repos(w http.ResponseWriter, r *http.Request) {
 	res, err := h.svc.RepoStats(r.Context(), orgID, f)
 	if err != nil {
 		writeAnalyticsError(w, "compute repo stats", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, emptySlice(res))
+}
+
+// GET /api/analytics/pull-requests
+func (h *analyticsHandlers) pullRequests(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	f, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.svc.PullRequests(r.Context(), orgID, f)
+	if err != nil {
+		writeAnalyticsError(w, "compute pull-requests", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// GET /api/analytics/issue-flow
+func (h *analyticsHandlers) issueFlow(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	f, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.svc.IssueFlow(r.Context(), orgID, f)
+	if err != nil {
+		writeAnalyticsError(w, "compute issue-flow", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// GET /api/analytics/agent-share
+func (h *analyticsHandlers) agentShare(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	f, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.svc.AgentShare(r.Context(), orgID, f)
+	if err != nil {
+		writeAnalyticsError(w, "compute agent-share", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// GET /api/analytics/projects
+func (h *analyticsHandlers) projects(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	f, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.svc.Projects(r.Context(), orgID, f)
+	if err != nil {
+		writeAnalyticsError(w, "compute projects", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, emptySlice(res))

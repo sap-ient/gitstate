@@ -333,6 +333,457 @@ func (f AnalyticsFilter) RepoStats(ctx context.Context, tx pgx.Tx) ([]RepoStat, 
 	return out, nil
 }
 
+// ── Pull-request analytics ────────────────────────────────────────────────────
+
+// prWhere builds the parameterised WHERE fragment for pull_requests, aliased
+// `p`. The date window filters on p.created_at (inclusive lower, exclusive
+// upper); RepoID filters p.repo_id; Author matches p.author_login
+// case-insensitively (PRs carry no email). Returns the fragment (no leading
+// keyword), the ordered args, and the next free positional index.
+func (f AnalyticsFilter) prWhere(startIdx int) (string, []any, int) {
+	var (
+		clause string
+		args   []any
+		idx    = startIdx
+	)
+	if !f.From.IsZero() {
+		clause += fmt.Sprintf(" AND p.created_at >= $%d", idx)
+		args = append(args, f.From)
+		idx++
+	}
+	if !f.To.IsZero() {
+		clause += fmt.Sprintf(" AND p.created_at < $%d", idx)
+		args = append(args, f.To)
+		idx++
+	}
+	if f.RepoID != "" {
+		clause += fmt.Sprintf(" AND p.repo_id = $%d", idx)
+		args = append(args, f.RepoID)
+		idx++
+	}
+	if f.Author != "" {
+		clause += fmt.Sprintf(" AND lower(COALESCE(p.author_login,'')) = lower($%d)", idx)
+		args = append(args, f.Author)
+		idx++
+	}
+	return clause, args, idx
+}
+
+// PRStats holds the raw pull-request totals plus the lead-time samples (hours
+// from first_commit_at — falling back to created_at — to merged_at, for merged
+// PRs only). Percentiles and the merge rate are derived in the analytics package
+// from these fields so they stay unit-testable without a database.
+type PRStats struct {
+	Total           int       `json:"total"`
+	Merged          int       `json:"merged"`
+	Open            int       `json:"open"`
+	Closed          int       `json:"closed"`
+	SumChangedFiles int64     `json:"-"`
+	LeadTimeHours   []float64 `json:"-"`
+}
+
+// PRStats returns pull-request totals and per-merged-PR lead-time samples over
+// the filtered window. State buckets: merged (state='merged' OR merged_at set),
+// open (state='open'), closed (state='closed' and not merged). Lead time is
+// computed in SQL as EPOCH hours but returned as raw samples so the percentiles
+// are derived (and tested) in Go.
+func (f AnalyticsFilter) PRStats(ctx context.Context, tx pgx.Tx) (PRStats, error) {
+	where, args, _ := f.prWhere(1)
+	q := `
+		SELECT
+			COUNT(*)                                                       AS total,
+			COUNT(*) FILTER (WHERE p.state = 'merged' OR p.merged_at IS NOT NULL) AS merged,
+			COUNT(*) FILTER (WHERE p.state = 'open'   AND p.merged_at IS NULL)    AS open,
+			COUNT(*) FILTER (WHERE p.state = 'closed' AND p.merged_at IS NULL)    AS closed,
+			COALESCE(SUM(p.changed_files), 0)                              AS sum_changed_files
+		FROM pull_requests p
+		WHERE true` + where
+
+	var s PRStats
+	if err := tx.QueryRow(ctx, q, args...).Scan(
+		&s.Total, &s.Merged, &s.Open, &s.Closed, &s.SumChangedFiles,
+	); err != nil {
+		return PRStats{}, fmt.Errorf("store: analytics pr summary: %w", err)
+	}
+
+	// Lead-time samples (hours) for merged PRs with a usable start timestamp.
+	lq := `
+		SELECT EXTRACT(EPOCH FROM (p.merged_at - COALESCE(p.first_commit_at, p.created_at))) / 3600.0
+		FROM pull_requests p
+		WHERE p.merged_at IS NOT NULL
+		  AND p.merged_at >= COALESCE(p.first_commit_at, p.created_at)` + where
+	rows, err := tx.Query(ctx, lq, args...)
+	if err != nil {
+		return PRStats{}, fmt.Errorf("store: analytics pr lead-time: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h float64
+		if err := rows.Scan(&h); err != nil {
+			return PRStats{}, fmt.Errorf("store: scan pr lead-time: %w", err)
+		}
+		s.LeadTimeHours = append(s.LeadTimeHours, h)
+	}
+	if err := rows.Err(); err != nil {
+		return PRStats{}, fmt.Errorf("store: analytics pr lead-time rows: %w", err)
+	}
+	return s, nil
+}
+
+// PRThroughput is one day with the count of PRs opened (by created_at) and
+// merged (by merged_at) on that day.
+type PRThroughput struct {
+	Date   time.Time `json:"date"`
+	Opened int       `json:"opened"`
+	Merged int       `json:"merged"`
+}
+
+// PRThroughput returns per-day opened/merged PR counts over the window, ordered
+// ascending. A PR contributes to the "opened" series on its created_at date and
+// to the "merged" series on its merged_at date; both are bounded by the window.
+// The two series are unioned so a day appears if it had either event.
+func (f AnalyticsFilter) PRThroughput(ctx context.Context, tx pgx.Tx) ([]PRThroughput, error) {
+	where, args, _ := f.prWhere(1)
+	// "opened" rows use the standard window (created_at). For "merged" we reuse
+	// the same repo/author filters but bound by merged_at against the window.
+	mwhere := where
+	q := `
+		WITH opened AS (
+			SELECT p.created_at::date AS day, COUNT(*) AS n
+			FROM pull_requests p
+			WHERE true` + where + `
+			GROUP BY 1
+		),
+		merged AS (
+			SELECT p.merged_at::date AS day, COUNT(*) AS n
+			FROM pull_requests p
+			WHERE p.merged_at IS NOT NULL` + mwhere + `
+			GROUP BY 1
+		)
+		SELECT
+			COALESCE(o.day, m.day)  AS day,
+			COALESCE(o.n, 0)        AS opened,
+			COALESCE(m.n, 0)        AS merged
+		FROM opened o
+		FULL OUTER JOIN merged m ON o.day = m.day
+		ORDER BY day`
+
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: analytics pr throughput: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PRThroughput
+	for rows.Next() {
+		var t PRThroughput
+		if err := rows.Scan(&t.Date, &t.Opened, &t.Merged); err != nil {
+			return nil, fmt.Errorf("store: scan pr throughput: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: analytics pr throughput rows: %w", err)
+	}
+	return out, nil
+}
+
+// ── Issue-flow analytics ──────────────────────────────────────────────────────
+
+// issueWhere builds the parameterised WHERE fragment for issues, aliased `i`.
+// dateCol selects which timestamp column the window filters on ("created_at" or
+// "updated_at"). RepoID filters i.repo_id; the Author filter is ignored (issues
+// carry no author identity). Returns the fragment, args, next index.
+func (f AnalyticsFilter) issueWhere(startIdx int, dateCol string) (string, []any, int) {
+	var (
+		clause string
+		args   []any
+		idx    = startIdx
+	)
+	if !f.From.IsZero() {
+		clause += fmt.Sprintf(" AND i.%s >= $%d", dateCol, idx)
+		args = append(args, f.From)
+		idx++
+	}
+	if !f.To.IsZero() {
+		clause += fmt.Sprintf(" AND i.%s < $%d", dateCol, idx)
+		args = append(args, f.To)
+		idx++
+	}
+	if f.RepoID != "" {
+		clause += fmt.Sprintf(" AND i.repo_id = $%d", idx)
+		args = append(args, f.RepoID)
+		idx++
+	}
+	return clause, args, idx
+}
+
+// IssueState is the effective state of an issue: COALESCE(derived_state, state).
+// Buckets: open | in_progress | done | closed (anything else → open).
+
+// IssueFlowCounts holds the current state breakdown over the filtered set. The
+// window filters on created_at (i.e. issues created in the window).
+type IssueFlowCounts struct {
+	Open       int `json:"open"`
+	InProgress int `json:"inProgress"`
+	Done       int `json:"done"`
+	Closed     int `json:"closed"`
+}
+
+// IssueFlowCounts returns the effective-state breakdown for issues created in
+// the window. State is COALESCE(derived_state, state) so git-derived states win.
+func (f AnalyticsFilter) IssueFlowCounts(ctx context.Context, tx pgx.Tx) (IssueFlowCounts, error) {
+	where, args, _ := f.issueWhere(1, "created_at")
+	q := `
+		SELECT
+			COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) = 'open')        AS open,
+			COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) = 'in_progress') AS in_progress,
+			COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) = 'done')        AS done,
+			COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) = 'closed')      AS closed
+		FROM issues i
+		WHERE true` + where
+
+	var c IssueFlowCounts
+	if err := tx.QueryRow(ctx, q, args...).Scan(
+		&c.Open, &c.InProgress, &c.Done, &c.Closed,
+	); err != nil {
+		return IssueFlowCounts{}, fmt.Errorf("store: analytics issue state counts: %w", err)
+	}
+	return c, nil
+}
+
+// IssuesOpenedOverTime returns per-day counts of issues created in the window,
+// ordered ascending (only days with ≥1 created issue).
+func (f AnalyticsFilter) IssuesOpenedOverTime(ctx context.Context, tx pgx.Tx) ([]DayCount, error) {
+	where, args, _ := f.issueWhere(1, "created_at")
+	q := `
+		SELECT i.created_at::date AS day, COUNT(*) AS n
+		FROM issues i
+		WHERE true` + where + `
+		GROUP BY 1
+		ORDER BY 1`
+	return scanDayCounts(ctx, tx, "analytics issues-opened", q, args)
+}
+
+// IssuesClosedOverTime returns per-day counts of issues that reached a terminal
+// state (done|closed) within the window, bucketed by updated_at (the best
+// available "resolved at" proxy in the schema), ordered ascending.
+func (f AnalyticsFilter) IssuesClosedOverTime(ctx context.Context, tx pgx.Tx) ([]DayCount, error) {
+	where, args, _ := f.issueWhere(1, "updated_at")
+	q := `
+		SELECT i.updated_at::date AS day, COUNT(*) AS n
+		FROM issues i
+		WHERE COALESCE(i.derived_state, i.state) IN ('done','closed')` + where + `
+		GROUP BY 1
+		ORDER BY 1`
+	return scanDayCounts(ctx, tx, "analytics issues-closed", q, args)
+}
+
+// IssueProjectStat is one project's open/done issue counts.
+type IssueProjectStat struct {
+	Project string `json:"project"`
+	Open    int    `json:"open"`
+	Done    int    `json:"done"`
+}
+
+// IssuesByProject returns per-project open vs done (terminal) issue counts for
+// issues created in the window, ordered by total descending. Issues with no
+// project are grouped under "(no project)".
+func (f AnalyticsFilter) IssuesByProject(ctx context.Context, tx pgx.Tx) ([]IssueProjectStat, error) {
+	where, args, _ := f.issueWhere(1, "created_at")
+	q := `
+		SELECT
+			COALESCE(pr.name, '(no project)') AS project,
+			COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) NOT IN ('done','closed')) AS open,
+			COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) IN ('done','closed'))     AS done
+		FROM issues i
+		LEFT JOIN projects pr ON pr.id = i.project_id
+		WHERE true` + where + `
+		GROUP BY 1
+		ORDER BY (COUNT(*)) DESC, project ASC`
+
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: analytics issues-by-project: %w", err)
+	}
+	defer rows.Close()
+
+	var out []IssueProjectStat
+	for rows.Next() {
+		var s IssueProjectStat
+		if err := rows.Scan(&s.Project, &s.Open, &s.Done); err != nil {
+			return nil, fmt.Errorf("store: scan issue project stat: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: analytics issues-by-project rows: %w", err)
+	}
+	return out, nil
+}
+
+// ── Agent-share analytics ─────────────────────────────────────────────────────
+
+// AgentShare holds the agent-vs-human commit split over the filtered window.
+// agentPct is derived in the analytics package from the two raw counts.
+type AgentShare struct {
+	AgentCommits int `json:"agentCommits"`
+	HumanCommits int `json:"humanCommits"`
+}
+
+// AgentShare returns the agent vs human commit counts over the filtered commit
+// set, using commits.is_agent (decision P5). Reuses the standard commit
+// whereClause so the date/repo/author filters apply uniformly.
+func (f AnalyticsFilter) AgentShare(ctx context.Context, tx pgx.Tx) (AgentShare, error) {
+	where, args, _ := f.whereClause(1)
+	q := `
+		SELECT
+			COUNT(*) FILTER (WHERE c.is_agent)       AS agent,
+			COUNT(*) FILTER (WHERE NOT c.is_agent)   AS human
+		FROM commits c
+		WHERE true` + where
+
+	var a AgentShare
+	if err := tx.QueryRow(ctx, q, args...).Scan(&a.AgentCommits, &a.HumanCommits); err != nil {
+		return AgentShare{}, fmt.Errorf("store: analytics agent share: %w", err)
+	}
+	return a, nil
+}
+
+// AgentDay is one day with its agent vs human commit counts.
+type AgentDay struct {
+	Date  time.Time `json:"date"`
+	Agent int       `json:"agent"`
+	Human int       `json:"human"`
+}
+
+// AgentShareOverTime returns per-day agent vs human commit counts over the
+// window, ordered ascending (only days with ≥1 commit).
+func (f AnalyticsFilter) AgentShareOverTime(ctx context.Context, tx pgx.Tx) ([]AgentDay, error) {
+	where, args, _ := f.whereClause(1)
+	q := `
+		SELECT
+			c.committed_at::date                   AS day,
+			COUNT(*) FILTER (WHERE c.is_agent)     AS agent,
+			COUNT(*) FILTER (WHERE NOT c.is_agent) AS human
+		FROM commits c
+		WHERE true` + where + `
+		GROUP BY 1
+		ORDER BY 1`
+
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: analytics agent share over time: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AgentDay
+	for rows.Next() {
+		var d AgentDay
+		if err := rows.Scan(&d.Date, &d.Agent, &d.Human); err != nil {
+			return nil, fmt.Errorf("store: scan agent day: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: analytics agent share over time rows: %w", err)
+	}
+	return out, nil
+}
+
+// ── Per-project analytics ─────────────────────────────────────────────────────
+
+// ProjectStat is one row of the per-project table. Commit/contributor/churn
+// metrics are attributed to a project via the issues→repo→commits linkage:
+// commits in any repo that the project's issues reference. openIssues/doneIssues
+// come straight from the project's issues (effective state).
+type ProjectStat struct {
+	ProjectID    string `json:"projectId"`
+	Name         string `json:"name"`
+	Commits      int    `json:"commits"`
+	Contributors int    `json:"contributors"`
+	OpenIssues   int    `json:"openIssues"`
+	DoneIssues   int    `json:"doneIssues"`
+	Additions    int64  `json:"additions"`
+	Deletions    int64  `json:"deletions"`
+}
+
+// ProjectStats returns the per-project table over the filtered window. Issue
+// counts use issues created in the window (effective state). Commit/churn
+// metrics are summed over commits (in the window) in the repos that the
+// project's issues link to — the schema's only project→code bridge. Projects
+// are ordered by commits then open issues, descending.
+func (f AnalyticsFilter) ProjectStats(ctx context.Context, tx pgx.Tx) ([]ProjectStat, error) {
+	// Issue side: window on issues.created_at, repo filter honoured.
+	iWhere, iArgs, next := f.issueWhere(1, "created_at")
+	// Commit side: window on commits.committed_at, repo/author filters honoured.
+	cWhere, cArgs, _ := f.whereClause(next)
+	args := append(append([]any{}, iArgs...), cArgs...)
+
+	q := `
+		WITH proj AS (
+			SELECT id, name FROM projects
+		),
+		issue_agg AS (
+			SELECT
+				i.project_id,
+				COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) NOT IN ('done','closed')) AS open_issues,
+				COUNT(*) FILTER (WHERE COALESCE(i.derived_state, i.state) IN ('done','closed'))     AS done_issues,
+				array_agg(DISTINCT i.repo_id) FILTER (WHERE i.repo_id IS NOT NULL)                  AS repo_ids
+			FROM issues i
+			WHERE true` + iWhere + `
+			GROUP BY i.project_id
+		),
+		commit_agg AS (
+			SELECT
+				ia.project_id,
+				COUNT(c.*)                          AS commits,
+				COUNT(DISTINCT COALESCE(NULLIF(lower(c.author_email::text),''),
+				                        NULLIF(lower(c.author_login),''))) AS contributors,
+				COALESCE(SUM(c.additions), 0)       AS additions,
+				COALESCE(SUM(c.deletions), 0)       AS deletions
+			FROM issue_agg ia
+			JOIN commits c ON c.repo_id = ANY(ia.repo_ids)
+			WHERE true` + cWhere + `
+			GROUP BY ia.project_id
+		)
+		SELECT
+			p.id::text,
+			p.name,
+			COALESCE(ca.commits, 0)       AS commits,
+			COALESCE(ca.contributors, 0)  AS contributors,
+			COALESCE(ia.open_issues, 0)   AS open_issues,
+			COALESCE(ia.done_issues, 0)   AS done_issues,
+			COALESCE(ca.additions, 0)     AS additions,
+			COALESCE(ca.deletions, 0)     AS deletions
+		FROM proj p
+		LEFT JOIN issue_agg ia  ON ia.project_id = p.id
+		LEFT JOIN commit_agg ca ON ca.project_id = p.id
+		ORDER BY commits DESC, open_issues DESC, p.name ASC`
+
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: analytics project stats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ProjectStat
+	for rows.Next() {
+		var s ProjectStat
+		if err := rows.Scan(
+			&s.ProjectID, &s.Name, &s.Commits, &s.Contributors,
+			&s.OpenIssues, &s.DoneIssues, &s.Additions, &s.Deletions,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan project stat: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: analytics project stats rows: %w", err)
+	}
+	return out, nil
+}
+
 // ── Day drill-down ────────────────────────────────────────────────────────────
 
 // DayCommit is one commit in the per-day drill-down list.

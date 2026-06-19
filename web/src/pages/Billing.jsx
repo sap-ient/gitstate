@@ -1017,7 +1017,7 @@ export default function Billing() {
   )
 
   return (
-    <div className="max-w-5xl">
+    <div className="w-full">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-[var(--text)] tracking-tight font-display">Billing</h1>
         <p className="text-sm text-[var(--text-muted)] mt-1">Plan, usage, and evidence-backed invoices.</p>

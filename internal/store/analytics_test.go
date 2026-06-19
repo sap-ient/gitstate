@@ -91,11 +91,11 @@ func TestAnalyticsAggregates(t *testing.T) {
 	day2 := time.Date(2026, 3, 11, 14, 0, 0, 0, time.UTC)
 
 	type fix struct {
-		repo               string
-		sha, login, email  string
-		isAgent            bool
-		adds, dels         int
-		at                 time.Time
+		repo              string
+		sha, login, email string
+		isAgent           bool
+		adds, dels        int
+		at                time.Time
 	}
 	fixtures := []fix{
 		// jane: 3 commits across 2 days, repo A — top contributor
@@ -301,6 +301,200 @@ func TestAnalyticsAggregates(t *testing.T) {
 		t.Errorf("repo-filtered commits = %d, want 2", rs.TotalCommits)
 	}
 
-	t.Logf("analytics aggregates OK: %d commits, %d contributors, %d repos",
-		sum.TotalCommits, sum.Contributors, sum.Repos)
+	// ── Agent share ──────────────────────────────────────────────────────────
+	// Of the 6 commits exactly one (sha6) is agent-authored.
+	share, err := filter.AgentShare(ctx, tx)
+	if err != nil {
+		t.Fatalf("AgentShare: %v", err)
+	}
+	if share.AgentCommits != 1 {
+		t.Errorf("AgentCommits = %d, want 1", share.AgentCommits)
+	}
+	if share.HumanCommits != 5 {
+		t.Errorf("HumanCommits = %d, want 5", share.HumanCommits)
+	}
+	ats, err := filter.AgentShareOverTime(ctx, tx)
+	if err != nil {
+		t.Fatalf("AgentShareOverTime: %v", err)
+	}
+	var agentTotal, humanTotal int
+	for _, d := range ats {
+		agentTotal += d.Agent
+		humanTotal += d.Human
+	}
+	if agentTotal != 1 || humanTotal != 5 {
+		t.Errorf("agent-share over time totals = (%d,%d), want (1,5)", agentTotal, humanTotal)
+	}
+
+	// ── Pull requests ────────────────────────────────────────────────────────
+	// 4 PRs: 3 merged (lead times 2h, 4h, 24h), 1 open. merge rate = 3/4.
+	prDay := time.Date(2026, 3, 5, 8, 0, 0, 0, time.UTC)
+	type prFix struct {
+		ext          string
+		state        string
+		login        string
+		adds, dels   int
+		changedFiles int
+		firstCommit  time.Time
+		merged       *time.Time
+	}
+	mAt := func(h int) *time.Time { v := prDay.Add(time.Duration(h) * time.Hour); return &v }
+	prFixtures := []prFix{
+		{"pr1", "merged", "jane", 100, 10, 5, prDay, mAt(2)}, // 2h lead
+		{"pr2", "merged", "bob", 50, 5, 3, prDay, mAt(4)},    // 4h lead
+		{"pr3", "merged", "jane", 20, 2, 8, prDay, mAt(24)},  // 24h lead
+		{"pr4", "open", "bob", 10, 0, 1, prDay, nil},         // still open
+	}
+	for _, p := range prFixtures {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO pull_requests (org_id, repo_id, platform, external_id, number,
+			 title, author_login, state, additions, deletions, changed_files,
+			 first_commit_at, merged_at, created_at)
+			 VALUES ($1,$2,'github',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			orgID, repoA, p.ext, 1, "title "+p.ext, p.login, p.state,
+			p.adds, p.dels, p.changedFiles, p.firstCommit, p.merged, prDay,
+		); err != nil {
+			t.Fatalf("insert pr %s: %v", p.ext, err)
+		}
+	}
+	prs, err := filter.PRStats(ctx, tx)
+	if err != nil {
+		t.Fatalf("PRStats: %v", err)
+	}
+	if prs.Total != 4 {
+		t.Errorf("PR total = %d, want 4", prs.Total)
+	}
+	if prs.Merged != 3 {
+		t.Errorf("PR merged = %d, want 3", prs.Merged)
+	}
+	if prs.Open != 1 {
+		t.Errorf("PR open = %d, want 1", prs.Open)
+	}
+	if len(prs.LeadTimeHours) != 3 {
+		t.Fatalf("lead-time samples = %d, want 3", len(prs.LeadTimeHours))
+	}
+	// Verify the lead-time samples are the expected hours (order not guaranteed).
+	wantLead := map[int]bool{2: false, 4: false, 24: false}
+	for _, h := range prs.LeadTimeHours {
+		wantLead[int(h+0.5)] = true
+	}
+	for h, seen := range wantLead {
+		if !seen {
+			t.Errorf("missing lead-time sample ~%dh (got %v)", h, prs.LeadTimeHours)
+		}
+	}
+	if prs.SumChangedFiles != int64(5+3+8+1) {
+		t.Errorf("sum changed files = %d, want 17", prs.SumChangedFiles)
+	}
+	tp, err := filter.PRThroughput(ctx, tx)
+	if err != nil {
+		t.Fatalf("PRThroughput: %v", err)
+	}
+	var opened, merged int
+	for _, d := range tp {
+		opened += d.Opened
+		merged += d.Merged
+	}
+	if opened != 4 {
+		t.Errorf("throughput opened total = %d, want 4", opened)
+	}
+	if merged != 3 {
+		t.Errorf("throughput merged total = %d, want 3", merged)
+	}
+
+	// ── Issues ───────────────────────────────────────────────────────────────
+	// Create a project + 4 issues: 1 open, 1 in_progress, 2 done.
+	var projID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO projects (org_id, name) VALUES ($1, 'Apollo') RETURNING id`,
+		orgID,
+	).Scan(&projID); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issueDay := time.Date(2026, 3, 6, 9, 0, 0, 0, time.UTC)
+	type issueFix struct {
+		title, state string
+		withProject  bool
+	}
+	issueFixtures := []issueFix{
+		{"i-open", "open", true},
+		{"i-prog", "in_progress", true},
+		{"i-done1", "done", true},
+		{"i-done2", "closed", false}, // no project
+	}
+	for _, is := range issueFixtures {
+		var pid any
+		if is.withProject {
+			pid = projID
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO issues (org_id, project_id, repo_id, source, title, state, created_at, updated_at)
+			 VALUES ($1,$2,$3,'native',$4,$5,$6,$6)`,
+			orgID, pid, repoA, is.title, is.state, issueDay,
+		); err != nil {
+			t.Fatalf("insert issue %s: %v", is.title, err)
+		}
+	}
+	counts, err := filter.IssueFlowCounts(ctx, tx)
+	if err != nil {
+		t.Fatalf("IssueFlowCounts: %v", err)
+	}
+	if counts.Open != 1 || counts.InProgress != 1 || counts.Done != 1 || counts.Closed != 1 {
+		t.Errorf("issue counts = %+v, want open=1 inProgress=1 done=1 closed=1", counts)
+	}
+	opIss, err := filter.IssuesOpenedOverTime(ctx, tx)
+	if err != nil {
+		t.Fatalf("IssuesOpenedOverTime: %v", err)
+	}
+	var openedIss int
+	for _, d := range opIss {
+		openedIss += d.Count
+	}
+	if openedIss != 4 {
+		t.Errorf("issues opened total = %d, want 4", openedIss)
+	}
+	byProj, err := filter.IssuesByProject(ctx, tx)
+	if err != nil {
+		t.Fatalf("IssuesByProject: %v", err)
+	}
+	var apollo *IssueProjectStat
+	for i := range byProj {
+		if byProj[i].Project == "Apollo" {
+			apollo = &byProj[i]
+		}
+	}
+	if apollo == nil {
+		t.Fatalf("Apollo project missing from issues-by-project")
+	}
+	// Apollo has open(open) + in_progress(open) + done(done) = 2 open, 1 done.
+	if apollo.Open != 2 || apollo.Done != 1 {
+		t.Errorf("Apollo by-project = (open=%d done=%d), want (2,1)", apollo.Open, apollo.Done)
+	}
+
+	// ── Per-project stats ────────────────────────────────────────────────────
+	projStats, err := filter.ProjectStats(ctx, tx)
+	if err != nil {
+		t.Fatalf("ProjectStats: %v", err)
+	}
+	var apolloStat *ProjectStat
+	for i := range projStats {
+		if projStats[i].Name == "Apollo" {
+			apolloStat = &projStats[i]
+		}
+	}
+	if apolloStat == nil {
+		t.Fatalf("Apollo missing from project stats")
+	}
+	if apolloStat.OpenIssues != 2 || apolloStat.DoneIssues != 1 {
+		t.Errorf("Apollo issues = (open=%d done=%d), want (2,1)", apolloStat.OpenIssues, apolloStat.DoneIssues)
+	}
+	// Apollo's issues link to repoA, which has 4 commits in the window.
+	if apolloStat.Commits != 4 {
+		t.Errorf("Apollo commits (via repoA linkage) = %d, want 4", apolloStat.Commits)
+	}
+
+	t.Logf("analytics aggregates OK: %d commits, %d contributors, %d repos; "+
+		"PRs total=%d merged=%d; agent=%d human=%d",
+		sum.TotalCommits, sum.Contributors, sum.Repos,
+		prs.Total, prs.Merged, share.AgentCommits, share.HumanCommits)
 }

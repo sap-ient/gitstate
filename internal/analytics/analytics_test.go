@@ -12,10 +12,10 @@ import (
 
 func TestDeriveAverages(t *testing.T) {
 	tests := []struct {
-		name                                       string
-		commits, activeDays, contributors          int
-		additions, deletions                       int64
-		wantPerDay, wantPerContrib, wantPerCommit  float64
+		name                                      string
+		commits, activeDays, contributors         int
+		additions, deletions                      int64
+		wantPerDay, wantPerContrib, wantPerCommit float64
 	}{
 		{
 			name: "typical", commits: 100, activeDays: 20, contributors: 5,
@@ -67,8 +67,8 @@ func TestNormalizeBucket(t *testing.T) {
 		{"week", "week"},
 		{"Week", "week"},
 		{" WEEK ", "week"},
-		{"month", "day"},  // unsupported → day
-		{"", "day"},       // empty → day
+		{"month", "day"}, // unsupported → day
+		{"", "day"},      // empty → day
 		{"garbage", "day"},
 	}
 	for _, tt := range tests {
@@ -220,4 +220,79 @@ func TestApplyDefaultsIsPure(t *testing.T) {
 
 func almostEqual(a, b float64) bool {
 	return math.Abs(a-b) < 1e-9
+}
+
+func TestRate(t *testing.T) {
+	tests := []struct {
+		part, whole int
+		want        float64
+	}{
+		{0, 0, 0},    // div-by-zero guard
+		{5, 0, 0},    // div-by-zero guard
+		{1, 2, 0.5},  //
+		{3, 4, 0.75}, //
+		{10, 10, 1},  // 100%
+		{0, 7, 0},    // none
+	}
+	for _, tt := range tests {
+		if got := Rate(tt.part, tt.whole); !almostEqual(got, tt.want) {
+			t.Errorf("Rate(%d,%d) = %v, want %v", tt.part, tt.whole, got, tt.want)
+		}
+	}
+}
+
+func TestPct(t *testing.T) {
+	tests := []struct {
+		part, whole int
+		want        float64
+	}{
+		{0, 0, 0},    // div-by-zero guard
+		{1, 2, 50},   //
+		{1, 3, 33.3}, // rounded to 1dp
+		{2, 3, 66.7}, // rounded to 1dp
+		{7, 7, 100},  //
+		{0, 5, 0},    //
+	}
+	for _, tt := range tests {
+		if got := Pct(tt.part, tt.whole); !almostEqual(got, tt.want) {
+			t.Errorf("Pct(%d,%d) = %v, want %v", tt.part, tt.whole, got, tt.want)
+		}
+	}
+}
+
+func TestPercentile(t *testing.T) {
+	// Linear-interpolation (NumPy default) percentiles.
+	data := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	tests := []struct {
+		name    string
+		samples []float64
+		p       float64
+		want    float64
+	}{
+		{"empty → 0", nil, 50, 0},
+		{"single sample", []float64{42}, 90, 42},
+		{"p0 → min", data, 0, 1},
+		{"p100 → max", data, 100, 10},
+		{"p50 (median) of 1..10", data, 50, 5.5},
+		{"p90 of 1..10", data, 90, 9.1},
+		{"unsorted input", []float64{10, 1, 5, 3}, 50, 4}, // sorted 1,3,5,10 → median = (3+5)/2
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Percentile(tt.samples, tt.p); !almostEqual(got, tt.want) {
+				t.Errorf("Percentile(%v, %v) = %v, want %v", tt.samples, tt.p, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPercentileDoesNotMutateInput(t *testing.T) {
+	in := []float64{5, 1, 3, 2, 4}
+	cp := append([]float64{}, in...)
+	_ = Percentile(in, 50)
+	for i := range in {
+		if in[i] != cp[i] {
+			t.Fatalf("Percentile mutated input at %d: got %v, want %v", i, in, cp)
+		}
+	}
 }

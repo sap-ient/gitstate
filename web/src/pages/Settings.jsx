@@ -243,7 +243,7 @@ export default function Settings() {
   }
 
   return (
-    <div className="max-w-2xl">
+    <div className="w-full">
       <Reveal>
         <div className="mb-8">
           <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Settings</h1>

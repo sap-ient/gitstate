@@ -10,6 +10,7 @@ package analytics
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -137,9 +138,9 @@ func (f Filter) toStoreFilter() store.AnalyticsFilter {
 // Averages are the ratios derived from the raw totals. Kept separate from the
 // store struct so they can be computed and tested without a database.
 type Averages struct {
-	CommitsPerActiveDay    float64 `json:"commitsPerActiveDay"`
-	CommitsPerContributor  float64 `json:"commitsPerContributor"`
-	LinesPerCommit         float64 `json:"linesPerCommit"`
+	CommitsPerActiveDay   float64 `json:"commitsPerActiveDay"`
+	CommitsPerContributor float64 `json:"commitsPerContributor"`
+	LinesPerCommit        float64 `json:"linesPerCommit"`
 }
 
 // DeriveAverages computes the dashboard averages from raw summary totals,
@@ -160,12 +161,103 @@ func safeDiv(num, den float64) float64 {
 	return num / den
 }
 
+// ── PR / issue / agent derived metrics (pure) ─────────────────────────────────
+
+// Rate returns part/whole as a 0..1 fraction, guarding against a zero whole.
+func Rate(part, whole int) float64 {
+	return safeDiv(float64(part), float64(whole))
+}
+
+// Pct returns part/whole as a 0..100 percentage, rounded to one decimal place,
+// guarding against a zero whole. Used for the agent-share headline and merge-rate.
+func Pct(part, whole int) float64 {
+	if whole == 0 {
+		return 0
+	}
+	return round1(float64(part) / float64(whole) * 100)
+}
+
+func round1(v float64) float64 {
+	return math.Round(v*10) / 10
+}
+
+// Percentile computes the p-th percentile (0 ≤ p ≤ 100) of the given samples
+// using linear interpolation between closest ranks (the "C = 1" / NumPy default
+// method). The input is copied and sorted, so the caller's slice is untouched.
+// An empty input returns 0.
+//
+// Used for PR lead-time P50 / P90 (hours). Computing this in Go (rather than SQL
+// percentile_cont) keeps it unit-testable without a database and matches the
+// dashboard's "lead time" definition exactly.
+func Percentile(samples []float64, p float64) float64 {
+	n := len(samples)
+	if n == 0 {
+		return 0
+	}
+	if n == 1 {
+		return samples[0]
+	}
+	if p <= 0 {
+		return minFloat(samples)
+	}
+	if p >= 100 {
+		return maxFloat(samples)
+	}
+	s := make([]float64, n)
+	copy(s, samples)
+	sortFloats(s)
+
+	// rank in [0, n-1] using linear interpolation.
+	rank := (p / 100) * float64(n-1)
+	lo := int(math.Floor(rank))
+	hi := int(math.Ceil(rank))
+	if lo == hi {
+		return s[lo]
+	}
+	frac := rank - float64(lo)
+	return s[lo] + frac*(s[hi]-s[lo])
+}
+
+func minFloat(s []float64) float64 {
+	m := s[0]
+	for _, v := range s[1:] {
+		if v < m {
+			m = v
+		}
+	}
+	return m
+}
+
+func maxFloat(s []float64) float64 {
+	m := s[0]
+	for _, v := range s[1:] {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
+// sortFloats is a tiny insertion sort — sample sets here are small (≤ a few
+// hundred PRs per window) so this avoids importing sort for one call site.
+func sortFloats(s []float64) {
+	for i := 1; i < len(s); i++ {
+		v := s[i]
+		j := i - 1
+		for j >= 0 && s[j] > v {
+			s[j+1] = s[j]
+			j--
+		}
+		s[j+1] = v
+	}
+}
+
 // ── Service methods (DB-backed) ───────────────────────────────────────────────
 
 // SummaryResult is the full summary payload: raw totals plus derived averages.
 type SummaryResult struct {
 	store.AnalyticsSummary
-	Averages Averages `json:"averages"`
+	Averages Averages  `json:"averages"`
 	From     time.Time `json:"from"`
 	To       time.Time `json:"to"`
 }
@@ -269,4 +361,168 @@ func ParseDay(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("invalid day %q: expected YYYY-MM-DD", s)
 	}
 	return t.UTC(), nil
+}
+
+// ── Pull-request analytics (DB-backed) ────────────────────────────────────────
+
+// PRResult is the pull-request analytics payload: state totals, derived
+// merge-rate (%), lead-time percentiles (hours), average changed files, and the
+// per-day opened/merged throughput series.
+type PRResult struct {
+	Total           int                  `json:"total"`
+	Merged          int                  `json:"merged"`
+	Open            int                  `json:"open"`
+	Closed          int                  `json:"closed"`
+	MergeRate       float64              `json:"mergeRate"` // merged/total, 0..1
+	LeadTimeP50Hrs  float64              `json:"leadTimeP50Hours"`
+	LeadTimeP90Hrs  float64              `json:"leadTimeP90Hours"`
+	AvgChangedFiles float64              `json:"avgChangedFiles"`
+	Throughput      []store.PRThroughput `json:"throughput"`
+}
+
+// PullRequests returns the pull-request analytics for the org over the window.
+func (s *Service) PullRequests(ctx context.Context, orgID string, f Filter) (*PRResult, error) {
+	sf := f.toStoreFilter()
+	var (
+		sum store.PRStats
+		tp  []store.PRThroughput
+	)
+	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		if sum, err = sf.PRStats(ctx, tx); err != nil {
+			return err
+		}
+		tp, err = sf.PRThroughput(ctx, tx)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("analytics.PullRequests: %w", err)
+	}
+	if tp == nil {
+		tp = []store.PRThroughput{}
+	}
+	return &PRResult{
+		Total:           sum.Total,
+		Merged:          sum.Merged,
+		Open:            sum.Open,
+		Closed:          sum.Closed,
+		MergeRate:       Rate(sum.Merged, sum.Total),
+		LeadTimeP50Hrs:  round1(Percentile(sum.LeadTimeHours, 50)),
+		LeadTimeP90Hrs:  round1(Percentile(sum.LeadTimeHours, 90)),
+		AvgChangedFiles: round1(safeDiv(float64(sum.SumChangedFiles), float64(sum.Total))),
+		Throughput:      tp,
+	}, nil
+}
+
+// ── Issue-flow analytics (DB-backed) ──────────────────────────────────────────
+
+// IssueFlowResult is the issue-flow payload: current state breakdown, the
+// opened/closed-over-time series, and the per-project open/done split.
+type IssueFlowResult struct {
+	Open       int                      `json:"open"`
+	InProgress int                      `json:"inProgress"`
+	Done       int                      `json:"done"`
+	Closed     int                      `json:"closed"`
+	Opened     []store.DayCount         `json:"opened"`
+	ClosedSrs  []store.DayCount         `json:"closedSeries"`
+	ByProject  []store.IssueProjectStat `json:"byProject"`
+}
+
+// IssueFlow returns the issue-flow analytics for the org over the window.
+func (s *Service) IssueFlow(ctx context.Context, orgID string, f Filter) (*IssueFlowResult, error) {
+	sf := f.toStoreFilter()
+	var (
+		counts store.IssueFlowCounts
+		opened []store.DayCount
+		closed []store.DayCount
+		byProj []store.IssueProjectStat
+	)
+	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		if counts, err = sf.IssueFlowCounts(ctx, tx); err != nil {
+			return err
+		}
+		if opened, err = sf.IssuesOpenedOverTime(ctx, tx); err != nil {
+			return err
+		}
+		if closed, err = sf.IssuesClosedOverTime(ctx, tx); err != nil {
+			return err
+		}
+		byProj, err = sf.IssuesByProject(ctx, tx)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("analytics.IssueFlow: %w", err)
+	}
+	if opened == nil {
+		opened = []store.DayCount{}
+	}
+	if closed == nil {
+		closed = []store.DayCount{}
+	}
+	if byProj == nil {
+		byProj = []store.IssueProjectStat{}
+	}
+	return &IssueFlowResult{
+		Open:       counts.Open,
+		InProgress: counts.InProgress,
+		Done:       counts.Done,
+		Closed:     counts.Closed,
+		Opened:     opened,
+		ClosedSrs:  closed,
+		ByProject:  byProj,
+	}, nil
+}
+
+// ── Agent-share analytics (DB-backed) ─────────────────────────────────────────
+
+// AgentShareResult is the agent-vs-human payload: raw counts, derived agentPct
+// (%) and the per-day split.
+type AgentShareResult struct {
+	AgentCommits int              `json:"agentCommits"`
+	HumanCommits int              `json:"humanCommits"`
+	AgentPct     float64          `json:"agentPct"`
+	OverTime     []store.AgentDay `json:"overTime"`
+}
+
+// AgentShare returns the agent-vs-human commit analytics for the org over the window.
+func (s *Service) AgentShare(ctx context.Context, orgID string, f Filter) (*AgentShareResult, error) {
+	sf := f.toStoreFilter()
+	var (
+		share store.AgentShare
+		ot    []store.AgentDay
+	)
+	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		if share, err = sf.AgentShare(ctx, tx); err != nil {
+			return err
+		}
+		ot, err = sf.AgentShareOverTime(ctx, tx)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("analytics.AgentShare: %w", err)
+	}
+	if ot == nil {
+		ot = []store.AgentDay{}
+	}
+	return &AgentShareResult{
+		AgentCommits: share.AgentCommits,
+		HumanCommits: share.HumanCommits,
+		AgentPct:     Pct(share.AgentCommits, share.AgentCommits+share.HumanCommits),
+		OverTime:     ot,
+	}, nil
+}
+
+// ── Per-project analytics (DB-backed) ─────────────────────────────────────────
+
+// Projects returns the per-project table for the org over the window.
+func (s *Service) Projects(ctx context.Context, orgID string, f Filter) ([]store.ProjectStat, error) {
+	sf := f.toStoreFilter()
+	var out []store.ProjectStat
+	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		out, err = sf.ProjectStats(ctx, tx)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("analytics.Projects: %w", err)
+	}
+	return out, nil
 }

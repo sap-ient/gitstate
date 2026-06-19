@@ -39,7 +39,7 @@ function EmptyGraph() {
 
 export default function Home() {
   return (
-    <div className="max-w-5xl">
+    <div className="w-full">
       {/* Page header */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-[#e2e8f0] tracking-tight">Overview</h1>

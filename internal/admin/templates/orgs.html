@@ -1,12 +1,13 @@
 {{template "layout.html" .}}
 
 {{define "title"}}Organizations{{end}}
+{{define "topbar"}}Organizations{{end}}
 
 {{define "content"}}
 <div class="page-header">
   <div>
     <div class="page-title">Organizations</div>
-    <div class="page-subtitle">{{.Total}} total organizations</div>
+    <div class="page-subtitle">{{.Total}} {{if eq .Total 1}}organization{{else}}organizations{{end}} on this instance.</div>
   </div>
 </div>
 
@@ -20,36 +21,35 @@
           <th>Plan</th>
           <th>Members</th>
           <th>Created</th>
-          <th style="text-align:right">Drill</th>
+          <th style="text-align:right">Detail</th>
         </tr>
       </thead>
       <tbody>
         {{range .Orgs}}
         <tr>
-          <td>{{.Name}}</td>
-          <td style="color:var(--text-muted);font-family:monospace">{{.Slug}}</td>
+          <td style="font-weight:600">{{.Name}}</td>
+          <td><span class="mono">{{.Slug}}</span></td>
           <td>{{planBadge .PlanKey}}</td>
           <td>{{.MemberCount}}</td>
           <td style="color:var(--text-muted)">{{formatDate .CreatedAt}}</td>
           <td style="text-align:right">
-            <a href="/admin/orgs/{{.ID}}" class="btn btn-ghost" style="font-size:12px;text-decoration:none">View →</a>
+            <a href="/admin/orgs/{{.ID}}" class="btn btn-ghost" style="font-size:12px;padding:6px 13px">View →</a>
           </td>
         </tr>
         {{else}}
-        <tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:32px">No organizations yet.</td></tr>
+        <tr><td colspan="6" class="empty">No organizations yet.</td></tr>
         {{end}}
       </tbody>
     </table>
   </div>
 
   <div class="pagination">
-    <span>{{.Total}} orgs</span>
+    <span class="spacer">{{.Total}} total · page {{.Page}} of {{.TotalPages}}</span>
     {{if gt .Page 1}}
-    <a href="/admin/orgs?page={{prev .Page}}" class="btn btn-ghost" style="padding:5px 12px">← Prev</a>
+    <a href="/admin/orgs?page={{prev .Page}}" class="btn btn-ghost" style="padding:6px 13px">← Prev</a>
     {{end}}
-    <span>Page {{.Page}} of {{.TotalPages}}</span>
     {{if lt .Page .TotalPages}}
-    <a href="/admin/orgs?page={{next .Page}}" class="btn btn-ghost" style="padding:5px 12px">Next →</a>
+    <a href="/admin/orgs?page={{next .Page}}" class="btn btn-ghost" style="padding:6px 13px">Next →</a>
     {{end}}
   </div>
 </div>

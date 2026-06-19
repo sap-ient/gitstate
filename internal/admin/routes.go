@@ -105,6 +105,15 @@ var funcMap = template.FuncMap{
 
 	"prev": func(p int) int { return p - 1 },
 	"next": func(p int) int { return p + 1 },
+
+	// initial returns the uppercased first rune of a string for avatar chips,
+	// tolerating the empty string.
+	"initial": func(s string) string {
+		for _, r := range s {
+			return strings.ToUpper(string(r))
+		}
+		return "?"
+	},
 }
 
 // ── Template loader (singleton) ───────────────────────────────────────────────
@@ -161,10 +170,16 @@ func RegisterAdminRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Config
 		go h.realtimePusher()
 	}
 
-	requireAuth := middleware.RequireAuth(cfg.Auth.JWTSigningKey)
-	requireSuper := RequireSuperAdmin(cfg, database)
-	guard := func(next http.Handler) http.Handler { return requireAuth(requireSuper(next)) }
+	// Cookie-aware gate so the console is reachable by a browser navigation
+	// (which cannot send an Authorization header). Falls back to Bearer for APIs.
+	guard := RequireAdminAuth(cfg, database)
 
+	// Public auth routes — NOT behind the gate (the gate redirects here).
+	mux.Handle("GET /admin/login",  http.HandlerFunc(h.loginPage))
+	mux.Handle("POST /admin/login", http.HandlerFunc(h.loginSubmit))
+	mux.Handle("GET /admin/logout", http.HandlerFunc(h.logout))
+
+	// Gated console routes.
 	mux.Handle("GET /admin",                      guard(http.HandlerFunc(h.analytics)))
 	mux.Handle("GET /admin/users",                guard(http.HandlerFunc(h.users)))
 	mux.Handle("GET /admin/orgs",                 guard(http.HandlerFunc(h.orgs)))
@@ -372,20 +387,20 @@ func (h *adminHandlers) setSuper(w http.ResponseWriter, r *http.Request, value b
 	// Inline micro-template for a single <tr> — avoids re-parsing the full template
 	// and producing a complete HTML document when only the row is needed.
 	const rowTmpl = `{{range .Users}}<tr id="user-{{.ID}}">
-  <td>{{.Email}}{{if .IsSuperAdmin}} <span class="badge badge-teal">super</span>{{end}}</td>
-  <td>{{.Name}}</td>
-  <td>{{if .IsSuperAdmin}}<span class="badge badge-teal">Super Admin</span>{{else}}<span class="badge badge-muted">User</span>{{end}}</td>
+  <td><span style="font-weight:600">{{.Email}}</span></td>
+  <td style="color:var(--text-muted)">{{if .Name}}{{.Name}}{{else}}—{{end}}</td>
+  <td>{{if .IsSuperAdmin}}<span class="badge badge-teal">Super Admin</span>{{else}}<span class="badge badge-muted">Member</span>{{end}}</td>
   <td style="color:var(--text-muted)">{{formatDate .CreatedAt}}</td>
   <td style="text-align:right">
     {{if .IsSuperAdmin}}
-    <button class="btn btn-ghost btn-danger" style="font-size:12px"
+    <button class="btn btn-danger" style="font-size:12px;padding:6px 13px"
       hx-post="/admin/users/{{.ID}}/demote"
-      hx-confirm="Remove super-admin from {{.Email}}?"
+      hx-confirm="Remove super-admin access from {{.Email}}?"
       hx-target="#user-{{.ID}}" hx-swap="outerHTML">Demote</button>
     {{else}}
-    <button class="btn btn-ghost" style="font-size:12px"
+    <button class="btn btn-ghost" style="font-size:12px;padding:6px 13px"
       hx-post="/admin/users/{{.ID}}/promote"
-      hx-confirm="Make {{.Email}} a super-admin?"
+      hx-confirm="Grant super-admin access to {{.Email}}?"
       hx-target="#user-{{.ID}}" hx-swap="outerHTML">Promote</button>
     {{end}}
   </td>

@@ -15,12 +15,14 @@ import { useState, useMemo, useRef } from 'react'
 import {
   useSummary, useHeatmap, useCommitsOverTime,
   useContributors, useRepoStats, useDayCommits,
+  usePullRequests, useIssueFlow, useAgentShare, useProjects,
 } from '../lib/useAnalytics.js'
 import { Card, Badge } from '../components/ui/index.js'
 import { Reveal } from '../components/Reveal.jsx'
 import {
   GitCommitHorizontal, GitBranch, Users, CalendarDays, Plus, Minus,
   Sigma, TrendingUp, Activity, X, Bot, ArrowUpRight, Folder, Hash, ChevronDown,
+  GitPullRequest, GitMerge, Timer, CircleDot, CircleCheck, ListChecks, Cpu, User,
 } from 'lucide-react'
 
 // ── small helpers ───────────────────────────────────────────────────────────
@@ -28,6 +30,17 @@ import {
 const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString())
 const fmtSigned = (n) => (n == null ? '—' : `${n >= 0 ? '+' : ''}${Number(n).toLocaleString()}`)
 const fmtAvg = (n) => (n == null ? '—' : Number(n).toFixed(1))
+const fmtPct = (n) => (n == null ? '—' : `${Number(n).toFixed(n < 10 ? 1 : 0)}%`)
+
+// Human-friendly duration from a number of hours (lead time).
+function fmtHours(h) {
+  if (h == null) return '—'
+  const n = Number(h)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  if (n < 1) return `${Math.round(n * 60)}m`
+  if (n < 48) return `${n.toFixed(1)}h`
+  return `${(n / 24).toFixed(1)}d`
+}
 
 function fmtDate(s, opts = { month: 'short', day: 'numeric', year: 'numeric' }) {
   if (!s) return '—'
@@ -719,6 +732,410 @@ function RepoTable({ repos, loading }) {
   )
 }
 
+// ── shared mini stacked/grouped bar chart (SVG) ───────────────────────────────
+
+/**
+ * TwoSeriesBars — a compact SVG showing two daily series as either grouped or
+ * stacked bars over a shared x-axis. `series` = [{date, a, b}], with labels +
+ * colors for a/b. Hover shows a tooltip. Used by PR throughput, issue flow and
+ * agent share.
+ */
+function TwoSeriesBars({ series, labelA, labelB, colorA, colorB, stacked = false, height = 180 }) {
+  const [hover, setHover] = useState(null)
+  const svgRef = useRef(null)
+  const W = 760, H = height, PAD = { t: 14, r: 12, b: 24, l: 30 }
+  const innerW = W - PAD.l - PAD.r
+  const innerH = H - PAD.t - PAD.b
+
+  const pts = useMemo(() => (series || []).filter(d => d?.date), [series])
+  const max = useMemo(() => pts.reduce((m, p) => {
+    const v = stacked ? (p.a || 0) + (p.b || 0) : Math.max(p.a || 0, p.b || 0)
+    return Math.max(m, v)
+  }, 0) || 1, [pts, stacked])
+
+  if (!pts.length) {
+    return (
+      <div className="flex flex-col items-center justify-center text-center" style={{ height }}>
+        <Activity size={20} className="text-[var(--text-faint)] mb-2" />
+        <p className="text-sm text-[var(--text-faint)]">No data in this range.</p>
+      </div>
+    )
+  }
+
+  const slot = innerW / pts.length
+  const barW = stacked ? Math.min(14, slot * 0.7) : Math.min(7, slot * 0.38)
+  const yFor = (v) => PAD.t + innerH - (v / max) * innerH
+  const ticks = [0, 0.5, 1].map(t => Math.round(max * t)).filter((v, i, a) => a.indexOf(v) === i)
+
+  function onMove(e) {
+    const rect = svgRef.current.getBoundingClientRect()
+    const x = (e.clientX - rect.left) * (W / rect.width)
+    let idx = Math.floor((x - PAD.l) / slot)
+    idx = Math.max(0, Math.min(pts.length - 1, idx))
+    setHover({ idx, p: pts[idx] })
+  }
+
+  return (
+    <div className="relative overflow-x-auto">
+      <svg ref={svgRef} width={W} height={H} className="block max-w-full"
+        onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        {ticks.map((t, i) => {
+          const y = yFor(t)
+          return (
+            <g key={i}>
+              <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray="2 3" />
+              <text x={PAD.l - 5} y={y + 3} textAnchor="end" fontSize="9" className="font-mono" fill="var(--text-faint)">{t}</text>
+            </g>
+          )
+        })}
+        {pts.map((p, i) => {
+          const cx = PAD.l + i * slot + slot / 2
+          const a = p.a || 0, b = p.b || 0
+          if (stacked) {
+            const hA = (a / max) * innerH, hB = (b / max) * innerH
+            const yA = PAD.t + innerH - hA
+            const yB = yA - hB
+            return (
+              <g key={i}>
+                <rect x={cx - barW / 2} y={yA} width={barW} height={hA} rx={1.5} fill={colorA} opacity={hover && hover.idx === i ? 1 : 0.85} />
+                <rect x={cx - barW / 2} y={yB} width={barW} height={hB} rx={1.5} fill={colorB} opacity={hover && hover.idx === i ? 1 : 0.85} />
+              </g>
+            )
+          }
+          const hA = (a / max) * innerH, hB = (b / max) * innerH
+          return (
+            <g key={i}>
+              <rect x={cx - barW - 1} y={PAD.t + innerH - hA} width={barW} height={hA} rx={1.5} fill={colorA} opacity={hover && hover.idx === i ? 1 : 0.8} />
+              <rect x={cx + 1} y={PAD.t + innerH - hB} width={barW} height={hB} rx={1.5} fill={colorB} opacity={hover && hover.idx === i ? 1 : 0.8} />
+            </g>
+          )
+        })}
+        {[0, Math.floor(pts.length / 2), pts.length - 1].filter((v, i, a) => a.indexOf(v) === i).map(i => (
+          <text key={i} x={PAD.l + i * slot + slot / 2} y={H - 7} textAnchor="middle" fontSize="9" className="font-mono" fill="var(--text-faint)">
+            {fmtDate(pts[i].date, { month: 'short', day: 'numeric' })}
+          </text>
+        ))}
+      </svg>
+
+      <div className="flex items-center gap-4 mt-1.5 text-[10px] font-mono text-[var(--text-faint)]">
+        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-[2px]" style={{ background: colorA }} />{labelA}</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-[2px]" style={{ background: colorB }} />{labelB}</span>
+      </div>
+
+      {hover && (
+        <div className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full px-2.5 py-1.5 rounded-[var(--radius-badge)] bg-[var(--bg)] border border-[var(--border2)] shadow-[var(--shadow-float)] whitespace-nowrap"
+          style={{ left: `${((PAD.l + hover.idx * slot + slot / 2) / W) * 100}%`, top: 0 }}>
+          <div className="text-[10px] font-mono text-[var(--text-faint)] mb-0.5">{fmtDate(hover.p.date)}</div>
+          <div className="text-xs font-semibold tabular-nums" style={{ color: colorA }}>{labelA}: {hover.p.a || 0}</div>
+          <div className="text-xs font-semibold tabular-nums" style={{ color: colorB }}>{labelB}: {hover.p.b || 0}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Small headline metric used inside panels.
+function MiniMetric({ icon, label, value, accent, sub }) {
+  return (
+    <div className="rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--bg)] px-3.5 py-3">
+      <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">
+        <span style={{ color: accent }}>{icon}</span>{label}
+      </div>
+      <div className="mt-1 font-display text-xl font-semibold text-[var(--text)] tabular-nums tracking-tight">{value}</div>
+      {sub && <div className="text-[10px] text-[var(--text-faint)] mt-0.5">{sub}</div>}
+    </div>
+  )
+}
+
+// ── pull-request analytics panel ──────────────────────────────────────────────
+
+function PullRequestPanel({ filters }) {
+  const { data, loading } = usePullRequests(filters)
+  const d = data ?? {}
+  const series = useMemo(
+    () => (d.throughput || []).map(t => ({ date: t.date, a: t.opened || 0, b: t.merged || 0 })),
+    [d.throughput]
+  )
+  const mergePct = d.mergeRate != null ? d.mergeRate * 100 : null
+
+  return (
+    <Card padding="lg">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
+            <GitPullRequest size={15} className="text-[var(--brand-teal)]" /> Pull requests
+          </h2>
+          <p className="text-xs text-[var(--text-faint)] mt-0.5">Merge rate, lead time, and opened/merged throughput.</p>
+        </div>
+        {!loading && <span className="text-xs font-mono text-[var(--text-faint)]">{fmtNum(d.total)} total</span>}
+      </div>
+
+      {loading ? (
+        <div className="h-[260px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
+            <MiniMetric icon={<GitMerge size={13} />} label="Merge rate" accent="#22c55e"
+              value={fmtPct(mergePct)} sub={`${fmtNum(d.merged)} merged`} />
+            <MiniMetric icon={<Timer size={13} />} label="Lead p50" accent="var(--brand-teal)"
+              value={fmtHours(d.leadTimeP50Hours)} sub="first commit → merge" />
+            <MiniMetric icon={<Timer size={13} />} label="Lead p90" accent="var(--brand-indigo)"
+              value={fmtHours(d.leadTimeP90Hours)} sub="slowest 10%" />
+            <MiniMetric icon={<CircleDot size={13} />} label="Open" accent="#eab308"
+              value={fmtNum(d.open)} sub={`${fmtNum(d.closed)} closed`} />
+            <MiniMetric icon={<Sigma size={13} />} label="Avg files" accent="var(--brand-indigo)"
+              value={fmtAvg(d.avgChangedFiles)} sub="changed / PR" />
+          </div>
+          <TwoSeriesBars series={series} labelA="opened" labelB="merged"
+            colorA="#2DD4BF" colorB="#22c55e" />
+        </>
+      )}
+    </Card>
+  )
+}
+
+// ── issue-flow panel ──────────────────────────────────────────────────────────
+
+const ISSUE_STATES = [
+  { key: 'open', label: 'Open', color: '#eab308', icon: <CircleDot size={13} /> },
+  { key: 'inProgress', label: 'In progress', color: '#2DD4BF', icon: <Activity size={13} /> },
+  { key: 'done', label: 'Done', color: '#22c55e', icon: <CircleCheck size={13} /> },
+  { key: 'closed', label: 'Closed', color: '#94a3b8', icon: <X size={13} /> },
+]
+
+function IssueFlowPanel({ filters }) {
+  const { data, loading } = useIssueFlow(filters)
+  const d = data ?? {}
+  // Merge opened + closedSeries by date for the chart.
+  const series = useMemo(() => {
+    const m = new Map()
+    for (const o of (d.opened || [])) if (o?.date) m.set(o.date.slice(0, 10), { date: o.date, a: o.count || 0, b: 0 })
+    for (const c of (d.closedSeries || [])) {
+      if (!c?.date) continue
+      const k = c.date.slice(0, 10)
+      const e = m.get(k) || { date: c.date, a: 0, b: 0 }
+      e.b = c.count || 0
+      m.set(k, e)
+    }
+    return [...m.values()].sort((x, y) => new Date(x.date) - new Date(y.date))
+  }, [d.opened, d.closedSeries])
+
+  const total = ISSUE_STATES.reduce((a, s) => a + (d[s.key] || 0), 0)
+  const byProject = useMemo(
+    () => [...(d.byProject || [])].sort((a, b) => (b.open + b.done) - (a.open + a.done)),
+    [d.byProject]
+  )
+
+  return (
+    <Card padding="lg">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
+            <ListChecks size={15} className="text-[var(--brand-indigo)]" /> Issue flow
+          </h2>
+          <p className="text-xs text-[var(--text-faint)] mt-0.5">State breakdown, opened vs closed over time, and per-project split.</p>
+        </div>
+        {!loading && <span className="text-xs font-mono text-[var(--text-faint)]">{fmtNum(total)} issues</span>}
+      </div>
+
+      {loading ? (
+        <div className="h-[280px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
+      ) : (
+        <>
+          {/* state breakdown bar */}
+          <div className="mb-5">
+            <div className="flex h-2.5 rounded-full overflow-hidden bg-[var(--bg-surface3)]">
+              {ISSUE_STATES.map(s => {
+                const v = d[s.key] || 0
+                const pct = total ? (v / total) * 100 : 0
+                return pct > 0 ? <div key={s.key} style={{ width: `${pct}%`, background: s.color }} title={`${s.label}: ${v}`} /> : null
+              })}
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+              {ISSUE_STATES.map(s => (
+                <div key={s.key} className="flex items-center gap-2">
+                  <span style={{ color: s.color }}>{s.icon}</span>
+                  <div>
+                    <div className="font-display text-lg font-semibold text-[var(--text)] tabular-nums leading-none">{fmtNum(d[s.key])}</div>
+                    <div className="text-[10px] font-mono uppercase tracking-wide text-[var(--text-faint)] mt-0.5">{s.label}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <TwoSeriesBars series={series} labelA="opened" labelB="closed"
+            colorA="#6366F1" colorB="#22c55e" height={170} />
+
+          {/* per-project */}
+          {byProject.length > 0 && (
+            <div className="mt-5 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-[var(--text-faint)]">
+                    <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2">Project</th>
+                    <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2 min-w-[160px]">Open / done</th>
+                    <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2">Open</th>
+                    <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2">Done</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byProject.map((p, i) => {
+                    const t = (p.open || 0) + (p.done || 0)
+                    const donePct = t ? (p.done / t) * 100 : 0
+                    return (
+                      <tr key={p.project || i} className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors">
+                        <td className="px-2 py-2.5 text-[var(--text-dim)] font-medium truncate max-w-[200px]">{p.project}</td>
+                        <td className="px-2 py-2.5">
+                          <div className="h-1.5 rounded-full bg-[#eab308]/30 overflow-hidden min-w-[60px]">
+                            <div className="h-full rounded-full bg-[#22c55e]" style={{ width: `${donePct}%` }} />
+                          </div>
+                        </td>
+                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[#eab308]">{fmtNum(p.open)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[#22c55e]">{fmtNum(p.done)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  )
+}
+
+// ── agent-share panel ─────────────────────────────────────────────────────────
+
+function AgentSharePanel({ filters }) {
+  const { data, loading } = useAgentShare(filters)
+  const d = data ?? {}
+  const total = (d.agentCommits || 0) + (d.humanCommits || 0)
+  const agentPct = d.agentPct != null ? d.agentPct : (total ? (d.agentCommits / total) * 100 : 0)
+  const series = useMemo(
+    () => (d.overTime || []).map(o => ({ date: o.date, a: o.agent || 0, b: o.human || 0 })),
+    [d.overTime]
+  )
+
+  return (
+    <Card padding="lg">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
+            <Bot size={15} className="text-[var(--brand-indigo)]" /> Agent vs human
+          </h2>
+          <p className="text-xs text-[var(--text-faint)] mt-0.5">Share of commits authored by coding agents over time.</p>
+        </div>
+        {!loading && <span className="text-xs font-mono text-[var(--text-faint)]">{fmtNum(total)} commits</span>}
+      </div>
+
+      {loading ? (
+        <div className="h-[240px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
+      ) : (
+        <>
+          <div className="flex items-end gap-6 mb-4">
+            <div>
+              <div className="font-display text-4xl font-semibold tracking-tight tabular-nums"
+                style={{ background: 'linear-gradient(135deg,#6366F1,#2DD4BF)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                {fmtPct(agentPct)}
+              </div>
+              <div className="text-[11px] font-mono text-[var(--text-faint)] mt-1">agent-authored</div>
+            </div>
+            <div className="flex-1 grid grid-cols-2 gap-3">
+              <MiniMetric icon={<Cpu size={13} />} label="Agent" accent="#6366F1" value={fmtNum(d.agentCommits)} />
+              <MiniMetric icon={<User size={13} />} label="Human" accent="#2DD4BF" value={fmtNum(d.humanCommits)} />
+            </div>
+          </div>
+          {/* split bar */}
+          <div className="flex h-2.5 rounded-full overflow-hidden bg-[var(--bg-surface3)] mb-5">
+            <div style={{ width: `${agentPct}%`, background: '#6366F1' }} />
+            <div style={{ width: `${100 - agentPct}%`, background: '#2DD4BF' }} />
+          </div>
+          <TwoSeriesBars series={series} labelA="agent" labelB="human"
+            colorA="#6366F1" colorB="#2DD4BF" stacked height={170} />
+        </>
+      )}
+    </Card>
+  )
+}
+
+// ── per-project table ─────────────────────────────────────────────────────────
+
+function ProjectTable({ filters }) {
+  const { data: projects, loading } = useProjects(filters)
+  const sorted = useMemo(
+    () => [...(projects || [])].sort((a, b) => (b.commits || 0) - (a.commits || 0)),
+    [projects]
+  )
+  return (
+    <Card padding="lg">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
+            <Folder size={15} className="text-[var(--brand-teal)]" /> Projects
+          </h2>
+          <p className="text-xs text-[var(--text-faint)] mt-0.5">Commits, contributors, churn, and issue health per project.</p>
+        </div>
+        {!loading && <span className="text-xs font-mono text-[var(--text-faint)]">{sorted.length} projects</span>}
+      </div>
+      {loading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-9 rounded bg-[var(--bg-surface2)] animate-pulse" />)}
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="py-8 text-center text-sm text-[var(--text-faint)]">No projects in this range.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-[var(--border)] text-[var(--text-faint)]">
+                <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2">Project</th>
+                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2">Commits</th>
+                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2 hidden sm:table-cell">Contributors</th>
+                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2">Open</th>
+                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2">Done</th>
+                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2 hidden md:table-cell">Lines</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((p, i) => (
+                <tr key={p.projectId || p.name || i} className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors">
+                  <td className="px-2 py-2.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Folder size={13} className="text-[var(--brand-teal)] shrink-0" />
+                      <span className="text-[var(--text-dim)] font-medium truncate">{p.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--text-dim)]">{fmtNum(p.commits)}</td>
+                  <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--text-muted)] hidden sm:table-cell">{fmtNum(p.contributors)}</td>
+                  <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[#eab308]">{fmtNum(p.openIssues)}</td>
+                  <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[#22c55e]">{fmtNum(p.doneIssues)}</td>
+                  <td className="px-2 py-2.5 text-right font-mono tabular-nums whitespace-nowrap hidden md:table-cell">
+                    <span className="text-green-400">+{fmtNum(p.additions)}</span>{' '}
+                    <span className="text-red-400">−{fmtNum(p.deletions)}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ── section heading ───────────────────────────────────────────────────────────
+
+function SectionHeading({ children }) {
+  return (
+    <div className="flex items-center gap-3 pt-2">
+      <h2 className="text-[11px] font-mono uppercase tracking-[0.18em] text-[var(--text-faint)]">{children}</h2>
+      <div className="flex-1 h-px bg-[var(--border)]" />
+    </div>
+  )
+}
+
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export default function Analytics() {
@@ -732,14 +1149,14 @@ export default function Analytics() {
   const { data: repos, loading: repoLoading } = useRepoStats(filters)
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="w-full space-y-6">
       {/* Header */}
       <Reveal>
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Analytics</h1>
             <p className="text-sm text-[var(--text-faint)] mt-1">
-              Contribution insight across every connected repo — derived from git, not self-reported.
+              Delivery insight across every connected repo, PR, issue and project — derived from git, not self-reported.
             </p>
           </div>
           <a
@@ -794,12 +1211,30 @@ export default function Analytics() {
       {/* Commits over time */}
       <Reveal delay={0.05} inView><CommitsOverTime filters={filters} /></Reveal>
 
+      {/* ── Delivery: PRs + issues ─────────────────────────────────────────── */}
+      <Reveal inView><SectionHeading>Delivery</SectionHeading></Reveal>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+        <Reveal delay={0.05} inView><PullRequestPanel filters={filters} /></Reveal>
+        <Reveal delay={0.08} inView><IssueFlowPanel filters={filters} /></Reveal>
+      </div>
+
+      {/* ── Authorship: agent vs human ─────────────────────────────────────── */}
+      <Reveal inView><SectionHeading>Authorship</SectionHeading></Reveal>
+      <Reveal delay={0.05} inView><AgentSharePanel filters={filters} /></Reveal>
+
+      {/* ── People & projects ──────────────────────────────────────────────── */}
+      <Reveal inView><SectionHeading>People & projects</SectionHeading></Reveal>
+
       {/* Leaderboard */}
       <div id="leaderboard" />
       <Reveal delay={0.05} inView><ContributorLeaderboard contributors={contributors} loading={contribLoading} /></Reveal>
 
-      {/* Repos */}
-      <Reveal delay={0.05} inView><RepoTable repos={repos} loading={repoLoading} /></Reveal>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+        {/* Projects */}
+        <Reveal delay={0.05} inView><ProjectTable filters={filters} /></Reveal>
+        {/* Repos */}
+        <Reveal delay={0.08} inView><RepoTable repos={repos} loading={repoLoading} /></Reveal>
+      </div>
     </div>
   )
 }

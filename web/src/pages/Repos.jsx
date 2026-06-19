@@ -479,7 +479,7 @@ export default function Repos() {
   }, [repos])
 
   return (
-    <div className="max-w-3xl">
+    <div className="w-full">
       {/* Header */}
       <Reveal>
         <div className="flex items-end justify-between mb-6 gap-4">
