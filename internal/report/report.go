@@ -242,14 +242,17 @@ Rules (strictly enforced — violations will cause query rejection):
 6. Use only standard PostgreSQL. No procedural code, no COPY, no pg_read_file, no system catalogs.
 ` + allowedTablesCatalog
 
-// mutationKeywords is the list of SQL keywords that indicate a non-SELECT
-// statement or a statement that could cause side effects. Any match causes
-// validateSQL to reject the query.
-var mutationKeywords = []string{
-	"insert", "update", "delete", "drop", "create", "alter", "truncate",
-	"grant", "revoke", "copy", "vacuum", "analyze", "explain",
-	"set ", "reset ", "call ", "do ", "execute",
-	"pg_sleep", "pg_read_file", "lo_", "dblink",
+// mutationRe matches mutation/DDL keywords on WORD BOUNDARIES so that a query
+// is rejected for an actual `DELETE`/`UPDATE`/`CREATE` statement (including one
+// embedded in a CTE) but NOT for ordinary columns that merely contain those
+// substrings — e.g. created_at, updated_at, deleted_at, offset. Searching the
+// whole (lower-cased) string still catches `... IN (DELETE FROM y)`.
+var mutationRe = regexp.MustCompile(`(?i)\b(insert|update|delete|drop|create|alter|truncate|grant|revoke|copy|vacuum|analyze|reset|call|execute|merge|comment|cluster|listen|notify)\b`)
+
+// dangerousFns are function/identifier fragments that are unsafe even as a
+// substring (no legitimate reporting column contains them), matched literally.
+var dangerousFns = []string{
+	"pg_sleep", "pg_read_file", "pg_ls", "lo_import", "lo_export", "dblink", "copy_from",
 }
 
 // semiRe matches any semicolon (including inside comments or strings, which we
@@ -278,9 +281,12 @@ func validateSQL(sql string) error {
 
 	// Reject mutation/DDL keywords. We search the whole string so that tricks
 	// like embedding DELETE inside a WITH clause are caught.
-	for _, kw := range mutationKeywords {
-		if strings.Contains(lower, kw) {
-			return fmt.Errorf("%w: disallowed keyword %q", ErrQueryRejected, kw)
+	if m := mutationRe.FindString(lower); m != "" {
+		return fmt.Errorf("%w: disallowed keyword %q", ErrQueryRejected, strings.TrimSpace(m))
+	}
+	for _, fn := range dangerousFns {
+		if strings.Contains(lower, fn) {
+			return fmt.Errorf("%w: disallowed function %q", ErrQueryRejected, fn)
 		}
 	}
 

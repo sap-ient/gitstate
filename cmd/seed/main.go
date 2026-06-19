@@ -276,16 +276,20 @@ func main() {
 
 	// ── 11. Capacity: availability · leave types · leave · balances · time ─
 	s.seedAvailability(org.ID)
+	s.seedCalendarConnections(org.ID)
 	leaveTypes := s.seedLeaveTypes(org.ID)
-	leaveCount := s.seedLeave(org.ID, leaveTypes)
+	leaveStats := s.seedLeave(org.ID, leaveTypes)
 	s.seedLeaveBalances(org.ID, leaveTypes)
 	timeCount := s.seedTimeEntries(org.ID, issueIDs)
 
+	// ── 12. Notifications + inbound webhooks (settings UI shows "configured") ─
+	notifStats := s.seedNotifications(org.ID)
+	s.seedWebhookConfigs(org.ID)
+
 	// ── Summary ───────────────────────────────────────────────────────────
 	s.printSummary(org, adminEmail, len(repos), len(projects),
-		commitStats, prStats, issueStats, leaveCount, timeCount)
-	fmt.Printf("   deployments: %d (%d failed) · incidents: %d resolved\n",
-		deployStats.deploys, deployStats.failures, deployStats.incidents)
+		commitStats, prStats, issueStats, leaveStats, timeCount,
+		deployStats, notifStats)
 }
 
 // ── commit generation ───────────────────────────────────────────────────────
@@ -1673,7 +1677,206 @@ func randHexSHA() string {
 	return string(b)
 }
 
+// ── notifications (channels + delivery log) ───────────────────────────────────
+
+type notifTally struct {
+	channels int
+	logs     int
+}
+
+// seedNotifications configures the Notifications UI out of the box: a Slack
+// channel (all digests on) and a generic webhook channel, plus a short delivery
+// log so the "last sent" history is populated. Targets are OBVIOUS placeholders —
+// never a real secret/webhook URL.
+//
+// notification_channels / notification_log have no natural key, so this clears the
+// org's rows first (mirroring the kudos pattern) to stay idempotent across re-runs.
+func (s *seeder) seedNotifications(orgID string) notifTally {
+	var tally notifTally
+
+	type chanSeed struct {
+		id       string // filled after insert
+		kind     string // slack | webhook | email
+		target   string
+		label    string
+		enabled  bool
+		digests  string
+		schedule string
+	}
+	channels := []*chanSeed{
+		{
+			kind:     "slack",
+			target:   "https://hooks.slack.com/services/T00000000/B00000000/PLACEHOLDER_DO_NOT_USE",
+			label:    "#eng-status",
+			enabled:  true,
+			digests:  `{"weeklyStatus":true,"stalePRs":true,"ooo":true}`,
+			schedule: "weekly",
+		},
+		{
+			kind:     "webhook",
+			target:   "https://example.com/gitstate/digest-webhook-placeholder",
+			label:    "Ops webhook",
+			enabled:  true,
+			digests:  `{"weeklyStatus":true,"stalePRs":false,"ooo":true}`,
+			schedule: "daily",
+		},
+		{
+			kind:     "email",
+			target:   "eng-leads@acme.example",
+			label:    "Eng leads digest",
+			enabled:  false,
+			digests:  `{"weeklyStatus":true,"stalePRs":true,"ooo":false}`,
+			schedule: "weekly",
+		},
+	}
+
+	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		// Clear (channels first would orphan logs via ON DELETE SET NULL; clear
+		// logs first to keep a clean slate) then re-insert.
+		if _, err := tx.Exec(s.ctx, `DELETE FROM notification_log WHERE org_id = $1`, orgID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(s.ctx, `DELETE FROM notification_channels WHERE org_id = $1`, orgID); err != nil {
+			return err
+		}
+		const insCh = `
+			INSERT INTO notification_channels (org_id, kind, target, label, enabled, digests, schedule)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+			RETURNING id`
+		for _, c := range channels {
+			if err := tx.QueryRow(s.ctx, insCh, orgID, c.kind, c.target, c.label,
+				c.enabled, c.digests, c.schedule).Scan(&c.id); err != nil {
+				return fmt.Errorf("seed: insert notification_channel: %w", err)
+			}
+			tally.channels++
+		}
+
+		// Delivery log: a handful of past digests per enabled channel so the
+		// history reads like a configured, working integration.
+		const insLog = `
+			INSERT INTO notification_log (org_id, channel_id, kind, status, summary, sent_at)
+			VALUES ($1, $2, $3, $4, $5, $6)`
+		digestKinds := []string{"weeklyStatus", "stalePRs", "ooo"}
+		summaries := map[string]string{
+			"weeklyStatus": "Weekly status: 12 PRs merged, 3 stale, 2 people OOO.",
+			"stalePRs":     "3 PRs have been open >5 days without review.",
+			"ooo":          "2 teammates are out this week — plan reviews accordingly.",
+		}
+		batch := &pgx.Batch{}
+		n := 0
+		for _, c := range channels {
+			if !c.enabled {
+				continue
+			}
+			// ~4 past weekly sends per enabled channel.
+			for w := 1; w <= 4; w++ {
+				k := digestKinds[rng.Intn(len(digestKinds))]
+				sentAt := now.AddDate(0, 0, -7*w).Truncate(time.Hour).Add(9 * time.Hour)
+				status := "sent"
+				if rng.Float64() < 0.1 {
+					status = "failed"
+				}
+				batch.Queue(insLog, orgID, c.id, k, status, summaries[k], sentAt)
+				n++
+			}
+		}
+		if n > 0 {
+			br := tx.SendBatch(s.ctx, batch)
+			for j := 0; j < n; j++ {
+				if _, err := br.Exec(); err != nil {
+					br.Close()
+					return fmt.Errorf("seed: insert notification_log: %w", err)
+				}
+			}
+			br.Close()
+		}
+		tally.logs = n
+		return nil
+	}))
+	return tally
+}
+
+// ── inbound webhook configs (settings shows "configured / last event") ────────
+
+// seedWebhookConfigs registers one config per provider (github/gitlab) with an
+// OBVIOUS placeholder secret and a recent last_event_at, so the Webhooks settings
+// page reads "configured · last event …". Idempotent via UNIQUE (org_id, provider).
+// The secret is a clearly-fake placeholder — NEVER a real token.
+func (s *seeder) seedWebhookConfigs(orgID string) {
+	type whSeed struct {
+		provider    string
+		secret      string
+		lastEventAt time.Time
+	}
+	configs := []whSeed{
+		{provider: "github", secret: "PLACEHOLDER_GITHUB_WEBHOOK_SECRET_demo_only", lastEventAt: now.Add(-3 * time.Hour)},
+		{provider: "gitlab", secret: "PLACEHOLDER_GITLAB_WEBHOOK_TOKEN_demo_only", lastEventAt: now.Add(-27 * time.Hour)},
+	}
+	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		const q = `
+			INSERT INTO webhook_configs (org_id, provider, secret, enabled, last_event_at)
+			VALUES ($1, $2, $3, true, $4)
+			ON CONFLICT (org_id, provider) DO UPDATE SET
+				secret        = EXCLUDED.secret,
+				enabled       = EXCLUDED.enabled,
+				last_event_at = EXCLUDED.last_event_at`
+		for _, c := range configs {
+			if _, err := tx.Exec(s.ctx, q, orgID, c.provider, c.secret, c.lastEventAt); err != nil {
+				return fmt.Errorf("seed: upsert webhook_config %s: %w", c.provider, err)
+			}
+		}
+		return nil
+	}))
+}
+
 // ── capacity ────────────────────────────────────────────────────────────────
+
+// seedCalendarConnections wires a couple of members to a Google/Microsoft
+// calendar so the calendar-sync settings show connected accounts. Tokens are left
+// NULL (no real or placeholder credentials are stored). Idempotent via
+// UNIQUE (org_id, user_id, provider).
+func (s *seeder) seedCalendarConnections(orgID string) {
+	// Connect the first couple of human, non-stakeholder members.
+	var connectable []*member
+	for _, m := range members {
+		if m.role == "stakeholder" || m.isAgent {
+			continue
+		}
+		connectable = append(connectable, m)
+	}
+	if len(connectable) == 0 {
+		return
+	}
+	type calSeed struct {
+		m        *member
+		provider string
+		email    string
+	}
+	seeds := []calSeed{
+		{m: connectable[0], provider: "google", email: connectable[0].email},
+	}
+	if len(connectable) > 1 {
+		seeds = append(seeds, calSeed{m: connectable[1], provider: "microsoft", email: connectable[1].email})
+	}
+	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		const q = `
+			INSERT INTO calendar_connections
+			    (org_id, user_id, provider, external_email, calendar_id,
+			     scopes, push_leave, pull_busy, last_synced_at)
+			VALUES ($1, $2, $3, $4, 'primary', $5, true, true, $6)
+			ON CONFLICT (org_id, user_id, provider) DO UPDATE SET
+				external_email = EXCLUDED.external_email,
+				last_synced_at = EXCLUDED.last_synced_at`
+		scopes := "calendar.events calendar.readonly"
+		lastSync := now.Add(-6 * time.Hour)
+		for _, c := range seeds {
+			if _, err := tx.Exec(s.ctx, q, orgID, c.m.user.ID, c.provider, c.email, scopes, lastSync); err != nil {
+				return fmt.Errorf("seed: insert calendar_connection: %w", err)
+			}
+		}
+		return nil
+	}))
+}
 
 func (s *seeder) seedAvailability(orgID string) {
 	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
@@ -1752,20 +1955,31 @@ func (s *seeder) seedLeaveTypes(orgID string) []*leaveTypeSeed {
 	return types
 }
 
+// leaveTally reports the leave spread so the summary can surface the pending
+// queue (the Approvals tab) at a glance.
+type leaveTally struct {
+	total, pending int
+}
+
 // seedLeave writes a scattering of typed leave entries across members and across
 // the period so the team calendar shows real gaps. Each entry carries both the
 // legacy `kind` (for capacity math) and a `leave_type_id` (for the richer UI),
-// and a minority are half-days.
-func (s *seeder) seedLeave(orgID string, types []*leaveTypeSeed) int {
+// and a minority are half-days. Most entries are `approved`; a handful of
+// recent/future requests are left `pending` so the Approvals tab is populated.
+//
+// leave_entries has no natural key, so this clears the org's entries first
+// (mirroring the kudos pattern) to stay idempotent across re-runs without -reset.
+func (s *seeder) seedLeave(orgID string, types []*leaveTypeSeed) leaveTally {
 	type leave struct {
-		userID, kind, typeID, start, end, note, portion string
-		halfDay                                         bool
+		userID, kind, typeID, start, end, note, portion, status string
+		halfDay                                                 bool
 	}
 	notes := map[string]string{
 		"Vacation": "Annual leave", "Sick": "Out sick",
 		"Personal": "Personal day", "Parental": "Parental leave",
 	}
 	var rows []leave
+	var tally leaveTally
 	for _, m := range members {
 		if m.role == "stakeholder" || m.isAgent {
 			continue
@@ -1794,19 +2008,58 @@ func (s *seeder) seedLeave(orgID string, types []*leaveTypeSeed) int {
 				start:   start.Format("2006-01-02"),
 				end:     end.Format("2006-01-02"),
 				note:    notes[t.name],
-				halfDay: halfDay, portion: portion,
+				halfDay: halfDay, portion: portion, status: "approved",
 			})
+			tally.total++
 		}
 	}
+
+	// A few PENDING requests (recent → near-future) so the Approvals queue is not
+	// empty. These deliberately do NOT count toward used_days (only approved leave
+	// is summed in seedLeaveBalances), so balances stay coherent. kind must satisfy
+	// the CHECK (pto|sick|holiday) → take it straight off the chosen type.
+	pendingCandidates := make([]*member, 0, len(members))
+	for _, m := range members {
+		if m.role == "stakeholder" || m.isAgent {
+			continue
+		}
+		pendingCandidates = append(pendingCandidates, m)
+	}
+	for p := 0; p < 5; p++ {
+		m := pendingCandidates[p%len(pendingCandidates)]
+		t := types[rng.Intn(len(types))]
+		// Start a few days out from now (a request awaiting approval).
+		start := now.AddDate(0, 0, 2+rng.Intn(40))
+		span := 0
+		if t.kind == "pto" {
+			span = rng.Intn(5)
+		} else if t.name == "Parental" {
+			span = 20 + rng.Intn(20)
+		}
+		end := start.AddDate(0, 0, span)
+		rows = append(rows, leave{
+			userID: m.user.ID, kind: t.kind, typeID: t.id,
+			start:   start.Format("2006-01-02"),
+			end:     end.Format("2006-01-02"),
+			note:    "Requested — awaiting approval",
+			halfDay: false, portion: "full", status: "pending",
+		})
+		tally.total++
+		tally.pending++
+	}
+
 	s.must(s.db.WithOrg(s.ctx, orgID, func(tx pgx.Tx) error {
+		// leave_entries has no natural key → clear then re-insert for idempotency.
+		if _, err := tx.Exec(s.ctx, `DELETE FROM leave_entries WHERE org_id = $1`, orgID); err != nil {
+			return err
+		}
 		const q = `
 			INSERT INTO leave_entries
 			    (org_id, user_id, kind, leave_type_id, start_date, end_date, half_day, portion, status, note)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'approved', $9)
-			ON CONFLICT DO NOTHING`
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 		batch := &pgx.Batch{}
 		for _, r := range rows {
-			batch.Queue(q, orgID, r.userID, r.kind, r.typeID, r.start, r.end, r.halfDay, r.portion, r.note)
+			batch.Queue(q, orgID, r.userID, r.kind, r.typeID, r.start, r.end, r.halfDay, r.portion, r.status, r.note)
 		}
 		br := tx.SendBatch(s.ctx, batch)
 		defer br.Close()
@@ -1817,7 +2070,7 @@ func (s *seeder) seedLeave(orgID string, types []*leaveTypeSeed) int {
 		}
 		return nil
 	}))
-	return len(rows)
+	return tally
 }
 
 // seedLeaveBalances writes a per-member, per-type balance for the current year.
@@ -1961,7 +2214,8 @@ func (s *seeder) seedTimeEntries(orgID string, issueIDs []string) int {
 
 func (s *seeder) printSummary(
 	org *store.Org, adminEmail string, repos, projects int,
-	ct commitTally, pr prTally, iss issueTally, leave, timeEntries int,
+	ct commitTally, pr prTally, iss issueTally, leave leaveTally, timeEntries int,
+	dep deployTally, notif notifTally,
 ) {
 	fmt.Printf(`
 ╔═══════════════════════════════════════════════════════════════╗
@@ -1978,8 +2232,11 @@ func (s *seeder) printSummary(
 ║  Cycle times:%d   Effort estimates: %d
 ║  Issues:     %d   (%d git · %d native)
 ║              open %d · in-progress %d · done %d · closed %d
-║  Leave:      %d   Time entries: %d
+║  Leave:      %d   (%d pending → Approvals)   Time entries: %d
+║  Deployments:%d   (%d failed)   Incidents: %d
+║  Notifs:     %d channels · %d delivery-log entries · 2 webhook configs
 ║  Contribution: ~6mo trend snapshots · peer kudos · advisory equity ledger
+║  Invoicing:  2 clients · 1 generated invoice (git-evidence lines)
 ║
 ║  → Open http://localhost:8080/login
 ║    Email:    %s
@@ -1993,7 +2250,9 @@ func (s *seeder) printSummary(
 		pr.cycleTimes, pr.estimates,
 		iss.total, iss.git, iss.native,
 		iss.open, iss.inProgress, iss.done, iss.closed,
-		leave, timeEntries,
+		leave.total, leave.pending, timeEntries,
+		dep.deploys, dep.failures, dep.incidents,
+		notif.channels, notif.logs,
 		adminEmail, demoPassword,
 	)
 }
