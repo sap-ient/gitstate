@@ -35,27 +35,50 @@ export function NativeBadge() {
   )
 }
 
-/** State chip — colour-coded by state string. */
+const STATE_COLORS = {
+  open:        { color: '#f59e0b', bg: 'rgba(245,158,11,0.10)' },
+  in_progress: { color: 'var(--brand-indigo)', bg: 'rgba(99,102,241,0.10)' },
+  done:        { color: 'var(--brand-teal)', bg: 'rgba(45,212,191,0.10)' },
+  closed:      { color: 'var(--text-faint)', bg: 'var(--bg-surface3)' },
+  merged:      { color: 'var(--brand-teal)', bg: 'rgba(45,212,191,0.10)' },
+}
+
+function stateLabel(v) {
+  return (v ?? 'open').replace('_', ' ')
+}
+
+/**
+ * State chip — colour-coded by state string.
+ *
+ * `derivedState` is git-truth (computed from PR/commit activity); `state` is the
+ * raw stored state. When they differ we surface the derived state as the primary
+ * chip with a small "git-derived" hint, and show the raw state struck-through so
+ * the relationship is never confusing.
+ */
 export function StateChip({ state, derivedState }) {
   const display = derivedState ?? state ?? 'open'
-
-  const map = {
-    open:        { color: '#f59e0b', bg: 'rgba(245,158,11,0.10)' },
-    in_progress: { color: 'var(--brand-indigo)', bg: 'rgba(99,102,241,0.10)' },
-    done:        { color: 'var(--brand-teal)', bg: 'rgba(45,212,191,0.10)' },
-    closed:      { color: 'var(--text-faint)', bg: 'var(--bg-surface3)' },
-    merged:      { color: 'var(--brand-teal)', bg: 'rgba(45,212,191,0.10)' },
-  }
-
-  const s = map[display] ?? map.open
-  const label = display.replace('_', ' ')
+  const s = STATE_COLORS[display] ?? STATE_COLORS.open
+  // Only flag a difference when a derived state exists AND it disagrees with raw.
+  const differs = derivedState != null && state != null && derivedState !== state
 
   return (
-    <span
-      className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full capitalize"
-      style={{ color: s.color, background: s.bg }}
-    >
-      {label}
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full capitalize"
+        style={{ color: s.color, background: s.bg }}
+        title={differs ? `git-derived: ${stateLabel(derivedState)} · raw: ${stateLabel(state)}` : undefined}
+      >
+        {stateLabel(display)}
+      </span>
+      {differs && (
+        <span
+          className="inline-flex items-center gap-1 text-[9px] font-mono text-[var(--text-faint)]"
+          title={`Raw stored state is "${stateLabel(state)}"; git activity derives "${stateLabel(derivedState)}".`}
+        >
+          <span className="text-[var(--brand-teal)]">git-derived</span>
+          <span className="capitalize line-through opacity-70">{stateLabel(state)}</span>
+        </span>
+      )}
     </span>
   )
 }

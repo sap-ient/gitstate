@@ -386,8 +386,11 @@ function CalendarSection({ delay }) {
     return () => { active = false }
   }, [])
 
-  const google = statuses?.find((s) => s.provider === 'google')
-  const microsoft = statuses?.find((s) => s.provider === 'microsoft')
+  // Defensively coerce to an array — a stray HTML / non-JSON 200 response must
+  // never throw `statuses?.find is not a function` and blank the page.
+  const statusList = Array.isArray(statuses) ? statuses : []
+  const google = statusList.find((s) => s.provider === 'google')
+  const microsoft = statusList.find((s) => s.provider === 'microsoft')
   const anyConfigured = google?.configured || microsoft?.configured
 
   return (

@@ -71,7 +71,7 @@ function membersReducer(state, action) {
 function inviteReducer(state, action) {
   switch (action.type) {
     case 'SENDING': return { ...state, inviting: true, inviteError: null, inviteSuccess: null }
-    case 'SUCCESS': return { ...state, inviting: false, inviteEmail: '', inviteSuccess: action.msg }
+    case 'SUCCESS': return { ...state, inviting: false, inviteEmail: '', inviteSuccess: action.msg, inviteLink: action.link ?? null }
     case 'ERROR': return { ...state, inviting: false, inviteError: action.error }
     case 'SET_EMAIL': return { ...state, inviteEmail: action.value }
     case 'SET_ROLE': return { ...state, inviteRole: action.value }
@@ -100,6 +100,7 @@ export default function Members() {
     inviting: false,
     inviteError: null,
     inviteSuccess: null,
+    inviteLink: null,
   })
 
   const orgId = activeOrg?.id
@@ -124,11 +125,15 @@ export default function Members() {
     if (!orgId || !inviteState.inviteEmail.trim()) return
     inviteDispatch({ type: 'SENDING' })
     try {
-      await api.post(`/api/orgs/${orgId}/members`, {
+      const res = await api.post(`/api/orgs/${orgId}/members`, {
         email: inviteState.inviteEmail.trim(),
         role: inviteState.inviteRole,
       })
-      inviteDispatch({ type: 'SUCCESS', msg: `Invite sent to ${inviteState.inviteEmail.trim()}` })
+      inviteDispatch({
+        type: 'SUCCESS',
+        msg: `Invite created for ${inviteState.inviteEmail.trim()}`,
+        link: res?.acceptUrl ?? null,
+      })
       await fetchMembers(orgId)
     } catch (err) {
       inviteDispatch({ type: 'ERROR', error: err?.message ?? 'Failed to send invite' })
@@ -163,7 +168,7 @@ export default function Members() {
   }
 
   const { members, loading, error, roleChanging, removing } = membersState
-  const { inviteEmail, inviteRole, inviting, inviteError, inviteSuccess } = inviteState
+  const { inviteEmail, inviteRole, inviting, inviteError, inviteSuccess, inviteLink } = inviteState
 
   if (!activeOrg) {
     return (
@@ -235,6 +240,19 @@ export default function Members() {
             </form>
             {inviteError && <p className="mt-2 text-xs text-red-400">{inviteError}</p>}
             {inviteSuccess && <p className="mt-2 text-xs text-[var(--brand-teal)]">{inviteSuccess}</p>}
+            {inviteLink && (
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-[var(--text-muted)]">No email configured — share this link:</span>
+                <code className="text-xs px-2 py-1 rounded bg-[var(--bg-surface)] border border-[var(--border)] text-[var(--text)] max-w-full truncate">{inviteLink}</code>
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard?.writeText(inviteLink)}
+                  className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:border-[var(--brand-teal)] text-[var(--text-muted)] hover:text-[var(--brand-teal)] transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+            )}
           </Card>
         </Reveal>
       )}
@@ -242,7 +260,7 @@ export default function Members() {
       {/* Members list */}
       <Reveal delay={0.1}>
         <Card padding="none" className="overflow-hidden">
-          <div className="px-6 py-4 border-b border-[var(--border)] flex items-center justify-between">
+          <div className="px-6 py-4 border-b border-[var(--border)] flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
               <Users size={15} className="text-[var(--text-faint)]" />
               Members
@@ -252,9 +270,16 @@ export default function Members() {
             </h2>
             <div className="flex items-center gap-3">
               {!loading && members.length > 0 && (
-                <span className="text-[11px] font-mono text-[var(--text-faint)]">
-                  {seatCount} seat{seatCount !== 1 ? 's' : ''}
-                  {stakeholderCount > 0 && <span className="text-[var(--brand-teal)]"> · {stakeholderCount} free</span>}
+                <span
+                  className="text-[11px] font-mono text-[var(--text-faint)]"
+                  title={`${members.length} ${members.length === 1 ? 'person' : 'people'} total — ${seatCount} billable builder${seatCount !== 1 ? 's' : ''}, ${stakeholderCount} free stakeholder${stakeholderCount !== 1 ? 's' : ''}`}
+                >
+                  <span className="text-[var(--text-muted)]">{members.length} {members.length === 1 ? 'person' : 'people'}</span>
+                  {' = '}
+                  {seatCount} billable builder{seatCount !== 1 ? 's' : ''}
+                  {stakeholderCount > 0 && (
+                    <span className="text-[var(--brand-teal)]"> + {stakeholderCount} free stakeholder{stakeholderCount !== 1 ? 's' : ''}</span>
+                  )}
                 </span>
               )}
               {loading && <Loader2 size={15} className="animate-spin text-[var(--brand-teal)]" />}

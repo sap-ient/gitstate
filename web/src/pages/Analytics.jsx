@@ -210,6 +210,9 @@ function StatTile({ icon, label, value, sub, accent, loading }) {
 
 function StatTiles({ summary, loading }) {
   const s = summary ?? {}
+  const avg = s.averages ?? {}
+  // One balanced, evenly-wrapping grid (10 tiles → 2/3/4/5-up) — avoids the
+  // ragged "7 then 3" layout at 1440px.
   const tiles = [
     { icon: <GitCommitHorizontal size={15} />, label: 'Commits', value: fmtNum(s.totalCommits), accent: 'var(--brand-teal)' },
     { icon: <GitBranch size={15} />, label: 'Repos', value: fmtNum(s.repos), accent: 'var(--brand-indigo)' },
@@ -218,18 +221,13 @@ function StatTiles({ summary, loading }) {
     { icon: <Plus size={15} />, label: 'Additions', value: fmtNum(s.additions), accent: '#22c55e' },
     { icon: <Minus size={15} />, label: 'Deletions', value: fmtNum(s.deletions), accent: '#ef4444' },
     { icon: <Sigma size={15} />, label: 'Net lines', value: fmtSigned(s.netLines), accent: 'var(--brand-teal)' },
+    { icon: <Activity size={15} />, label: 'Commits / active day', value: fmtAvg(avg.commitsPerActiveDay), accent: 'var(--brand-indigo)' },
+    { icon: <Users size={15} />, label: 'Commits / contributor', value: fmtAvg(avg.commitsPerContributor), accent: 'var(--brand-teal)' },
+    { icon: <TrendingUp size={15} />, label: 'Lines / commit', value: fmtAvg(avg.linesPerCommit), accent: 'var(--brand-indigo)' },
   ]
-  const avg = s.averages ?? {}
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
-        {tiles.map(t => <StatTile key={t.label} {...t} loading={loading} />)}
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <StatTile icon={<Activity size={15} />} label="Commits / active day" value={fmtAvg(avg.commitsPerActiveDay)} accent="var(--brand-indigo)" loading={loading} />
-        <StatTile icon={<Users size={15} />} label="Commits / contributor" value={fmtAvg(avg.commitsPerContributor)} accent="var(--brand-teal)" loading={loading} />
-        <StatTile icon={<TrendingUp size={15} />} label="Lines / commit" value={fmtAvg(avg.linesPerCommit)} accent="var(--brand-indigo)" loading={loading} />
-      </div>
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+      {tiles.map(t => <StatTile key={t.label} {...t} loading={loading} />)}
     </div>
   )
 }

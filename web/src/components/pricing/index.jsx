@@ -16,12 +16,27 @@ import {
 } from 'lucide-react'
 import { Card, Button, Badge, Pill, Glow } from '../ui'
 
+// ── Enterprise detection ──────────────────────────────────────────────────────
+// The live API may key enterprise as 'enterprise' (fallback uses 'ent') and a
+// backend agent is making it return perBuilderUsd as null (it currently returns
+// 0). Treat the enterprise key OR a null/0 per-builder price on a non-free plan
+// as a "Custom" tier — defensively handling BOTH null and 0.
+function isEnterprisePlan(plan) {
+  if (!plan) return false
+  if (plan.key === 'enterprise' || plan.key === 'ent') return true
+  // null price is always custom; a 0 price is custom unless it's the free tier.
+  if (plan.perBuilderUsd == null) return true
+  if (plan.perBuilderUsd === 0 && plan.key !== 'free') return true
+  return false
+}
+
 // ── Plan metadata (icon + tagline per tier) ─────────────────────────────────
 const PLAN_META = {
-  free:     { icon: Zap,         tagline: 'Solo builders & side projects — forever free' },
-  team:     { icon: Users,       tagline: 'Small teams shipping daily, included LLM credits' },
-  business: { icon: ShieldCheck, tagline: 'Growing orgs — more credits, SSO & audit logs' },
-  ent:      { icon: Cpu,         tagline: 'Self-host, BYOK, custom SLA & compliance' },
+  free:       { icon: Zap,         tagline: 'Solo builders & side projects — forever free' },
+  team:       { icon: Users,       tagline: 'Small teams shipping daily, included LLM credits' },
+  business:   { icon: ShieldCheck, tagline: 'Growing orgs — more credits, SSO & audit logs' },
+  ent:        { icon: Cpu,         tagline: 'Self-host, BYOK, custom SLA & compliance' },
+  enterprise: { icon: Cpu,         tagline: 'Self-host, BYOK, custom SLA & compliance' },
 }
 
 const PLAN_FEATURES = {
@@ -59,11 +74,13 @@ const PLAN_FEATURES = {
     'Unlimited repos',
   ],
 }
+// Live API keys enterprise as 'enterprise'; mirror the 'ent' feature/tagline set.
+PLAN_FEATURES.enterprise = PLAN_FEATURES.ent
 
 // ── Plan card ────────────────────────────────────────────────────────────────
 export function PlanCard({ plan, recommended, format }) {
-  const isEnt = plan.perBuilderUsd === null
-  const isFree = plan.perBuilderUsd === 0
+  const isEnt = isEnterprisePlan(plan)
+  const isFree = !isEnt && (plan.key === 'free' || plan.perBuilderUsd === 0)
   const meta = PLAN_META[plan.key] ?? PLAN_META.team
   const Icon = meta.icon
   const tagline = meta.tagline
@@ -117,7 +134,7 @@ export function PlanCard({ plan, recommended, format }) {
             <p className="text-[11px] text-[var(--text-faint)] mt-1.5">{tagline}</p>
           </div>
         </div>
-        {plan.key !== 'free' && plan.key !== 'ent' && (
+        {plan.key !== 'free' && !isEnt && (
           <Pill color={recommended ? 'teal' : 'default'}>{plan.key}</Pill>
         )}
       </div>
@@ -273,10 +290,10 @@ function FillSlider({ value, min, max, step = 1, onChange, accent = '#2DD4BF' })
  * - ent (perBuilderUsd=null): excluded from auto-match; shown when no fit found
  */
 function pickPlan(builderCount, plans) {
-  const pricedPlans = plans.filter(p => p.perBuilderUsd !== null)
-  const sorted = [...pricedPlans].sort((a, b) => a.perBuilderUsd - b.perBuilderUsd)
+  const pricedPlans = plans.filter(p => !isEnterprisePlan(p))
+  const sorted = [...pricedPlans].sort((a, b) => (a.perBuilderUsd ?? 0) - (b.perBuilderUsd ?? 0))
   const fit = sorted.find(p => p.builders === 0 || p.builders >= builderCount)
-  if (!fit) return plans.find(p => p.perBuilderUsd === null) ?? null
+  if (!fit) return plans.find(p => isEnterprisePlan(p)) ?? null
   return fit
 }
 
@@ -287,8 +304,8 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
   const [byok, setByok] = useState(false)
 
   const matched = pickPlan(builders, plans)
-  const isEnt = matched?.perBuilderUsd === null
-  const isFree = matched?.perBuilderUsd === 0
+  const isEnt = isEnterprisePlan(matched)
+  const isFree = !isEnt && matched?.perBuilderUsd === 0
 
   // Plan seat cost
   const planCost = isEnt ? null : (matched?.perBuilderUsd ?? 0) * builders

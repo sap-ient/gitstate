@@ -780,6 +780,58 @@ func pickIssueState() (string, string) {
 	return "open", "open"
 }
 
+// issueTimestamps returns a deterministic (created_at, updated_at) pair for a
+// seeded issue. Creation dates are spread across the whole ~9-month history and
+// clustered like real work — biased toward more recent weeks (an active, growing
+// backlog) with weekday-heavy timing — so the analytics "issues opened over
+// time" series fills multiple buckets instead of collapsing to one. updated_at
+// reflects the last state change: terminal issues (done/closed) get an
+// updated_at some working days after creation (a believable cycle time, clamped
+// to "now"); active issues (open/in_progress) are touched at/just after
+// creation. All randomness flows through the shared seeded rng.
+func issueTimestamps(state string) (time.Time, time.Time) {
+	// Bias creation toward recency: square of a uniform pushes mass toward 0
+	// days-back. Range is the full history window (minus a small head so even
+	// the oldest issues sit inside the commit history).
+	frac := rng.Float64() * rng.Float64() // skewed toward 0 (recent)
+	daysBack := int(frac * float64(historyDays-7))
+
+	day := now.AddDate(0, 0, -daysBack)
+	// Nudge weekend creations onto an adjacent weekday so the series tracks the
+	// weekday-heavy commit cadence.
+	switch day.Weekday() {
+	case time.Saturday:
+		day = day.AddDate(0, 0, -1)
+	case time.Sunday:
+		day = day.AddDate(0, 0, 1)
+	}
+
+	hour := 9 + rng.Intn(9) // 09:00–17:59, working hours
+	createdAt := time.Date(day.Year(), day.Month(), day.Day(),
+		hour, rng.Intn(60), rng.Intn(60), 0, day.Location())
+
+	switch state {
+	case "done", "closed":
+		// Cycle time: 1–21 calendar days after creation, clamped to now.
+		cycleDays := 1 + rng.Intn(21)
+		updatedAt := createdAt.AddDate(0, 0, cycleDays).
+			Add(time.Duration(rng.Intn(8)) * time.Hour)
+		if updatedAt.After(now) {
+			updatedAt = now
+		}
+		return createdAt, updatedAt
+	case "in_progress":
+		// Picked up shortly after being opened.
+		updatedAt := createdAt.Add(time.Duration(2+rng.Intn(72)) * time.Hour)
+		if updatedAt.After(now) {
+			updatedAt = now
+		}
+		return createdAt, updatedAt
+	default: // open — untouched since creation
+		return createdAt, createdAt
+	}
+}
+
 // seedIssues creates ~120 issues: a git-synced majority (with derived_state and
 // platform/external_id) plus a native minority, assigned across members and
 // spread across projects/labels so the Kanban board and triage views fill out.
@@ -809,6 +861,8 @@ func (s *seeder) seedIssues(orgID string, repos []*store.Repo, projects []*proje
 		derived   string
 		assignee  *string
 		labels    []string
+		createdAt time.Time
+		updatedAt time.Time
 	}
 	var gens []issueGen
 
@@ -819,6 +873,8 @@ func (s *seeder) seedIssues(orgID string, repos []*store.Repo, projects []*proje
 		labels := issueLabels[rng.Intn(len(issueLabels))]
 		title := fmt.Sprintf("%s (#%d)", issueTitles[rng.Intn(len(issueTitles))], 100+i)
 
+		createdAt, updatedAt := issueTimestamps(state)
+
 		g := issueGen{
 			projectID: proj.ID,
 			number:    100 + i,
@@ -827,6 +883,8 @@ func (s *seeder) seedIssues(orgID string, repos []*store.Repo, projects []*proje
 			state:     state,
 			assignee:  &assignee.user.ID,
 			labels:    labels,
+			createdAt: createdAt,
+			updatedAt: updatedAt,
 		}
 		// ~70% git-synced, ~30% native.
 		if rng.Float64() < 0.70 {
@@ -862,19 +920,23 @@ func (s *seeder) seedIssues(orgID string, repos []*store.Repo, projects []*proje
 		const q = `
 			INSERT INTO issues
 			    (org_id, project_id, repo_id, source, platform, external_id, number,
-			     title, body, state, derived_state, assignee_id, labels)
+			     title, body, state, derived_state, assignee_id, labels,
+			     created_at, updated_at)
 			VALUES ($1, $2, $3, $4,
 			        NULLIF($5,''), NULLIF($6,''), NULLIF($7::int,0),
-			        $8, $9, $10, NULLIF($11,''), $12, $13)
+			        $8, $9, $10, NULLIF($11,''), $12, $13,
+			        $14, $15)
 			ON CONFLICT (org_id, platform, external_id) WHERE platform IS NOT NULL
 			DO UPDATE SET title = EXCLUDED.title, state = EXCLUDED.state,
-			              derived_state = EXCLUDED.derived_state
+			              derived_state = EXCLUDED.derived_state,
+			              created_at = EXCLUDED.created_at,
+			              updated_at = EXCLUDED.updated_at
 			RETURNING id`
 		batch := &pgx.Batch{}
 		for _, g := range gens {
 			batch.Queue(q, orgID, g.projectID, g.repoID, g.source, g.platform,
 				g.extID, g.number, g.title, g.body, g.state, g.derived,
-				g.assignee, g.labels)
+				g.assignee, g.labels, g.createdAt, g.updatedAt)
 		}
 		br := tx.SendBatch(s.ctx, batch)
 		defer br.Close()

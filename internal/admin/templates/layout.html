@@ -358,10 +358,12 @@
         <span class="nav-icon">◎</span> Organizations
       </a>
 
+      {{if .EE}}
       <div class="nav-label">Enterprise</div>
       <a href="/admin/revenue" class="nav-link {{if eq .ActivePage "revenue"}}active{{end}}">
         <span class="nav-icon">⬡</span> Revenue <span class="ee-tag">EE</span>
       </a>
+      {{end}}
     </div>
 
     <div class="sidebar-footer">

@@ -38,12 +38,14 @@ func RegisterDocsRoutes(mux *http.ServeMux) {
 // USD, the backend charges in ZAR at capture-time FX). The web pricing page depends
 // on this exact JSON shape.
 type publicPlan struct {
-	Key            string  `json:"key"`
-	Name           string  `json:"name"`
-	PerBuilderUSD  int     `json:"perBuilderUsd"`  // per_builder_cents / 100
-	IncludedLLMUSD int     `json:"includedLlmUsd"` // included_llm_cents / 100
-	OverageMarkup  float64 `json:"overageMarkup"`
-	Builders       int     `json:"builders"` // cap: 0 = unlimited
+	Key string `json:"key"`
+	Name string `json:"name"`
+	// PerBuilderUSD is per_builder_cents/100, or null for enterprise (custom
+	// pricing) so the pricing page renders "Custom" rather than "$0/builder".
+	PerBuilderUSD  *float64 `json:"perBuilderUsd"`
+	IncludedLLMUSD int      `json:"includedLlmUsd"` // included_llm_cents / 100
+	OverageMarkup  float64  `json:"overageMarkup"`
+	Builders       int      `json:"builders"` // cap: 0 = unlimited
 }
 
 // RegisterPublicPlans wires GET /api/plans (public — for the pricing page).
@@ -66,10 +68,19 @@ func RegisterPublicPlans(mux *http.ServeMux, database *db.DB, _ *config.Config) 
 			if !ok {
 				continue
 			}
+			// Enterprise has custom pricing → null per-builder price so the
+			// frontend shows "Custom" instead of "$0/builder". Whatever the
+			// seed/store holds for enterprise is overridden to null here at the
+			// API boundary; priced tiers keep their numbers.
+			var perBuilder *float64
+			if key != "enterprise" {
+				v := float64(p.PerBuilderCents) / 100
+				perBuilder = &v
+			}
 			out = append(out, publicPlan{
 				Key:            p.Key,
 				Name:           p.Name,
-				PerBuilderUSD:  p.PerBuilderCents / 100,
+				PerBuilderUSD:  perBuilder,
 				IncludedLLMUSD: p.IncludedLLMCents / 100,
 				OverageMarkup:  p.OverageMarkup,
 				Builders:       p.Builders,

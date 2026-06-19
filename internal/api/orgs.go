@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -71,6 +72,12 @@ type inviteResponse struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
 	Role  string `json:"role"`
+	// Token is the raw invite token. It is returned so a self-host/dev instance
+	// with no SMTP configured can surface a copyable invite link in the UI.
+	Token string `json:"token,omitempty"`
+	// AcceptURL is the full invite-accept URL the inviter can share directly.
+	// Built from cfg.App.PublicURL + the SPA route /invite/accept?token=...
+	AcceptURL string `json:"acceptUrl,omitempty"`
 }
 
 type acceptInviteResponse struct {
@@ -103,6 +110,15 @@ func generateInviteToken() (string, string, error) {
 	raw := hex.EncodeToString(buf)
 	hash := auth.HashToken(raw)
 	return raw, hash, nil
+}
+
+// buildInviteAcceptURL composes the shareable invite-accept link from the
+// instance's public URL and the SPA route the InviteAccept page is mounted on
+// (web/src/App.jsx: /invite/accept?token=...). publicURL may have a trailing
+// slash; we normalize it. The token is URL-query-escaped.
+func buildInviteAcceptURL(publicURL, rawToken string) string {
+	base := strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	return base + "/invite/accept?token=" + url.QueryEscape(rawToken)
 }
 
 // isSlugConflict checks for a Postgres unique constraint violation on slug.
@@ -259,7 +275,6 @@ func (h *orgHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not generate invite token")
 		return
 	}
-	_ = rawToken // In production this would be emailed to req.Email.
 
 	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
 	inv, err := store.CreateInvite(r.Context(), h.db.Pool(), orgID, req.Email, req.Role, tokenHash, expiresAt)
@@ -268,10 +283,18 @@ func (h *orgHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	acceptURL := buildInviteAcceptURL(h.cfg.App.PublicURL, rawToken)
+
+	// When SMTP/email is configured the raw token would be emailed to req.Email
+	// here. Email delivery is not wired in dev/self-host, so we instead return the
+	// token + acceptUrl in the response so the inviter can copy a shareable link.
+	// The token is NEVER logged.
 	writeJSON(w, http.StatusCreated, inviteResponse{
-		ID:    inv.ID,
-		Email: inv.Email,
-		Role:  inv.Role,
+		ID:        inv.ID,
+		Email:     inv.Email,
+		Role:      inv.Role,
+		Token:     rawToken,
+		AcceptURL: acceptURL,
 	})
 }
 

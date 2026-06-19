@@ -254,6 +254,10 @@ type baseData struct {
 	ActivePage  string
 	CurrentUser *middleware.AuthUser
 	Realtime    bool
+	// EE is true only when the binary was compiled with the `ee` build tag. The
+	// layout uses it to render EE-only nav links (e.g. Revenue) whose routes do
+	// not exist in the OSS build.
+	EE bool
 }
 
 func (h *adminHandlers) base(r *http.Request, page string) baseData {
@@ -261,6 +265,7 @@ func (h *adminHandlers) base(r *http.Request, page string) baseData {
 		ActivePage:  page,
 		CurrentUser: middleware.UserFromContext(r.Context()),
 		Realtime:    h.cfg.Admin.Realtime,
+		EE:          EEEnabled,
 	}
 }
 
