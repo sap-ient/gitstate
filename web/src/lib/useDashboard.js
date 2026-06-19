@@ -45,7 +45,8 @@ export function useDashboard() {
           ? raw.throughput.reduce((a, b) => a + (b.count ?? 0), 0)
           : (raw?.throughput ?? null),
         recentActivity: raw?.recentActivity ?? [],
-        status: raw?.status ?? null,
+        cycleTrend: Array.isArray(raw?.cycleTrend) ? raw.cycleTrend : [],
+        status: raw?.synthesizedStatus ?? raw?.status ?? null,
       }
       dispatch({ type: 'FETCH_DONE', data })
     } catch (e) {
