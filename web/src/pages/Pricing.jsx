@@ -20,6 +20,7 @@ import { Reveal, RevealList } from '../components/Reveal.jsx'
 import { useCurrency } from '../lib/currency.jsx'
 import { usePlans, FALLBACK_PLANS } from '../lib/usePlans.js'
 import { PlanCard, CostCalculator, CompareTable } from '../components/pricing/index.jsx'
+import AIModels from '../components/pricing/AIModels.jsx'
 import CompetitorCalculator from '../components/compare/CompetitorCalculator.jsx'
 
 const RECOMMENDED_KEY = 'team'
@@ -31,8 +32,8 @@ const FAQ_ITEMS = [
     a: 'A builder is any team member who writes code, runs AI agents, manages repositories, or configures integrations — they consume a paid seat. Product managers, designers, executives, and clients who only read dashboards, cycle-time reports, and PR timelines are stakeholders — always free and unlimited on every plan.',
   },
   {
-    q: 'How do the included LLM credits work?',
-    a: 'Team and Business plans include a monthly managed-LLM credit per builder ($4 and $12 respectively). These credits are pooled across your team and cover AI code insights, automated summaries, and agent runs. If your team exceeds the included credit pool, overage is billed at cost × 1.30. Alternatively, enable BYOK (bring your own key) and route LLM calls directly to your provider at their rate — no markup.',
+    q: 'How does managed AI pricing work?',
+    a: 'There is no per-seat AI fee. Team and Business plans include a monthly managed-AI credit per builder ($4 and $12 respectively), pooled across your team to cover AI code insights, automated summaries, and agent runs. Once you pass the included credit, you simply pay each model at its standard provider rate — nothing added per seat. Prefer to pay your provider directly? Enable BYOK (bring your own key) and route AI calls straight to Anthropic, OpenAI, or Gemini.',
   },
   {
     q: 'Why billed in USD but charged in my local currency?',
@@ -43,8 +44,8 @@ const FAQ_ITEMS = [
     a: 'Yes. gitstate is open-source and self-hosting is free forever. You provide the infrastructure; there are no seat limits or feature gates on self-hosted deployments. The cloud plans fund ongoing development and add managed infra, support, and AI features on top.',
   },
   {
-    q: 'When should I use BYOK instead of managed LLM credits?',
-    a: 'If your team\'s aggregate LLM spend would exceed the included credits and you have existing API agreements with Anthropic, OpenAI, or another provider, BYOK lets you bypass the managed-LLM markup entirely. The cost calculator above shows your BYOK savings in real time.',
+    q: 'When should I use BYOK instead of managed AI credits?',
+    a: 'Managed AI already runs at each model\'s standard rate, so there is nothing to "save" on the rate itself. BYOK makes sense if you have existing API agreements or committed-use discounts with Anthropic, OpenAI, or another provider and would rather pay them directly — it also drops your per-builder seat price. The cost calculator above shows your BYOK savings in real time.',
   },
   {
     q: 'Can I change plans mid-cycle?',
@@ -265,6 +266,29 @@ export default function Pricing() {
                 recommendedKey={RECOMMENDED_KEY}
               />
             )}
+          </Reveal>
+        </Container>
+      </Section>
+
+      {/* ── Managed AI — models & per-token pass-through pricing ── */}
+      <Section py="lg">
+        <Container size="lg">
+          <Reveal inView>
+            <div className="mb-8 text-center">
+              <Badge color="teal" className="mb-3 inline-flex items-center gap-1">
+                <Sparkles size={11} /> managed AI · at cost
+              </Badge>
+              <h2 className="font-display text-2xl md:text-3xl font-semibold text-[var(--text)] mb-2">
+                Run any model at its standard rate
+              </h2>
+              <p className="text-sm text-[var(--text-muted)] max-w-lg mx-auto">
+                No per-seat AI tax. AI is included up to your monthly credit, then metered at the model&apos;s
+                standard rate — or bring your own key and pay your provider directly.
+              </p>
+            </div>
+          </Reveal>
+          <Reveal inView delay={0.1}>
+            <AIModels />
           </Reveal>
         </Container>
       </Section>

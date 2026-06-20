@@ -89,7 +89,8 @@ function ModeOption({ icon: Icon, title, blurb, selected, disabled, onSelect }) 
 }
 
 // LLMSettingsSection — choose BYOK (bring your own provider key → $0 managed
-// cost) vs managed (platform key, billed as overage on the per-builder plan).
+// cost) vs managed (platform key; metered at the model's standard rate beyond
+// the included monthly AI credit — no per-seat AI fee, no markup).
 function LLMSettingsSection({ delay }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -163,7 +164,7 @@ function LLMSettingsSection({ delay }) {
               onSelect={() => setMode('managed')}
               blurb={
                 managedAvailable
-                  ? 'Use the gitstate platform key. Usage is metered and billed as overage on your per-builder plan, beyond the included AI credits each builder gets.'
+                  ? 'Use the gitstate platform key. Run any model at its standard rate — no per-seat AI fee. AI is included up to each builder\'s monthly credit, then metered at the model\'s standard provider rate.'
                   : 'Unavailable — this server has no platform LLM key. Bring your own key instead.'
               }
             />
@@ -172,7 +173,7 @@ function LLMSettingsSection({ delay }) {
               title="Bring your own key"
               selected={mode === 'byok'}
               onSelect={() => setMode('byok')}
-              blurb="Use your own provider API key. We incur no LLM cost on your behalf, so there is no managed AI overage on your invoice."
+              blurb="Bring your own provider API key. AI calls go direct to your provider and you pay them at their rate — nothing managed AI on your gitstate invoice."
             />
           </div>
 
@@ -230,7 +231,7 @@ function LLMSettingsSection({ delay }) {
               {saving ? 'Saving…' : saved ? 'Saved' : 'Save AI settings'}
             </Button>
             {mode === 'managed' && managedAvailable && (
-              <span className="text-xs text-[var(--text-faint)]">Overage applies only beyond your included AI credits.</span>
+              <span className="text-xs text-[var(--text-faint)]">Metered at the model&apos;s standard rate only beyond your included AI credit.</span>
             )}
           </div>
         </div>

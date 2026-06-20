@@ -22,22 +22,23 @@ test('marketing: pricing renders', async ({ page }) => {
 test('marketing: compare calculator', async ({ page }) => {
   await gotoPublic(page, '/compare')
   const h1 = (await page.locator('h1').first().innerText()).trim()
-  assert(/Pay for builders/i.test(h1), `marketing: compare h1 "${h1}"`)
+  assert(/builders|cheapest|compare/i.test(h1), `marketing: compare h1 "${h1}"`)
 
-  // Calculator inputs.
-  const builders = page.getByLabel('Builders')
-  await assertVisible(builders, 'marketing: Builders input')
-  // Savings headline computed from the inputs.
+  // Slider calculator inputs (Builders is a range slider now).
+  const builders = page.getByLabel('Builders').first()
+  await assertVisible(builders, 'marketing: Builders slider')
+  // Always-cheapest headline computed from the inputs.
   await assertVisible(
-    page.getByText(/cheaper than/i),
-    'marketing: "~N% cheaper than X" savings headline',
+    page.getByText(/cheapest at every team size|less than the next-cheapest|cheapest/i).first(),
+    'marketing: always-cheapest headline',
   )
-  // Increasing builders should change the gitstate cost — assert it recomputes.
+  // Dragging the slider should recompute the costs — drive it with the keyboard.
   const beforeText = await page.locator('body').innerText()
-  await page.getByLabel('Increase Builders').click()
-  await settle(page, { extra: 200 })
+  await builders.focus()
+  for (let i = 0; i < 10; i++) await page.keyboard.press('ArrowRight')
+  await settle(page, { extra: 250 })
   const afterText = await page.locator('body').innerText()
-  assert(beforeText !== afterText, 'marketing: compare calculator did not recompute on input change')
+  assert(beforeText !== afterText, 'marketing: slider calculator did not recompute on slider change')
 })
 
 // Docs home renders.

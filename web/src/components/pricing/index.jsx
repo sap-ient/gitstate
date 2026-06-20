@@ -6,6 +6,10 @@
  *   [{ key, name, perBuilderUsd, includedLlmUsd, overageMarkup, builders }]
  * where builders=0 means unlimited; free tier caps at 2.
  *
+ * Note on `overageMarkup`: INTERNAL bulk/committed-use field only — it sizes the
+ * estimate math but is never surfaced. Managed AI is presented to clients as
+ * metered at the model's standard rate (no per-seat AI fee, no visible markup).
+ *
  * Only consumed by pages/Pricing.jsx.
  */
 import { useState } from 'react'
@@ -50,16 +54,16 @@ const PLAN_FEATURES = {
   team: [
     'Unlimited builder seats',
     'Unlimited stakeholders — free',
-    '$4 / builder managed-LLM credits included',
-    'Overage at cost × 1.30 or BYOK',
+    '$4 / builder managed-AI credit included',
+    'Any model at its standard rate · or BYOK',
     'Priority email support',
     'Unlimited repos',
   ],
   business: [
     'Unlimited builder seats',
     'Unlimited stakeholders — free',
-    '$12 / builder managed-LLM credits included',
-    'Overage at cost × 1.30 or BYOK',
+    '$12 / builder managed-AI credit included',
+    'Any model at its standard rate · or BYOK',
     'Org SSO + audit logs',
     'Dedicated Slack support',
     'Unlimited repos',
@@ -173,15 +177,15 @@ export function PlanCard({ plan, recommended, format }) {
                 )}
                 <span className="text-xs text-[var(--text-faint)] flex items-center gap-1">
                   <DollarSign size={11} className="text-[#2DD4BF] shrink-0" />
-                  Managed: {format(plan.includedLlmUsd)} LLM credit / builder included
+                  Managed: {format(plan.includedLlmUsd)} AI credit / builder included
                 </span>
                 <span className="text-xs text-[var(--text-faint)] flex items-center gap-1">
                   <CreditCard size={11} className="text-[var(--text-faint)] shrink-0" />
-                  Overage at cost × {plan.overageMarkup} · BYOK = no markup
+                  Beyond it, any model at its standard rate · BYOK = pay your provider direct
                 </span>
                 <span className="text-[10px] text-[var(--text-faint)]/80 leading-snug flex items-start gap-1 mt-0.5">
                   <Info size={10} className="text-[var(--text-faint)] shrink-0 mt-0.5" />
-                  <span>BYOK = bring your own LLM key; we drop the included-AI value and route calls direct to your provider.</span>
+                  <span>BYOK = bring your own provider key; we drop the included-AI value and route calls direct to your provider.</span>
                 </span>
               </div>
             )}
@@ -343,7 +347,8 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
   // Overage computation
   const markup = matched?.overageMarkup ?? 1.3
   const overageBase = Math.max(0, totalLlmDesired - totalIncluded)
-  // Free plan has no included credits so entire LLM is a cost; others pay overage × markup
+  // Free plan has no included credits so entire LLM is metered; paid plans meter
+  // usage beyond the credit (internal committed-use factor applied, never shown).
   const llmCost = byok ? 0 : (isFree ? totalLlmDesired : overageBase * markup)
 
   const totalUsd = planCost === null ? null : planCost + llmCost
@@ -401,14 +406,14 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
           {/* LLM usage per builder */}
           <Field
             icon={<Cpu size={13} />}
-            label="Est. managed LLM / builder / mo"
+            label="Est. managed AI / builder / mo"
             hint={
               <span>
                 Token spend on AI features. Your plan includes{' '}
                 <span className="text-[#2DD4BF] font-semibold">
                   {format(matched?.includedLlmUsd ?? 0)} / builder
                 </span>{' '}
-                — overage at cost × {markup} or use BYOK.
+                — beyond it, any model runs at its standard rate, or use BYOK.
               </span>
             }
             control={
@@ -489,12 +494,12 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
               value={<span className="text-[#2DD4BF]">{format(totalIncluded)} / mo</span>}
             />
             <Row
-              label={<><Cpu size={13} className="text-[var(--text-muted)]" /> LLM overage / BYOK</>}
+              label={<><Cpu size={13} className="text-[var(--text-muted)]" /> Managed AI beyond credit / BYOK</>}
               value={
                 byok
                   ? <span className="text-[#818cf8]">BYOK · direct</span>
                   : llmCost > 0
-                  ? format(llmCost)
+                  ? <span className="flex items-center gap-1.5">{format(llmCost)} <span className="text-[10px] text-[var(--text-faint)] font-sans">at model cost</span></span>
                   : <span className="text-[#2DD4BF]">Covered by credits</span>
               }
             />
@@ -514,8 +519,7 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
                   <KeyRound size={14} className="text-[#818cf8] shrink-0 mt-0.5" />
                   <span className="text-[var(--text-dim)]">
                     Enable <strong className="text-[#818cf8]">BYOK</strong> — drops the per-builder rate to{' '}
-                    {format(byokPerBuilder)} and skips the ×{markup} markup, saving ~{format(byokSaving)}/mo
-                    by routing calls direct to your provider.
+                    {format(byokPerBuilder)} and you pay your AI provider direct, saving ~{format(byokSaving)}/mo.
                   </span>
                 </>
               ) : (
@@ -523,7 +527,7 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
                   <Info size={14} className="text-[#2DD4BF] shrink-0 mt-0.5" />
                   <span className="text-[var(--text-faint)]">
                     Your LLM usage fits within the{' '}
-                    <span className="text-[#2DD4BF]">{format(totalIncluded)}/mo</span> included credits — no overage charge.
+                    <span className="text-[#2DD4BF]">{format(totalIncluded)}/mo</span> included AI credit — nothing metered this month.
                   </span>
                 </>
               )}
@@ -534,8 +538,8 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
             <div className="flex items-start gap-2.5 rounded-[var(--radius-badge)] border border-[#818cf8]/25 bg-[#6366F1]/[0.07] px-3.5 py-3 text-xs leading-relaxed">
               <KeyRound size={14} className="text-[#818cf8] shrink-0 mt-0.5" />
               <span className="text-[var(--text-dim)]">
-                <strong className="text-[#818cf8]">BYOK active</strong> — LLM calls go direct to your provider.
-                No managed-LLM markup. You pay your provider at their rate.
+                <strong className="text-[#818cf8]">BYOK active</strong> — AI calls go direct to your provider.
+                You pay your provider at their rate; nothing added per seat.
               </span>
             </div>
           )}
@@ -605,8 +609,9 @@ const COMPARE_ROWS = [
   { label: 'Per-builder price (BYOK)',      icon: KeyRound,     vals: ['BYOK', '$3', '$8', 'Custom'] },
   { label: 'Builder cap',                   icon: Users,        vals: ['≤ 2', '∞', '∞', '∞'] },
   { label: 'Stakeholders',                  icon: Eye,          vals: ['∞', '∞', '∞', '∞'], accent: true },
-  { label: 'Managed LLM credits / builder', icon: Cpu,          vals: ['—', '$4', '$12', 'BYOK'] },
-  { label: 'LLM overage markup',            icon: Gauge,        vals: ['—', '×1.30', '×1.30', 'None'] },
+  { label: 'Managed AI credit / builder',   icon: Cpu,          vals: ['—', '$4', '$12', 'BYOK'] },
+  { label: 'Managed AI beyond credit',      icon: Gauge,        vals: ['BYOK', 'At model cost', 'At model cost', 'BYOK'], accent: true },
+  { label: 'Per-seat AI fee',               icon: DollarSign,   vals: ['None', 'None', 'None', 'None'], accent: true },
   { label: 'BYOK (own LLM key)',            icon: KeyRound,     vals: [true, true, true, true] },
   { label: 'Unlimited repos',               icon: Server,       vals: [true, true, true, true] },
   { label: 'Priority support',              icon: Zap,          vals: [false, true, true, true] },

@@ -29,8 +29,8 @@ export const FALLBACK_PLANS = [
     name: 'Team',
     perBuilderUsd: 6,
     byokPerBuilderUsd: 3,
-    includedLlmUsd: 4,
-    overageMarkup: 1.3,
+    includedLlmUsd: 3,
+    overageMarkup: 1.05,
     builders: 0,
   },
   {
@@ -38,8 +38,8 @@ export const FALLBACK_PLANS = [
     name: 'Business',
     perBuilderUsd: 14,
     byokPerBuilderUsd: 8,
-    includedLlmUsd: 12,
-    overageMarkup: 1.3,
+    includedLlmUsd: 6,
+    overageMarkup: 1.05,
     builders: 0,
   },
   {
