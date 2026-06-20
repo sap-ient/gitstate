@@ -7,7 +7,7 @@ test('marketing: landing renders', async ({ page }) => {
   const h1 = (await page.locator('h1').first().innerText()).trim()
   assert(/nobody updates by hand/i.test(h1), `marketing: unexpected landing h1 "${h1}"`)
   await assertVisible(page.getByRole('link', { name: 'Start free' }).first(), 'marketing: "Start free" CTA')
-})
+}, { seedAuth: false })
 
 // Pricing renders plan model + estimator.
 test('marketing: pricing renders', async ({ page }) => {
@@ -16,7 +16,7 @@ test('marketing: pricing renders', async ({ page }) => {
   assert(/pricing/i.test(h1), `marketing: pricing h1 "${h1}"`)
   await assertVisible(page.getByText('The builder / stakeholder model'), 'marketing: builder/stakeholder section')
   await assertVisible(page.getByText('Estimate your cost'), 'marketing: cost estimator section')
-})
+}, { seedAuth: false })
 
 // Compare renders the cost calculator and produces a number.
 test('marketing: compare calculator', async ({ page }) => {
@@ -39,10 +39,10 @@ test('marketing: compare calculator', async ({ page }) => {
   await settle(page, { extra: 250 })
   const afterText = await page.locator('body').innerText()
   assert(beforeText !== afterText, 'marketing: slider calculator did not recompute on slider change')
-})
+}, { seedAuth: false })
 
 // Docs home renders.
 test('marketing: docs home renders', async ({ page }) => {
   await gotoPublic(page, '/docs')
   await assertVisible(page.getByText('Documentation').first(), 'marketing: docs "Documentation" label')
-})
+}, { seedAuth: false })

@@ -19,7 +19,7 @@ test('auth: login succeeds', async ({ page }) => {
   await page.waitForSelector('h1', { timeout: 20_000 })
   const h1 = (await page.locator('h1').first().innerText()).trim()
   assert(/Dashboard/i.test(h1), `auth: expected Dashboard after login, got h1="${h1}"`)
-})
+}, { seedAuth: false })
 
 // Bad credentials are rejected with an error and no token is stored.
 test('auth: bad credentials rejected', async ({ page }) => {
@@ -40,4 +40,4 @@ test('auth: bad credentials rejected', async ({ page }) => {
     .isVisible()
     .catch(() => false)
   assert(errVisible, 'auth: no error message shown for bad credentials')
-}, { themes: false })
+}, { themes: false, seedAuth: false })
