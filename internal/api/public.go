@@ -44,8 +44,12 @@ type publicPlan struct {
 	// pricing) so the pricing page renders "Custom" rather than "$0/builder".
 	PerBuilderUSD  *float64 `json:"perBuilderUsd"`
 	IncludedLLMUSD int      `json:"includedLlmUsd"` // included_llm_cents / 100
-	OverageMarkup  float64  `json:"overageMarkup"`
-	Builders       int      `json:"builders"` // cap: 0 = unlimited
+	// BYOKPerBuilderUSD is the per-builder price when bringing your own LLM key:
+	// the base minus the included-LLM value (you don't pay for managed AI you don't
+	// use). null for free (already $0/BYOK) and enterprise (custom).
+	BYOKPerBuilderUSD *float64 `json:"byokPerBuilderUsd"`
+	OverageMarkup     float64  `json:"overageMarkup"`
+	Builders          int      `json:"builders"` // cap: 0 = unlimited
 }
 
 // RegisterPublicPlans wires GET /api/plans (public — for the pricing page).
@@ -72,18 +76,28 @@ func RegisterPublicPlans(mux *http.ServeMux, database *db.DB, _ *config.Config) 
 			// frontend shows "Custom" instead of "$0/builder". Whatever the
 			// seed/store holds for enterprise is overridden to null here at the
 			// API boundary; priced tiers keep their numbers.
-			var perBuilder *float64
+			var perBuilder, byok *float64
 			if key != "enterprise" {
 				v := float64(p.PerBuilderCents) / 100
 				perBuilder = &v
+				// BYOK price = base − included-LLM value (don't charge for managed AI
+				// the customer isn't using). Free stays $0; never below 0.
+				if p.PerBuilderCents > 0 {
+					b := float64(p.PerBuilderCents-p.IncludedLLMCents) / 100
+					if b < 0 {
+						b = 0
+					}
+					byok = &b
+				}
 			}
 			out = append(out, publicPlan{
-				Key:            p.Key,
-				Name:           p.Name,
-				PerBuilderUSD:  perBuilder,
-				IncludedLLMUSD: p.IncludedLLMCents / 100,
-				OverageMarkup:  p.OverageMarkup,
-				Builders:       p.Builders,
+				Key:               p.Key,
+				Name:              p.Name,
+				PerBuilderUSD:     perBuilder,
+				IncludedLLMUSD:    p.IncludedLLMCents / 100,
+				BYOKPerBuilderUSD: byok,
+				OverageMarkup:     p.OverageMarkup,
+				Builders:          p.Builders,
 			})
 		}
 		writeJSON(w, http.StatusOK, out)

@@ -27,6 +27,7 @@ cd web && npm install && npm run dev:full   # Go API on :8080 + Vite on :5173
 
 Open **http://localhost:5173** and sign in.
 
+> [!TIP]
 > The `.env.dev` file is loaded automatically in dev. One file holds both backend secrets
 > (unprefixed) and frontend-public vars (`VITE_*`); see [Configuration](/docs/configuration).
 

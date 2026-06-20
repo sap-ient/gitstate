@@ -146,7 +146,7 @@ function CtaBlock() {
         <Reveal delay={0.14}>
           <p className="text-[var(--text-muted)] max-w-md mx-auto mb-8 text-[15px] leading-relaxed">
             Connect your repos and let git tell the truth. No ticket migrations, no sprint ceremonies, no
-            reconstructed timesheets — and a smaller bill.
+            reconstructed timesheets — and free stakeholder seats that keep the bill flat as you grow.
           </p>
         </Reveal>
         <Reveal delay={0.2}>
@@ -202,8 +202,8 @@ export default function Compare() {
               <Reveal delay={0.15}>
                 <p className="text-[var(--text-muted)] text-lg md:text-xl max-w-2xl mx-auto leading-relaxed mt-4">
                   Linear, Jira, ClickUp, ZenHub, and GitHub bill every seat and tax AI per head. gitstate charges
-                  per builder, keeps stakeholders free, and bundles managed AI. See exactly what you&apos;d save —
-                  with the math shown.
+                  per builder and keeps stakeholders free. Run your own team shape — we show the real math, including
+                  the cases where a cheaper per-seat tool wins.
                 </p>
               </Reveal>
 
@@ -215,7 +215,7 @@ export default function Compare() {
                     style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
                   >
                     <Calculator size={15} strokeWidth={2.5} />
-                    Calculate my savings
+                    Run the numbers
                   </a>
                   <Link
                     to="/pricing"
@@ -242,7 +242,7 @@ export default function Compare() {
                 </h2>
                 <p className="text-[var(--text-muted)] text-sm mt-1.5 max-w-xl">
                   Set your team shape. We compute every tool&apos;s real monthly bill — seats, AI add-ons and all —
-                  and show the savings, transparently.
+                  rank by actual cost, and tell you the break-even, even when a per-seat tool is cheaper.
                 </p>
               </div>
             </div>
@@ -286,8 +286,13 @@ export default function Compare() {
             <div className="mb-3">
               <Badge color="default" className="mb-4">the structural case</Badge>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-[var(--text)] tracking-tight">
-                Why the comparison isn&apos;t close
+                Where the difference actually is
               </h2>
+              <p className="text-[var(--text-muted)] text-sm mt-2 max-w-xl">
+                Price isn&apos;t always the gap — sometimes a per-seat tool is cheaper. The durable difference is
+                that gitstate&apos;s numbers are <em className="not-italic text-[var(--text-dim)]">derived from
+                git</em>, not maintained by hand.
+              </p>
             </div>
           </Reveal>
 

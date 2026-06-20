@@ -2,6 +2,7 @@
 
 # Billing
 
+> [!IMPORTANT]
 > Billing is an **Enterprise (EE)** feature. Real charging lives in `ee/` (built with `-tags ee`)
 > and is also runtime-gated by `billing.enabled`. The OSS build links a no-op stub. Self-hosters can
 > run gitstate fully without billing.

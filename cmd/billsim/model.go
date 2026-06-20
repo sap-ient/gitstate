@@ -125,9 +125,12 @@ func paystackFeeUSD(grossUSD float64, p SimParams) float64 {
 func paidOrgResult(t Tier, tierIdx, n int, p SimParams) TierResult {
 	builders := p.BuildersPerOrg[tierIdx]
 	managedBuilders := builders * (1 - p.BYOKFrac)
+	byokBuilders := builders * p.BYOKFrac
 
-	// Revenue.
-	subPerOrg := builders * t.PerBuilderUSD
+	// Revenue. BYOK builders pay the base MINUS the included-LLM value (they don't
+	// pay for managed AI they don't use), so they're cheaper for the customer — but
+	// the included LLM was never our margin, so the subscription stays profitable.
+	subPerOrg := managedBuilders*t.PerBuilderUSD + byokBuilders*(t.PerBuilderUSD-t.IncludedLLMUSD)
 	usage := p.LLMUsagePerBuilder[tierIdx] // provider $ per managed builder
 	overagePerBuilder := usage - t.IncludedLLMUSD
 	if overagePerBuilder < 0 {

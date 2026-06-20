@@ -55,7 +55,8 @@ deliveries are detected and no-opped — preventing double-charges.
 cleanup). The global chain applies `RateLimit(300)`; auth endpoints can use the stricter
 `AuthRateLimit()` to slow credential brute-forcing.
 
-> **Note:** the limiter is in-process. On multi-VM fly.io deployments, replace it with a shared
+> [!WARNING]
+> The limiter is in-process. On multi-VM fly.io deployments, replace it with a shared
 > (e.g. Redis) backend so limits are global, not per-instance.
 
 ## At-rest token encryption

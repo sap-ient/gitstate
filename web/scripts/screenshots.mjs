@@ -26,7 +26,7 @@ import { dirname, resolve, basename } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:8080'
+const BASE_URL = process.env.BASE_URL || 'http://localhost:5173'
 const OUT = process.env.OUT
   ? resolve(process.env.OUT)
   : resolve(__dirname, '../../docs/screenshots')
@@ -218,6 +218,13 @@ async function main() {
       await shoot(page, '/repos', 'repos', { reveals: true })
       await shoot(page, '/projects', 'projects', { reveals: true })
       await shoot(page, '/settings/members', 'members', { reveals: true })
+      // New feature pages — the depth that makes the product WOW.
+      await shoot(page, '/analytics', 'analytics', { reveals: true })
+      await shoot(page, '/contribution', 'contribution', { reveals: true })
+      await shoot(page, '/eng-health', 'eng-health', { reveals: true })
+      await shoot(page, '/planning', 'planning', { reveals: true })
+      await shoot(page, '/invoices', 'invoices', { reveals: true })
+      await shoot(page, '/settings', 'settings', { reveals: true })
     } else {
       for (const n of ['dashboard', 'board', 'involvement', 'capacity', 'cycle-time', 'billing']) {
         failed.push({ name: n, error: 'skipped — login failed' })

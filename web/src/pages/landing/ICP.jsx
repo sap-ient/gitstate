@@ -109,9 +109,9 @@ export default function ICP() {
               <Glow variant="brand" size={480} className="top-1/2 left-1/2" />
               <div className="relative lg:rotate-[0.6deg] lg:hover:rotate-0 transition-transform duration-500">
                 <BrowserFrame
-                  src="/shots/billing.png"
-                  alt="gitstate evidence-backed billing — invoice line items linked to commit SHAs"
-                  url="app.gitstate.dev/billing"
+                  src="/shots/board.png"
+                  alt="gitstate board — every work item tagged with its git or manual source"
+                  url="app.gitstate.dev/board"
                 />
               </div>
               {/* Floating proof chip */}

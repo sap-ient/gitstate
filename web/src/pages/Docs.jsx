@@ -20,6 +20,7 @@ import {
   ChevronDown,
   Menu,
   X,
+  Search,
 } from 'lucide-react'
 import { Markdown } from '../components/Markdown.jsx'
 import DocsHome from '../components/docs/DocsHome.jsx'
@@ -97,13 +98,14 @@ function SidebarItem({ doc, isActive, onClick }) {
 
 // ── Collapsible category group ──────────────────────────────────────────────────
 
-function SidebarGroup({ category, docs, slug, onItemClick, defaultOpen }) {
+function SidebarGroup({ category, docs, slug, onItemClick, defaultOpen, forceOpen }) {
   // `manualOpen` is the user's explicit toggle; null means "follow defaults".
   const [manualOpen, setManualOpen] = useState(null)
   const containsActive = docs.some((d) => d.slug === slug)
-  // A group is open if the user opened it, or — absent a manual choice — when it
-  // holds the active doc or is open by default. The active group can't be collapsed shut.
-  const open = manualOpen ?? (containsActive || defaultOpen)
+  // A group is open if filtering forces it, the user opened it, or — absent a manual
+  // choice — when it holds the active doc or is open by default. The active group
+  // can't be collapsed shut.
+  const open = forceOpen || (manualOpen ?? (containsActive || defaultOpen))
   const setOpen = (fn) => setManualOpen((prev) => fn(prev ?? (containsActive || defaultOpen)))
 
   return (
@@ -112,7 +114,8 @@ function SidebarGroup({ category, docs, slug, onItemClick, defaultOpen }) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="group flex w-full items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors"
+        disabled={forceOpen}
+        className="group flex w-full items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors disabled:cursor-default"
       >
         <ChevronDown
           size={11}
@@ -194,13 +197,29 @@ function SidebarSkeleton() {
 // ── Sidebar (shared between desktop and mobile drawer) ───────────────────────
 
 function SidebarNav({ groups, docsLoading, docsError, slug, onItemClick }) {
+  const [filter, setFilter] = useState('')
+  const filterRef = useRef(null)
+  const q = filter.trim().toLowerCase()
+
+  // Filter docs within each group; drop empty groups while filtering.
+  const visibleGroups = q
+    ? groups
+        .map((g) => ({
+          ...g,
+          docs: g.docs.filter((d) =>
+            `${d.title} ${d.summary ?? ''} ${d.slug}`.toLowerCase().includes(q)
+          ),
+        }))
+        .filter((g) => g.docs.length > 0)
+    : groups
+
   return (
     <>
       {/* Label — links back to the docs home */}
       <Link
         to="/docs"
         onClick={onItemClick}
-        className="flex items-center gap-2 mb-4 px-1 group"
+        className="flex items-center gap-2 mb-3 px-1 group"
       >
         <span className="flex items-center justify-center w-5 h-5 text-[var(--brand-teal)] opacity-70">
           <BookOpen size={13} strokeWidth={1.75} />
@@ -210,14 +229,44 @@ function SidebarNav({ groups, docsLoading, docsError, slug, onItemClick }) {
         </span>
       </Link>
 
+      {/* Filter */}
+      {!docsLoading && !docsError && (
+        <div className="relative mb-3 px-0.5">
+          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-faint)]" />
+          <input
+            ref={filterRef}
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setFilter(''); filterRef.current?.blur() } }}
+            placeholder="Filter…"
+            aria-label="Filter documentation pages"
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] py-1.5 pl-8 pr-7 text-xs text-[var(--text)] outline-none transition-colors placeholder:text-[var(--text-faint)] focus:border-[var(--brand-teal)]/50"
+          />
+          {filter && (
+            <button
+              onClick={() => { setFilter(''); filterRef.current?.focus() }}
+              aria-label="Clear filter"
+              className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-[var(--text-faint)] hover:text-[var(--text)]"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto scrollbar-none" aria-label="Documentation pages">
         {docsLoading ? (
           <SidebarSkeleton />
         ) : docsError ? (
           <p className="px-3 text-xs text-[var(--text-faint)]">Could not load docs index.</p>
+        ) : visibleGroups.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-[var(--text-faint)]">
+            No pages match <span className="font-mono text-[var(--text-muted)]">{filter}</span>.
+          </p>
         ) : (
-          groups.map((g) => (
+          visibleGroups.map((g) => (
             <SidebarGroup
               key={g.category}
               category={g.category}
@@ -225,6 +274,7 @@ function SidebarNav({ groups, docsLoading, docsError, slug, onItemClick }) {
               slug={slug}
               onItemClick={onItemClick}
               defaultOpen
+              forceOpen={!!q}
             />
           ))
         )}

@@ -157,14 +157,27 @@ export function PlanCard({ plan, recommended, format }) {
             {isFree ? (
               <span className="text-xs text-[var(--text-faint)]">Free forever — no card required · ≤ 2 builders</span>
             ) : (
-              <div className="flex flex-col gap-1 mt-1">
+              <div className="flex flex-col gap-1.5 mt-1">
+                {/* Managed vs BYOK */}
+                {typeof plan.byokPerBuilderUsd === 'number' && plan.byokPerBuilderUsd > 0 && (
+                  <div className="inline-flex items-center gap-1.5 rounded-[var(--radius-badge)] border border-[#818cf8]/25 bg-[#6366F1]/[0.07] px-2 py-1 self-start">
+                    <KeyRound size={11} className="text-[#818cf8] shrink-0" strokeWidth={2.2} />
+                    <span className="text-[11px] text-[var(--text-dim)]">
+                      or <span className="font-mono font-semibold text-[#818cf8] tabular-nums">{format(plan.byokPerBuilderUsd)}</span> with your own AI key
+                    </span>
+                  </div>
+                )}
                 <span className="text-xs text-[var(--text-faint)] flex items-center gap-1">
                   <DollarSign size={11} className="text-[#2DD4BF] shrink-0" />
-                  {format(plan.includedLlmUsd)} managed-LLM credit / builder included
+                  Managed: {format(plan.includedLlmUsd)} LLM credit / builder included
                 </span>
                 <span className="text-xs text-[var(--text-faint)] flex items-center gap-1">
                   <CreditCard size={11} className="text-[var(--text-faint)] shrink-0" />
-                  Overage at cost × {plan.overageMarkup} or BYOK (free)
+                  Overage at cost × {plan.overageMarkup} · BYOK = no markup
+                </span>
+                <span className="text-[10px] text-[var(--text-faint)]/80 leading-snug flex items-start gap-1 mt-0.5">
+                  <Info size={10} className="text-[var(--text-faint)] shrink-0 mt-0.5" />
+                  <span>BYOK = bring your own LLM key; we drop the included-AI value and route calls direct to your provider.</span>
                 </span>
               </div>
             )}
@@ -307,8 +320,16 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
   const isEnt = isEnterprisePlan(matched)
   const isFree = !isEnt && matched?.perBuilderUsd === 0
 
+  // Per-builder rate: BYOK uses the discounted byokPerBuilderUsd when present
+  // (Team $12→$8, Business $25→$13); managed uses perBuilderUsd.
+  const byokPerBuilder =
+    typeof matched?.byokPerBuilderUsd === 'number' && matched.byokPerBuilderUsd > 0
+      ? matched.byokPerBuilderUsd
+      : (matched?.perBuilderUsd ?? 0)
+  const perBuilderRate = byok && !isFree ? byokPerBuilder : (matched?.perBuilderUsd ?? 0)
+
   // Plan seat cost
-  const planCost = isEnt ? null : (matched?.perBuilderUsd ?? 0) * builders
+  const planCost = isEnt ? null : perBuilderRate * builders
 
   // Included LLM credits per builder
   const includedLlmPerBuilder = matched?.includedLlmUsd ?? 0
@@ -325,8 +346,12 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
   const effectivePerBuilder = totalUsd !== null && builders > 0 ? totalUsd / builders : null
 
   const isRec = matched?.key === recommendedKey
-  // How much switching to BYOK would save (overage markup savings)
-  const byokSaving = !byok && overageBase > 0 ? overageBase * (markup - 1) : 0
+  // How much switching to BYOK would save: the per-builder base discount
+  // (perBuilderUsd → byokPerBuilderUsd) PLUS skipping the overage markup.
+  const baseDiscountPerBuilder = Math.max(0, (matched?.perBuilderUsd ?? 0) - byokPerBuilder)
+  const byokSaving = !byok && !isFree
+    ? baseDiscountPerBuilder * builders + (overageBase > 0 ? overageBase * (markup - 1) : 0)
+    : 0
 
   return (
     <Card padding="none" glow className="relative overflow-hidden border-[var(--border2)]">
@@ -448,7 +473,7 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
           {/* Breakdown rows */}
           <div className="flex flex-col divide-y divide-[var(--border)] rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--bg-surface)] text-[13px]">
             <Row
-              label={<><Users size={13} className="text-[#2DD4BF]" /> {builders} builder{builders !== 1 ? 's' : ''} × {format(matched?.perBuilderUsd ?? 0)}</>}
+              label={<><Users size={13} className="text-[#2DD4BF]" /> {builders} builder{builders !== 1 ? 's' : ''} × {format(perBuilderRate)}{byok && !isFree && baseDiscountPerBuilder > 0 ? <span className="text-[#818cf8] text-[11px] ml-1">BYOK</span> : null}</>}
               value={planCost === null ? 'Custom' : format(planCost)}
             />
             <Row
@@ -472,7 +497,7 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
           </div>
 
           {/* BYOK / overage hint */}
-          {llmPerBuilder > 0 && !byok && (
+          {!byok && !isFree && (
             <div
               className="flex items-start gap-2.5 rounded-[var(--radius-badge)] border px-3.5 py-3 text-xs leading-relaxed"
               style={{
@@ -484,7 +509,8 @@ export function CostCalculator({ plans, format, currency, recommendedKey }) {
                 <>
                   <KeyRound size={14} className="text-[#818cf8] shrink-0 mt-0.5" />
                   <span className="text-[var(--text-dim)]">
-                    Enable <strong className="text-[#818cf8]">BYOK</strong> to skip the ×{markup} markup — save ~{format(byokSaving)}/mo
+                    Enable <strong className="text-[#818cf8]">BYOK</strong> — drops the per-builder rate to{' '}
+                    {format(byokPerBuilder)} and skips the ×{markup} markup, saving ~{format(byokSaving)}/mo
                     by routing calls direct to your provider.
                   </span>
                 </>
@@ -571,7 +597,8 @@ function ByokToggle({ byok, setByok }) {
 
 // ── Comparison matrix ────────────────────────────────────────────────────────
 const COMPARE_ROWS = [
-  { label: 'Per-builder price',             icon: DollarSign,   vals: ['$0', '$12', '$25', 'Custom'] },
+  { label: 'Per-builder price (managed)',   icon: DollarSign,   vals: ['$0', '$12', '$25', 'Custom'] },
+  { label: 'Per-builder price (BYOK)',      icon: KeyRound,     vals: ['BYOK', '$8', '$13', 'Custom'] },
   { label: 'Builder cap',                   icon: Users,        vals: ['≤ 2', '∞', '∞', '∞'] },
   { label: 'Stakeholders',                  icon: Eye,          vals: ['∞', '∞', '∞', '∞'], accent: true },
   { label: 'Managed LLM credits / builder', icon: Cpu,          vals: ['—', '$4', '$12', 'BYOK'] },

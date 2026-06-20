@@ -8,56 +8,19 @@
  * No nav / no footer — MarketingLayout provides the shell.
  */
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   Users, Eye, Sparkles, ArrowRight, Plus, HelpCircle, Mail, KeyRound,
-  GitBranch, ShieldCheck, Infinity as InfinityIcon,
+  GitBranch, ShieldCheck, Scale, Infinity as InfinityIcon,
 } from 'lucide-react'
 import {
   Card, Button, Badge, GradientText, Section, Container, Glow, Stat,
 } from '../components/ui'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 import { useCurrency } from '../lib/currency.jsx'
-import { get } from '../lib/api.js'
+import { usePlans, FALLBACK_PLANS } from '../lib/usePlans.js'
 import { PlanCard, CostCalculator, CompareTable } from '../components/pricing/index.jsx'
-
-// ── Plan ladder fallback (mirrors backend GET /api/plans) ────────────────────
-// Shape: { key, name, perBuilderUsd, includedLlmUsd, overageMarkup, builders }
-// builders=0 → unlimited; free=2 cap; perBuilderUsd=null → Enterprise/custom
-const FALLBACK_PLANS = [
-  {
-    key: 'free',
-    name: 'Free',
-    perBuilderUsd: 0,
-    includedLlmUsd: 0,
-    overageMarkup: 0,
-    builders: 2,
-  },
-  {
-    key: 'team',
-    name: 'Team',
-    perBuilderUsd: 12,
-    includedLlmUsd: 4,
-    overageMarkup: 1.3,
-    builders: 0,
-  },
-  {
-    key: 'business',
-    name: 'Business',
-    perBuilderUsd: 25,
-    includedLlmUsd: 12,
-    overageMarkup: 1.3,
-    builders: 0,
-  },
-  {
-    key: 'ent',
-    name: 'Enterprise',
-    perBuilderUsd: null,
-    includedLlmUsd: null,
-    overageMarkup: null,
-    builders: 0,
-  },
-]
+import CompetitorCalculator from '../components/compare/CompetitorCalculator.jsx'
 
 const RECOMMENDED_KEY = 'team'
 
@@ -133,28 +96,7 @@ const SIGNALS = [
 // ── Main export ────────────────────────────────────────────────────────────────
 export default function Pricing() {
   const { format, currency } = useCurrency()
-  const [plans, setPlans] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    let cancelled = false
-    get('/api/plans')
-      .then(data => {
-        if (!cancelled) {
-          setPlans(Array.isArray(data) && data.length > 0 ? data : FALLBACK_PLANS)
-          setLoading(false)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPlans(FALLBACK_PLANS)
-          setError('Using cached plan data — some prices may be stale.')
-          setLoading(false)
-        }
-      })
-    return () => { cancelled = true }
-  }, [])
+  const { plans, loading, error } = usePlans()
 
   // Columns for the comparison matrix — all 4 tiers
   const compareCols = (plans.length ? plans : FALLBACK_PLANS)
@@ -323,6 +265,30 @@ export default function Pricing() {
                 recommendedKey={RECOMMENDED_KEY}
               />
             )}
+          </Reveal>
+        </Container>
+      </Section>
+
+      {/* ── Competitor cost calculator (honest) ── */}
+      <Section py="lg">
+        <Container size="lg">
+          <Reveal inView>
+            <div className="mb-8 text-center">
+              <Badge color="indigo" className="mb-3 inline-flex items-center gap-1">
+                <Scale size={11} /> honest comparison
+              </Badge>
+              <h2 className="font-display text-2xl md:text-3xl font-semibold text-[var(--text)] mb-2">
+                gitstate vs the per-seat tools
+              </h2>
+              <p className="text-sm text-[var(--text-muted)] max-w-lg mx-auto">
+                We compute every tool&apos;s real monthly bill and rank by actual cost — no thumb on the scale.
+                gitstate wins big when you have stakeholders; for tiny all-builder teams, cheap per-seat tools can
+                be cheaper, and we say so.
+              </p>
+            </div>
+          </Reveal>
+          <Reveal inView delay={0.1}>
+            {!loading && <CompetitorCalculator plans={plans} planKey={RECOMMENDED_KEY} />}
           </Reveal>
         </Container>
       </Section>
