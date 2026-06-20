@@ -2,8 +2,11 @@
 
 **Type:** product / honesty
 **Area:** `/pricing`, `/compare` (CostCompare calculator + FeatureMatrix), billing model
+**Status:** ✅ RESOLVED — repriced so the claim is genuinely true (see Resolution). The
+prices in "The problem" below are the **old** ($12/$25) ones that prompted the change;
+current pricing is **Team $6 / BYOK $3, Business $14 / BYOK $8**.
 
-## The problem
+## The problem (at the old $12/$25 pricing)
 
 The cost calculator (`web/src/components/compare/CostCompare.jsx`) is built on the implicit assumption that **gitstate always wins** — the sort comment literally says *"cheapest first — gitstate should lead"*, and the surrounding copy leans on "always cheaper / always included." That is **not true for every team shape**, and shipping it as if it were is unfair to competitors and misleading to buyers.
 

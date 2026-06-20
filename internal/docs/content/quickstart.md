@@ -19,7 +19,9 @@ cp .env.example .env.dev          # point DATABASE_URL at your Postgres; set JWT
 
 # 2. Database (forward-only migrations)
 go run ./cmd/migrate up
-go run ./cmd/seed                 # optional: demo org (login demo@gitstate.dev / demo1234)
+go run ./cmd/seed                 # demo org (login demo@gitstate.dev / demo1234)
+go run ./cmd/seedgit              # real git-analysis → contribution durability/SZZ + DORA data
+# (or just `make seed`, which runs both)
 
 # 3. Run everything
 cd web && npm install && npm run dev:full   # Go API on :8080 + Vite on :5173

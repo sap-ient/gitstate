@@ -66,9 +66,13 @@ build-ee:
 migrate:
 	go run $(CMD_MIG) up
 
-## seed: run the demo seed (synthetic org + git history for local dev / demo).
+## seed: full demo seed — synthetic org/history (cmd/seed) THEN the real git
+## analysis (cmd/seedgit) that populates blame-survival / SZZ / test-coupling, so
+## the Contribution durability/quality and Eng-Health change-failure dimensions
+## have real data out of the box. Run both; seedgit MUST follow seed.
 seed:
 	go run ./cmd/seed
+	go run ./cmd/seedgit
 
 # ─── docker ──────────────────────────────────────────────────────────────────
 
