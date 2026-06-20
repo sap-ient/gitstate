@@ -30,8 +30,8 @@ type Tier struct {
 // is excluded from the simulation.
 var DefaultTiers = []Tier{
 	{"free", "Free", 0, 0, 0},              // BYOK-only, ≤2 builders, scale-to-zero
-	{"team", "Team", 12, 4, 1.30},          // includes $4/builder managed LLM
-	{"business", "Business", 25, 12, 1.30}, // includes $12/builder managed LLM, SSO/audit
+	{"team", "Team", 6, 3, 1.30},          // includes $4/builder managed LLM
+	{"business", "Business", 14, 6, 1.30}, // includes $12/builder managed LLM, SSO/audit
 }
 
 // SimParams holds all tunable inputs (defaults set in main.go via flags).

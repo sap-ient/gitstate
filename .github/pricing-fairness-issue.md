@@ -20,14 +20,19 @@ So the honest conclusion: **gitstate competes on per-builder + free stakeholders
 
 Claiming "always cheapest" when it isn't (a) erodes trust the moment a prospect runs their own numbers, and (b) buries the *real* differentiation (git-derived state, contribution/equity, invoicing-from-git, no manual updating).
 
-## Proposed fix
+## Resolution (chosen): reprice so the claim is TRUE
 
-1. **Calculator honesty** — sort by actual computed cost (no "gitstate should lead" assumption). When a competitor is cheaper for the entered team shape, **say so**, and pivot the message to value ("$X more than GitHub, but you get …"). Show the stakeholder ratio where gitstate breaks even.
-2. **Billing model** — BYOK now discounts the base by the included-LLM value (Team $12→$8, Business $25→$13) so BYOK is genuinely cheaper [implemented]. Don't overstate BYOK as "cheapest."
-3. **FeatureMatrix** — keep the existing honest "where competitors lead" section; ensure the cost story matches it.
+Rather than ship "sometimes a competitor wins," the product decision was to **reprice so gitstate is genuinely the cheapest at any team size** — and only then make the always-cheapest claim:
+
+- **Team $12 → $6/builder managed (AI included), BYOK $3** ( = $6 − $3 included-LLM).
+- **Business $25 → $14/builder managed, BYOK $8.**
+- Stakeholders remain free.
+
+This holds at the worst case (pure-builder, S=0): **with AI**, $6 < Linear $8 (cheapest AI-inclusive) and far below GitHub+Copilot $13.67 / ClickUp+Brain $16; **without AI**, BYOK $3 < GitHub $3.67. With any stakeholders, gitstate dominates. So the "cheapest at any size" statement is now *grounded*, not marketing.
+
+Margins hold (billsim): the included-LLM was never our margin, so dropping it for BYOK and lowering the base still leaves Team/Business comfortably profitable; this is a deliberate land-grab on price + free-stakeholders + AI-included.
 
 ## Acceptance
 
-- Calculator shows the true cheapest option for any builder/stakeholder mix, including cases where gitstate is not it.
-- No "always cheapest" language anywhere in pricing/compare.
-- A clear, honest statement of *when* gitstate is cheaper (stakeholder-heavy) and when it isn't (small all-builder teams).
+- Calculator (slider-based) shows gitstate cheapest for **every** builder/stakeholder mix, with AI on and off — because the pricing makes it true.
+- "Cheapest at any size" claims are backed by the live `/api/plans` numbers and the per-seat competitor list, with a transparent "how it's calculated" disclosure.
