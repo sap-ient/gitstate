@@ -59,6 +59,12 @@ const (
 	demoPassword = "demo1234"
 	demoPlanKey  = "team"
 
+	// Secondary demo org on a paid plan so the admin Revenue dashboard shows MRR
+	// across MORE than one org/tier (acme-dev → Team, this one → Business).
+	demo2OrgSlug = "nova-labs"
+	demo2OrgName = "Nova Labs"
+	demo2PlanKey = "business"
+
 	// historyDays is how far back synthetic git history reaches (~9 months).
 	historyDays = 274
 
@@ -226,11 +232,14 @@ func main() {
 		return nil
 	}))
 
-	// ── 4. Subscription on paid plan ──────────────────────────────────────
-	periodEnd := now.Add(30 * 24 * time.Hour)
-	s.must(database.WithOrg(ctx, org.ID, func(tx pgx.Tx) error {
-		return store.UpsertSubscription(ctx, tx, org.ID, demoPlanKey, "active", &periodEnd, "")
-	}))
+	// ── 4. Active subscriptions → real admin MRR / Revenue dashboard ───────
+	// Seed an ACTIVE subscription for the primary org (Team) plus a secondary
+	// org (Nova Labs) on a paid plan (Business), so the super-admin console reads
+	// a non-zero MRR across more than one tier. MRR is derived by the admin query
+	// as per_builder_cents × billable-builders (org_members role owner/admin/member)
+	// over active subscriptions — the per_builder_cents lives on the plans table
+	// (seeded by migrations), so seeding subscriptions + members is sufficient.
+	subStats := s.seedSubscriptions(org)
 
 	// ── 5. Repos (mix of github + gitlab) ─────────────────────────────────
 	repos := []*store.Repo{
@@ -289,7 +298,7 @@ func main() {
 	// ── Summary ───────────────────────────────────────────────────────────
 	s.printSummary(org, adminEmail, len(repos), len(projects),
 		commitStats, prStats, issueStats, leaveStats, timeCount,
-		deployStats, notifStats, invoiceStats)
+		deployStats, notifStats, invoiceStats, subStats)
 }
 
 // ── commit generation ───────────────────────────────────────────────────────
@@ -2363,10 +2372,117 @@ func (s *seeder) seedTimeEntries(orgID string, issueIDs []string) int {
 
 // ── summary ─────────────────────────────────────────────────────────────────
 
+// subTally summarises the seeded subscriptions for the seed summary box.
+type subTally struct {
+	orgs    int // active subscriptions seeded
+	mrrCents int // instance-wide MRR the admin console will read
+	// per-org breakdown for the summary line.
+	teamBuilders int
+	bizBuilders  int
+}
+
+// seedSubscriptions seeds ACTIVE subscriptions so the super-admin MRR/Revenue
+// views read non-zero. It mirrors the admin MRR query exactly:
+//
+//	MRR = Σ over active subscriptions of (plans.per_builder_cents × billable builders),
+//	      where billable = org_members with role IN (owner, admin, member).
+//
+// Two orgs are seeded: the primary acme-dev on Team, and a secondary Nova Labs on
+// Business, so Revenue spans two tiers. Idempotent: orgs upsert on slug, members on
+// (org_id,user_id), subscriptions on org_id. Returns the MRR the console will show.
+func (s *seeder) seedSubscriptions(primary *store.Org) subTally {
+	var st subTally
+	periodEnd := now.Add(30 * 24 * time.Hour)
+
+	// Read live per_builder_cents from the plans table so the reported MRR matches
+	// whatever the migrations seeded ($6 Team / $14 Business at time of writing).
+	planCents := func(key string) int {
+		var c int
+		s.must(wrapErr("read plan "+key,
+			s.pool.QueryRow(s.ctx, `SELECT per_builder_cents FROM plans WHERE key=$1`, key).Scan(&c)))
+		return c
+	}
+	// billableBuilders counts org_members eligible for per-builder billing,
+	// matching GetAdminStats / the EE revenue query (stakeholders + the remaining
+	// roles outside owner/admin/member are free, decisions P6).
+	billableBuilders := func(orgID string) int {
+		var n int
+		s.must(wrapErr("count billable builders",
+			s.pool.QueryRow(s.ctx,
+				`SELECT COUNT(*) FROM org_members
+				 WHERE org_id=$1 AND role IN ('owner','admin','member')`, orgID).Scan(&n)))
+		return n
+	}
+
+	// ── Primary org (acme-dev) → Team. Members already seeded in step 3. ──
+	s.must(s.db.WithOrg(s.ctx, primary.ID, func(tx pgx.Tx) error {
+		return store.UpsertSubscription(s.ctx, tx, primary.ID, demoPlanKey, "active", &periodEnd, "")
+	}))
+	st.teamBuilders = billableBuilders(primary.ID)
+	st.mrrCents += planCents(demoPlanKey) * st.teamBuilders
+	st.orgs++
+
+	// ── Secondary org (Nova Labs) → Business. ──
+	// Reuse existing demo users as its members (a small owner/admin/member set) so
+	// the org has billable builders without inventing new identities.
+	org2 := s.upsertOrg2(demo2OrgSlug, demo2OrgName, demo2PlanKey, members[0].user.ID)
+	// A compact, deterministic roster: owner + admin + 3 members = 5 billable.
+	type seatAssign struct {
+		m    *member
+		role string
+	}
+	roster := []seatAssign{
+		{members[0], "owner"},  // Alex
+		{members[1], "admin"},  // Priya
+		{members[2], "member"}, // Marcus
+		{members[3], "member"}, // Sofia
+		{members[5], "member"}, // Aisha
+		{members[10], "stakeholder"}, // Sam — free, must NOT count toward MRR
+	}
+	s.must(s.db.WithOrg(s.ctx, org2.ID, func(tx pgx.Tx) error {
+		for _, seat := range roster {
+			if err := store.AddMember(s.ctx, tx, org2.ID, seat.m.user.ID, seat.role); err != nil {
+				return err
+			}
+		}
+		return store.UpsertSubscription(s.ctx, tx, org2.ID, demo2PlanKey, "active", &periodEnd, "")
+	}))
+	st.bizBuilders = billableBuilders(org2.ID)
+	st.mrrCents += planCents(demo2PlanKey) * st.bizBuilders
+	st.orgs++
+
+	return st
+}
+
+// upsertOrg2 upserts a secondary demo org on planKey and ensures ownerUserID is
+// its owner. Mirrors upsertOrg but lets the caller pick the plan_key.
+func (s *seeder) upsertOrg2(slug, name, planKey, ownerUserID string) *store.Org {
+	const q = `
+		INSERT INTO organizations (slug, name, plan_key)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, plan_key = EXCLUDED.plan_key
+		RETURNING id, slug, name, plan_key, created_at, updated_at`
+
+	var o store.Org
+	err := s.pool.QueryRow(s.ctx, q, slug, name, planKey).Scan(
+		&o.ID, &o.Slug, &o.Name, &o.PlanKey, &o.CreatedAt, &o.UpdatedAt,
+	)
+	s.must(wrapErr("upsert org "+slug, err))
+
+	_, err = s.pool.Exec(s.ctx,
+		`INSERT INTO org_members (org_id, user_id, role)
+		 VALUES ($1, $2, 'owner')
+		 ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'owner'`,
+		o.ID, ownerUserID)
+	s.must(wrapErr("upsert org owner "+slug, err))
+
+	return &o
+}
+
 func (s *seeder) printSummary(
 	org *store.Org, adminEmail string, repos, projects int,
 	ct commitTally, pr prTally, iss issueTally, leave leaveTally, timeEntries int,
-	dep deployTally, notif notifTally, inv invoiceTally,
+	dep deployTally, notif notifTally, inv invoiceTally, sub subTally,
 ) {
 	fmt.Printf(`
 ╔═══════════════════════════════════════════════════════════════╗
@@ -2375,6 +2491,8 @@ func (s *seeder) printSummary(
 ║  Org:        %s (%s)
 ║  Plan:       Team — active subscription
 ║  Members:    %d  (builders + PMs + 1 stakeholder + 2 agents)
+║  Billing:    %d active subscriptions → admin MRR $%d.%02d/mo
+║              acme-dev (Team) %d builders · nova-labs (Business) %d builders
 ║
 ║  Repos:      %d   (GitHub + GitLab)
 ║  Projects:   %d
@@ -2395,6 +2513,8 @@ func (s *seeder) printSummary(
 ╚═══════════════════════════════════════════════════════════════╝
 `,
 		org.Name, org.Slug, len(members),
+		sub.orgs, sub.mrrCents/100, sub.mrrCents%100,
+		sub.teamBuilders, sub.bizBuilders,
 		repos, projects,
 		ct.total, ct.human, ct.agent, ct.reverts, historyDays/30,
 		pr.total, pr.merged, pr.open, pr.closed,
@@ -2432,10 +2552,12 @@ func loginFromEmail(email string) string {
 	return email
 }
 
-// wipeDemo deletes the demo org (CASCADE removes everything org-scoped).
+// wipeDemo deletes the demo orgs (CASCADE removes everything org-scoped,
+// including their subscriptions and members).
 func (s *seeder) wipeDemo() error {
 	_, err := s.pool.Exec(s.ctx,
-		`DELETE FROM organizations WHERE slug = $1`, demoOrgSlug)
+		`DELETE FROM organizations WHERE slug = ANY($1)`,
+		[]string{demoOrgSlug, demo2OrgSlug})
 	return err
 }
 
