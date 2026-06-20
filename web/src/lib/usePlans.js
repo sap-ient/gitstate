@@ -30,7 +30,7 @@ export const FALLBACK_PLANS = [
     perBuilderUsd: 6,
     byokPerBuilderUsd: 3,
     includedLlmUsd: 3,
-    overageMarkup: 1.05,
+    overageMarkup: 1.0,
     builders: 0,
   },
   {
@@ -39,7 +39,7 @@ export const FALLBACK_PLANS = [
     perBuilderUsd: 14,
     byokPerBuilderUsd: 8,
     includedLlmUsd: 6,
-    overageMarkup: 1.05,
+    overageMarkup: 1.0,
     builders: 0,
   },
   {
