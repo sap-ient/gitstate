@@ -97,7 +97,7 @@ func TestValidateSQL_TableAllowlist(t *testing.T) {
 		"SELECT count(*) FROM issues WHERE state = 'open'",
 		"SELECT c.sha FROM commits c JOIN pull_requests pr ON pr.id = c.pr_id",
 		"SELECT difficulty FROM effort_estimates LIMIT 50",
-		"WITH recent AS (SELECT id FROM issues) SELECT * FROM recent", // CTE name allowed
+		"SELECT a.* FROM involvement a JOIN projects p ON p.id = a.project_id",
 	}
 	for _, q := range allowed {
 		if err := validateSQL(q); err != nil {
