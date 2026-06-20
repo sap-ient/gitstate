@@ -4,22 +4,30 @@
  * gitstate prices per BUILDER (stakeholders are always free). Managed includes
  * AI; BYOK drops the included-AI value (Team $6 → $3, Business $14 → $8).
  *
- * Competitors price per TOTAL seat (builders + stakeholders). AI is free
- * (Linear), bundled (Jira / ZenHub) or a per-seat add-on (ClickUp, GitHub).
+ * FAIRNESS — every competitor number below is matched feature-to-feature at the
+ * tier a team would actually buy for gitstate-equivalent work (boards/issues +
+ * insights + AI assist), using VERIFIED 2026 list prices:
+ *   · GitHub Projects — Team plan $4/seat; Copilot Pro +$10/seat (AI add-on).
+ *       Projects ships bundled with code hosting, so this is the GitHub bill a
+ *       team already pays — included as the toughest (cheapest) rival, labelled.
+ *   · ClickUp — Unlimited $7/seat; Brain AI +$9/seat. Read-only GUESTS are FREE
+ *       on Unlimited+, so stakeholders don't cost a seat here (credited below).
+ *   · Jira — Standard $7.53/seat; Rovo AI is rolling out to Standard at no extra
+ *       upfront cost (2026), so AI is treated as bundled (usage-limited).
+ *   · Linear — Basic $10/seat (raised from $8); AI now needs paid credits, and
+ *       free guests only exist on Business ($16), so Basic seats are all paid.
+ *   · ZenHub — $8.33/seat (annual); AI bundled.
  *
- * THE REALITY (verified by the math below): after the 2026 reprice, gitstate is
- * the cheapest option at EVERY team shape.
- *   - Worst case is a pure all-builder team (0 stakeholders):
- *       · AI on  → gitstate managed $6 < Linear $8 (cheapest AI-inclusive rival),
- *                  far below GitHub+Copilot $13.67 and ClickUp+Brain $16.
- *       · AI off → gitstate BYOK $3 < GitHub $3.67 (cheapest base rival).
- *   - Add any stakeholders and gitstate stays flat while every competitor scales
- *     per seat, so the gap only widens.
- * So we sort by actual cost (gitstate genuinely lands on top) and report the
- * savings vs the NEXT-CHEAPEST rival and vs the MOST-EXPENSIVE option. There is
- * no "a competitor wins" / break-even case anymore — gitstate always wins.
+ * Two fairness rules in the math:
+ *   1. AI add-ons are charged per BUILDER, not per total seat — read-only
+ *      stakeholders don't need a Copilot/Brain license.
+ *   2. Where a competitor offers free read-only viewers/guests (ClickUp), those
+ *      stakeholders are NOT billed a seat.
  *
- * All competitor numbers are the researched 2026 list prices — kept exactly.
+ * Even after crediting rivals everything that's fair, gitstate still lands
+ * cheapest at every team shape (worst case = all-builders: managed $6 < Jira
+ * $7.53 with AI; BYOK $3 < GitHub $4 without). We sort by real computed cost and
+ * report savings vs the next-cheapest rival and vs the most-expensive option.
  */
 
 // ── gitstate per-builder pricing (managed + BYOK) ────────────────────────────
@@ -28,48 +36,57 @@
 // from the plans API so the calculator never hardcodes a stale number.
 export const GITSTATE_DEFAULT = { managed: 6, byok: 3, planName: 'Team' }
 
-// ── Competitors — per total seat, 2026 list prices (exact, never inflated) ───
+// ── Competitors — verified 2026 list prices, matched feature-to-feature ──────
 export const COMPETITORS = [
   {
     key: 'github',
     label: 'GitHub Projects',
-    perSeat: 3.67,
-    aiAddOn: 10, // Copilot, per seat
+    perSeat: 4, // GitHub Team, per seat
+    aiAddOn: 10, // Copilot Pro, per builder
     aiKind: 'addon',
-    note: 'Team · Copilot +$10/seat',
+    freeViewers: false, // every member is a paid seat
+    tier: 'Team',
+    note: 'Team $4 · Copilot +$10 (bundled w/ code hosting)',
   },
   {
     key: 'clickup',
     label: 'ClickUp',
-    perSeat: 7,
-    aiAddOn: 9, // Brain, per seat
+    perSeat: 7, // Unlimited
+    aiAddOn: 9, // Brain, per builder
     aiKind: 'addon',
-    note: 'Paid · Brain AI +$9/seat',
+    freeViewers: true, // free read-only guests on Unlimited+
+    tier: 'Unlimited',
+    note: 'Unlimited $7 · Brain +$9 · guests free',
   },
   {
     key: 'jira',
     label: 'Jira',
-    perSeat: 7.53,
+    perSeat: 7.53, // Standard
     aiAddOn: 0,
-    aiKind: 'bundled',
-    note: 'Standard · AI bundled',
-    addonsNote: true, // marketplace add-ons run +30–50% in practice
+    aiKind: 'bundled', // Rovo rolling out to Standard (2026), usage-limited
+    freeViewers: false,
+    tier: 'Standard',
+    note: 'Standard $7.53 · Rovo AI bundled',
   },
   {
     key: 'linear',
     label: 'Linear',
-    perSeat: 8,
+    perSeat: 10, // Basic (raised from $8)
     aiAddOn: 0,
-    aiKind: 'free',
-    note: 'Standard · AI included free',
+    aiKind: 'credits', // AI now requires paid credits
+    freeViewers: false, // free guests only on Business ($16)
+    tier: 'Basic',
+    note: 'Basic $10 · AI = paid credits',
   },
   {
     key: 'zenhub',
     label: 'ZenHub',
-    perSeat: 8.33,
+    perSeat: 8.33, // annual
     aiAddOn: 0,
     aiKind: 'bundled',
-    note: 'Annual · AI bundled',
+    freeViewers: false,
+    tier: 'Annual',
+    note: 'Annual $8.33 · AI bundled',
   },
 ]
 
@@ -94,16 +111,19 @@ export function gitstatePricing(plans, planKey = 'team') {
  * Compute monthly cost for gitstate + every competitor, SORTED BY ACTUAL COST
  * (cheapest first). gitstate genuinely lands on top at every team shape.
  *
+ * Fairness: AI add-ons are charged per BUILDER (read-only stakeholders don't need
+ * an AI license); competitors with free read-only viewers (ClickUp guests) don't
+ * bill those stakeholders a seat.
+ *
  * @param {object}  o
  * @param {number}  o.builders
  * @param {number}  o.stakeholders
  * @param {boolean} o.byok          gitstate billing mode
- * @param {boolean} o.needsAi       add per-seat AI add-on for ClickUp / GitHub
+ * @param {boolean} o.needsAi       Managed ⇒ true (rivals add per-builder AI); BYOK ⇒ false
  * @param {object}  o.gs            { managed, byok, planName }
  * @returns {{ rows, gs, nextCheapest, mostExpensive, saveVsNext, saveVsMax, pctVsNext, multipleVsMax }}
  */
 export function computeCosts({ builders, stakeholders, byok, needsAi, gs = GITSTATE_DEFAULT }) {
-  const totalSeats = builders + stakeholders
   const gsPerBuilder = byok ? gs.byok : gs.managed
 
   const gitstate = {
@@ -123,24 +143,32 @@ export function computeCosts({ builders, stakeholders, byok, needsAi, gs = GITST
   }
 
   const competitors = COMPETITORS.map((c) => {
-    const seatCost = totalSeats * c.perSeat
-    const aiCost = needsAi && c.aiKind === 'addon' ? totalSeats * c.aiAddOn : 0
+    // Read-only stakeholders ride free only where the tool offers free viewers;
+    // otherwise every seat is billed.
+    const billedSeats = c.freeViewers ? builders : builders + stakeholders
+    const seatCost = billedSeats * c.perSeat
+    // AI is a per-BUILDER license (stakeholders are read-only and don't use it).
+    const aiCost = needsAi && c.aiKind === 'addon' ? builders * c.aiAddOn : 0
+    const freeRiders = c.freeViewers ? stakeholders : 0
     return {
       key: c.key,
       label: c.label,
       isGs: false,
       total: seatCost + aiCost,
-      seatBasis: totalSeats,
-      seatLabel: totalSeats === 1 ? 'seat' : 'seats',
+      seatBasis: billedSeats,
+      seatLabel: billedSeats === 1 ? 'seat' : 'seats',
       perUnit: c.perSeat,
       aiKind: c.aiKind,
       aiCost,
       aiAddOn: c.aiAddOn,
-      addonsNote: c.addonsNote,
+      freeViewers: c.freeViewers,
+      freeRiders,
+      tier: c.tier,
       note: c.note,
       breakdown:
-        `${totalSeats} seat${totalSeats === 1 ? '' : 's'} × $${c.perSeat}` +
-        (aiCost > 0 ? ` + AI ${totalSeats} × $${c.aiAddOn}` : ''),
+        `${billedSeats} seat${billedSeats === 1 ? '' : 's'} × $${c.perSeat}` +
+        (aiCost > 0 ? ` + AI ${builders} × $${c.aiAddOn}` : '') +
+        (freeRiders > 0 ? ` · ${freeRiders} guest${freeRiders === 1 ? '' : 's'} free` : ''),
     }
   })
 

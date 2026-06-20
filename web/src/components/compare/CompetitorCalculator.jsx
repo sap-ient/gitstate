@@ -2,9 +2,10 @@
  * CompetitorCalculator — the shared cost calculator used on both /compare and
  * /pricing.
  *
- * Inputs (all SLIDERS + toggles): # builders (1–100), # stakeholders (0–500),
- * a managed↔BYOK segmented control, and an "AI features" toggle. Dragging any
- * control updates everything instantly.
+ * Inputs (all SLIDERS + a toggle): # builders (1–100), # stakeholders (0–500),
+ * and a single managed↔BYOK segmented control. Managed includes AI (so rivals
+ * pay their per-seat AI add-on); BYOK drops it (rivals use their base seat
+ * price). Dragging any control updates everything instantly.
  *
  * Math (in ../../lib/competitorPricing.js): gitstate = builders × (managed $6 or
  * BYOK $3), stakeholders free. Competitors = totalSeats × per-seat (+ per-seat
@@ -19,7 +20,7 @@
  */
 import { useMemo, useState } from 'react'
 import {
-  Users, Eye, Sparkles, Info, Check, Minus, ArrowRight, TrendingDown,
+  Users, Eye, Sparkles, Info, ArrowRight, TrendingDown,
   KeyRound, GitBranch, Trophy,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -231,26 +232,29 @@ function MathDisclosure({ format, gs }) {
               Stakeholders are always free, so they never touch the bill.
             </p>
             <p>
-              Every competitor bills <span className="text-[var(--text-muted)]">per total seat</span> (builders{' '}
-              <em className="not-italic">plus</em> stakeholders). 2026 list prices:
+              Competitors bill <span className="text-[var(--text-muted)]">per seat</span>. Verified 2026 list
+              prices, matched to the tier a team would buy for comparable work:
             </p>
             <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 font-mono pl-1">
-              <li>GitHub Projects — {format(3.67)}/seat · Copilot +{format(10)}/seat</li>
-              <li>ClickUp — {format(7)}/seat · Brain AI +{format(9)}/seat</li>
-              <li>Jira — {format(7.53)}/seat · AI bundled</li>
-              <li>Linear — {format(8)}/seat · AI free</li>
+              <li>GitHub Projects — {format(4)}/seat · Copilot Pro +{format(10)}/builder</li>
+              <li>ClickUp — {format(7)}/seat · Brain +{format(9)}/builder · guests free</li>
+              <li>Jira — {format(7.53)}/seat · Rovo AI bundled</li>
+              <li>Linear — {format(10)}/seat · AI = paid credits</li>
               <li>ZenHub — {format(8.33)}/seat · AI bundled</li>
             </ul>
             <p>
-              With <span className="text-[var(--text-muted)]">AI features on</span>, ClickUp and GitHub add their
-              per-seat AI add-on to every seat. Jira&apos;s marketplace add-ons commonly add{' '}
-              <span className="text-[var(--text-muted)]">+30–50%</span> in practice — not included above, so
-              Jira&apos;s real cost is typically higher than shown.
+              We keep it honest both ways: AI add-ons (Copilot, Brain) are counted{' '}
+              <span className="text-[var(--text-muted)]">per builder</span>, not per seat — read-only stakeholders
+              don&apos;t need an AI license — and where a tool offers free read-only viewers
+              (<span className="text-[var(--text-muted)]">ClickUp guests</span>), those stakeholders aren&apos;t
+              charged a seat. On <span className="text-[var(--text-muted)]">BYOK</span> rivals drop their AI add-on
+              (base seat only).
             </p>
             <p className="text-[var(--text-faint)]">
               Rows are sorted by actual computed cost. Because gitstate charges only for builders and bundles AI at
-              {' '}{format(gs.managed)} (or {format(gs.byok)} BYOK), it lands cheapest even for an all-builder team
-              with zero stakeholders — and the gap only widens as you add free stakeholders.
+              {' '}{format(gs.managed)} (or {format(gs.byok)} BYOK), it still lands cheapest even for an all-builder
+              team with zero stakeholders ({format(gs.managed)} &lt; Jira {format(7.53)} with AI; {format(gs.byok)} BYOK
+              &lt; GitHub {format(4)} without) — and the gap only widens as you add free stakeholders.
             </p>
           </div>
         </div>
@@ -267,10 +271,12 @@ function MathDisclosure({ format, gs }) {
  */
 export default function CompetitorCalculator({ plans, planKey = 'team' }) {
   const { format } = useCurrency()
-  const [builders, setBuilders] = useState(5)
-  const [stakeholders, setStakeholders] = useState(20)
+  const [builders, setBuilders] = useState(8)
+  const [stakeholders, setStakeholders] = useState(15)
   const [byok, setByok] = useState(false)
-  const [needsAi, setNeedsAi] = useState(true)
+  // AI need is derived, not a separate control: Managed ⇒ AI included (rivals
+  // pay their per-seat AI add-on); BYOK ⇒ AI off (rivals use base seat price).
+  const needsAi = !byok
 
   const gsPrice = useMemo(() => gitstatePricing(plans, planKey), [plans, planKey])
 
@@ -304,7 +310,7 @@ export default function CompetitorCalculator({ plans, planKey = 'team' }) {
               value={builders}
               setValue={setBuilders}
               min={1}
-              max={100}
+              max={50}
               accent="teal"
             />
             <SliderField
@@ -314,12 +320,12 @@ export default function CompetitorCalculator({ plans, planKey = 'team' }) {
               value={stakeholders}
               setValue={setStakeholders}
               min={0}
-              max={500}
+              max={100}
               accent="indigo"
             />
 
             <SegToggle
-              label="gitstate billing"
+              label="gitstate billing · AI"
               value={byok}
               onChange={setByok}
               options={[
@@ -327,22 +333,10 @@ export default function CompetitorCalculator({ plans, planKey = 'team' }) {
                 { value: true, label: `BYOK ${format(gsPrice.byok)}`, icon: <KeyRound size={12} /> },
               ]}
             />
-
-            <SegToggle
-              label="AI features"
-              value={needsAi}
-              onChange={(v) => {
-                setNeedsAi(v)
-                // AI on → managed (AI bundled at the managed rate); AI off → BYOK
-                // (no managed AI to pay for). Competitors mirror this: AI on adds
-                // their per-seat AI tax, AI off uses their base seat price.
-                setByok(!v)
-              }}
-              options={[
-                { value: true, label: 'On', icon: <Check size={12} /> },
-                { value: false, label: 'Off', icon: <Minus size={12} /> },
-              ]}
-            />
+            <p className="text-[11px] text-[var(--text-faint)] leading-relaxed -mt-3">
+              <span className="text-[var(--text-muted)]">Managed</span> bundles AI — rivals add their per-seat AI tax.
+              {' '}<span className="text-[var(--text-muted)]">BYOK</span> routes AI to your own key — rivals drop to base seat price.
+            </p>
           </div>
 
           {/* gitstate context note */}
@@ -413,7 +407,7 @@ export default function CompetitorCalculator({ plans, planKey = 'team' }) {
                 {builders} builder{builders === 1 ? '' : 's'}
                 {stakeholders > 0 ? ` + ${stakeholders} stakeholder${stakeholders === 1 ? '' : 's'}` : ' (no stakeholders)'}
               </strong>{' '}
-              with AI {needsAi ? 'on' : 'off'} — and at every other team shape too. Builders-only is the closest a
+              on {byok ? 'BYOK' : 'managed'} AI — and at every other team shape too. Builders-only is the closest a
               rival ever gets, and gitstate still wins it.
             </span>
           </div>
