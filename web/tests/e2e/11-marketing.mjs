@@ -15,7 +15,8 @@ test('marketing: pricing renders', async ({ page }) => {
   const h1 = (await page.locator('h1').first().innerText()).trim()
   assert(/pricing/i.test(h1), `marketing: pricing h1 "${h1}"`)
   await assertVisible(page.getByText('The builder / stakeholder model'), 'marketing: builder/stakeholder section')
-  await assertVisible(page.getByText('Estimate your cost'), 'marketing: cost estimator section')
+  // Single consolidated calculator (was the old "Estimate your cost" CostCalculator).
+  await assertVisible(page.getByText('Compare your real monthly cost'), 'marketing: cost calculator section')
 }, { seedAuth: false })
 
 // Compare renders the cost calculator and produces a number.

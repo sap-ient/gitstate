@@ -93,8 +93,10 @@ test('contribution: roster, tabs, slider re-rank, drawer', async ({ page }) => {
   await firstCard.click()
   const drawer = page.getByRole('dialog', { name: 'Contributor evidence' })
   await assertVisible(drawer, 'contribution: contributor evidence drawer')
-  // Evidence dimension blocks render (e.g. an "Evidence" header and dimension labels).
-  await page.waitForTimeout(800) // allow evidence fetch
+  // Evidence dimension blocks render (e.g. dimension labels like "Shipped").
+  // Wait for the async evidence fetch + render rather than a fixed delay.
+  await drawer.getByText('Shipped', { exact: true }).first()
+    .waitFor({ state: 'visible', timeout: 8000 })
   await assertVisible(
     drawer.getByText('Shipped', { exact: true }).first(),
     'contribution: drawer "Shipped" dimension block',

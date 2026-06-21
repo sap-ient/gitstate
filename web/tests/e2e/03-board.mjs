@@ -12,7 +12,7 @@ import { test, gotoApp, pageHeading, settle, assert, assertVisible, api, apiPatc
 function columnBody(page, label) {
   const wrapper = page
     .locator('div.flex.flex-col.w-\\[276px\\]')
-    .filter({ has: page.locator('span.uppercase.tracking-widest', { hasText: label }) })
+    .filter({ has: page.locator('span.uppercase', { hasText: label }) })
     .first()
   // The droppable is the rounded, scrollable list div within the wrapper.
   return wrapper.locator('div.overflow-y-auto.rounded-xl, div.rounded-xl.overflow-y-auto').first()
@@ -87,11 +87,11 @@ test('board: columns render + drag persists', async ({ page }) => {
   const h1 = await pageHeading(page)
   assert(/Work/i.test(h1), `board: h1 expected "Work", got "${h1}"`)
 
-  // All four kanban columns render. Column headers are uppercase spans with
-  // tracking-widest; scope to those to avoid matching the (hidden) state-filter
-  // <option> elements that share the same label text.
+  // All four kanban columns render. Scope to the column wrappers' uppercase
+  // header spans so we don't match the (hidden) state-filter <option>s or the
+  // new board-summary StatCard labels that share the same text.
   for (const label of ['Open', 'In Progress', 'Done', 'Closed']) {
-    const header = page.locator('span.uppercase.tracking-widest', { hasText: label })
+    const header = page.locator('div.flex.flex-col.w-\\[276px\\] span.uppercase', { hasText: label })
     await assertVisible(header.first(), `board: column "${label}"`)
   }
 
