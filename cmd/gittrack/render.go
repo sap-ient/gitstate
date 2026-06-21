@@ -157,6 +157,27 @@ func renderPRContext(w io.Writer, c *prContext) {
 	}
 }
 
+// renderRunList writes a compact table of logged agent runs.
+func renderRunList(w io.Writer, runs []agentRun) {
+	if len(runs) == 0 {
+		fmt.Fprintln(w, "no agent runs")
+		return
+	}
+	fmt.Fprintf(w, "%-12s %-14s %-10s %s\n", "ID", "AGENT", "ACTION", "GOAL")
+	for _, r := range runs {
+		id := r.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		action := r.HumanAction
+		if action == "" {
+			action = "—"
+		}
+		fmt.Fprintf(w, "%-12s %-14s %-10s %s\n",
+			id, truncate(r.AgentName, 14), action, truncate(r.Goal, 54))
+	}
+}
+
 // renderIssueList writes a compact table of issues.
 func renderIssueList(w io.Writer, issues []issue) {
 	if len(issues) == 0 {

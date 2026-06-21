@@ -55,6 +55,25 @@ type issueContext struct {
 	Similar      []similarIssue  `json:"similarIssues"`
 }
 
+// agentRun mirrors the agent_runs element returned by POST/GET /api/agent-runs
+// (camelCase JSON, matching internal/store.AgentRun). Only the fields gittrack
+// prints are listed; unknown fields are ignored.
+type agentRun struct {
+	ID          string `json:"id"`
+	Goal        string `json:"goal"`
+	AgentName   string `json:"agentName"`
+	Branch      string `json:"branch"`
+	HumanAction string `json:"humanAction"`
+	TestsPassed *bool  `json:"testsPassed"`
+	Iterations  *int   `json:"iterations"`
+	DiffSummary struct {
+		Additions    int `json:"additions"`
+		Deletions    int `json:"deletions"`
+		ChangedFiles int `json:"changedFiles"`
+	} `json:"diffSummary"`
+	CreatedAt string `json:"createdAt"`
+}
+
 // prContext is the bundle returned by GET /api/context/pr/{id}.
 type prContext struct {
 	PR struct {

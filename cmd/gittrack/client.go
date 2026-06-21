@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,6 +81,53 @@ func (c *client) do(method, path string) ([]byte, error) {
 		return nil, &apiError{status: resp.StatusCode, path: path, body: string(body)}
 	}
 	return body, nil
+}
+
+// doJSON performs an authenticated request to path with a JSON-encoded body
+// (payload is marshalled and sent with Content-Type: application/json) and
+// returns the raw response body for any 2xx status. It mirrors do() for non-2xx
+// handling: the server's error body is surfaced via *apiError. payload may be nil
+// for bodyless methods.
+func (c *client) doJSON(method, path string, payload any) ([]byte, error) {
+	u, err := c.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var body io.Reader
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("encode request body: %w", err)
+		}
+		body = bytes.NewReader(b)
+	}
+
+	req, err := http.NewRequest(method, u, body)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request to %s failed: %w", u, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response from %s: %w", u, err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &apiError{status: resp.StatusCode, path: path, body: string(respBody)}
+	}
+	return respBody, nil
 }
 
 // resolve joins the client base URL with an API path (and optional query). The

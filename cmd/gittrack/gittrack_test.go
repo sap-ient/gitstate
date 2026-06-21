@@ -257,6 +257,153 @@ func TestCmdWhoami(t *testing.T) {
 	}
 }
 
+// TestCmdLogRunRequestBuilding verifies cmdLogRun POSTs to /api/agent-runs with
+// the auth header and folds flags into the JSON body — including diffSummary —
+// while leaving un-set optional fields out so server defaults apply.
+func TestCmdLogRunRequestBuilding(t *testing.T) {
+	var gotMethod, gotPath, gotAuth, gotCT string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotCT = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"run-123"}`))
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() int {
+		return cmdLogRun([]string{
+			"--goal", "fix the bug",
+			"--agent", "claude-code",
+			"--pr", "pr-9",
+			"--action", "accepted",
+			"--tests-passed",
+			"--iterations", "3",
+			"--cost", "0.42",
+			"--additions", "12", "--deletions", "3", "--files", "2",
+			"--url", srv.URL, "--token", "gsk_t",
+		})
+	})
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/api/agent-runs" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer gsk_t" {
+		t.Errorf("auth = %q", gotAuth)
+	}
+	if gotCT != "application/json" {
+		t.Errorf("content-type = %q", gotCT)
+	}
+	if gotBody["goal"] != "fix the bug" || gotBody["agentName"] != "claude-code" {
+		t.Errorf("body goal/agent wrong: %v", gotBody)
+	}
+	if gotBody["prId"] != "pr-9" || gotBody["humanAction"] != "accepted" {
+		t.Errorf("body pr/action wrong: %v", gotBody)
+	}
+	if gotBody["testsPassed"] != true {
+		t.Errorf("body testsPassed = %v, want true", gotBody["testsPassed"])
+	}
+	// JSON numbers decode to float64.
+	if gotBody["iterations"] != float64(3) {
+		t.Errorf("body iterations = %v, want 3", gotBody["iterations"])
+	}
+	if gotBody["costUsd"] != 0.42 {
+		t.Errorf("body costUsd = %v, want 0.42", gotBody["costUsd"])
+	}
+	ds, ok := gotBody["diffSummary"].(map[string]any)
+	if !ok {
+		t.Fatalf("diffSummary missing/wrong type: %v", gotBody["diffSummary"])
+	}
+	if ds["additions"] != float64(12) || ds["deletions"] != float64(3) || ds["changedFiles"] != float64(2) {
+		t.Errorf("diffSummary wrong: %v", ds)
+	}
+	if !strings.Contains(out, "run-123") {
+		t.Errorf("expected created run id in output:\n%s", out)
+	}
+}
+
+// TestCmdLogRunOmitsUnsetFields ensures optional metric flags the user did NOT
+// pass are absent from the body (so the server applies its defaults), while the
+// default --agent value is still sent.
+func TestCmdLogRunOmitsUnsetFields(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"r1"}`))
+	}))
+	defer srv.Close()
+
+	_ = captureStdout(t, func() int {
+		return cmdLogRun([]string{"--goal", "minimal", "--url", srv.URL, "--token", "gsk_t"})
+	})
+
+	for _, k := range []string{"iterations", "costUsd", "testsPassed", "diffSummary", "prId", "issueId", "repoId"} {
+		if _, present := gotBody[k]; present {
+			t.Errorf("body should omit unset %q, got %v", k, gotBody[k])
+		}
+	}
+	if gotBody["agentName"] != "gittrack" {
+		t.Errorf("default agent = %v, want gittrack", gotBody["agentName"])
+	}
+	if gotBody["goal"] != "minimal" {
+		t.Errorf("goal = %v", gotBody["goal"])
+	}
+}
+
+// TestCmdLogRunRequiresGoal ensures a missing --goal is a usage error (exit 2)
+// and no request is sent.
+func TestCmdLogRunRequiresGoal(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	code := cmdLogRun([]string{"--agent", "x", "--url", srv.URL, "--token", "gsk_t"})
+	if code != 2 {
+		t.Errorf("missing goal exit = %d, want 2", code)
+	}
+	if called {
+		t.Error("no request should be sent when --goal is missing")
+	}
+}
+
+// TestCmdRunsFilters verifies cmdRuns sends repo/agent/limit as query params.
+func TestCmdRunsFilters(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode([]agentRun{
+			{ID: "run-aaaaaaaaaaaa", Goal: "do a thing", AgentName: "cursor", HumanAction: "edited"},
+		})
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() int {
+		return cmdRuns([]string{"--agent", "cursor", "--limit", "5", "--url", srv.URL, "--token", "gsk_t"})
+	})
+
+	if gotPath != "/api/agent-runs" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if !strings.Contains(gotQuery, "agent=cursor") || !strings.Contains(gotQuery, "limit=5") {
+		t.Errorf("query = %q, want agent + limit", gotQuery)
+	}
+	for _, want := range []string{"run-aaaaaaaa", "cursor", "edited", "do a thing"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("runs table missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 // captureStdout redirects os.Stdout for the duration of fn and returns what was
 // written. It restores the original on return.
 func captureStdout(t *testing.T, fn func() int) string {

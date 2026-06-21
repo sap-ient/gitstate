@@ -46,6 +46,10 @@ func run(args []string) int {
 		return cmdPR(rest)
 	case "issues":
 		return cmdIssues(rest)
+	case "log-run":
+		return cmdLogRun(rest)
+	case "runs":
+		return cmdRuns(rest)
 	case "whoami":
 		return cmdWhoami(rest)
 	default:
@@ -97,6 +101,9 @@ COMMANDS:
   pr <id>              Fetch a PR context bundle (diff summary, cycle time,
                        effort estimate).
   issues               List issues (table by default).
+  log-run              Record an agent run (POST /api/agent-runs) so it feeds
+                       attribution + estimation. Requires --goal.
+  runs                 List logged agent runs (newest-first).
   whoami               Validate the token and print the configured URL.
   help                 Show this help.
 
@@ -110,6 +117,12 @@ GLOBAL FLAGS:
 COMMAND FLAGS:
   issues --state <s>   Filter by state (e.g. open, in_progress, done, closed).
   issues --limit <n>   Cap the number of issues printed.
+  log-run --goal <g>   What the agent set out to do (required). Optional:
+                       --repo/--pr/--issue (links), --agent, --branch,
+                       --action accepted|edited|reverted, --iterations, --cost,
+                       --additions/--deletions/--files (diff summary),
+                       --tests-passed.
+  runs --repo/--pr/--issue/--agent/--limit  Filter the listed runs.
 
 ENVIRONMENT:
   GITSTATE_TOKEN       gitstate API token (gsk_...). Required.

@@ -58,7 +58,7 @@ func reorderArgs(args []string) []string {
 func isBoolFlag(a string) bool {
 	name := strings.TrimLeft(a, "-")
 	switch name {
-	case "json", "h", "help":
+	case "json", "h", "help", "tests-passed":
 		return true
 	}
 	return false
@@ -284,5 +284,192 @@ func maskToken(tok string) string {
 		n = 4
 	}
 	return tok[:n] + "…"
+}
+
+// ── gittrack log-run --goal "…" [links/metrics] ───────────────────────────────
+
+// cmdLogRun records an agent run via POST /api/agent-runs. It folds the
+// --additions/--deletions/--files flags into a diffSummary object and only sends
+// the optional fields the user actually set (pointers stay nil otherwise), so the
+// server's defaults apply. On success it prints the created run id (or --json).
+func cmdLogRun(args []string) int {
+	fs := flag.NewFlagSet("log-run", flag.ContinueOnError)
+	var cf commonFlags
+	registerCommon(fs, &cf)
+
+	var (
+		goal        string
+		repo        string
+		pr          string
+		issue       string
+		agent       string
+		branch      string
+		action      string
+		iterations  int
+		cost        float64
+		additions   int
+		deletions   int
+		files       int
+		testsPassed bool
+	)
+	fs.StringVar(&goal, "goal", "", "what the agent set out to do (required)")
+	fs.StringVar(&repo, "repo", "", "repo id this run worked on")
+	fs.StringVar(&pr, "pr", "", "pull request id this run produced")
+	fs.StringVar(&issue, "issue", "", "issue id this run addressed")
+	fs.StringVar(&agent, "agent", "gittrack", "agent name (e.g. claude-code, cursor)")
+	fs.StringVar(&branch, "branch", "", "branch the run worked on")
+	fs.StringVar(&action, "action", "", "human verdict: accepted | edited | reverted")
+	fs.IntVar(&iterations, "iterations", 0, "number of agent iterations")
+	fs.Float64Var(&cost, "cost", 0, "run cost in USD")
+	fs.IntVar(&additions, "additions", 0, "lines added (folded into diffSummary)")
+	fs.IntVar(&deletions, "deletions", 0, "lines deleted (folded into diffSummary)")
+	fs.IntVar(&files, "files", 0, "files changed (folded into diffSummary)")
+	fs.BoolVar(&testsPassed, "tests-passed", false, "mark that tests passed for this run")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: gittrack log-run --goal \"…\" [--repo ID] [--pr ID] [--issue ID]")
+		fmt.Fprintln(os.Stderr, "         [--agent NAME] [--branch B] [--action accepted|edited|reverted]")
+		fmt.Fprintln(os.Stderr, "         [--iterations N] [--cost F] [--additions N] [--deletions N] [--files N]")
+		fmt.Fprintln(os.Stderr, "         [--tests-passed] [--json]")
+		fmt.Fprintln(os.Stderr, "Record an agent run so it feeds attribution + estimation.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(reorderArgs(args)); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(goal) == "" {
+		fmt.Fprintln(os.Stderr, "gittrack: --goal is required")
+		fs.Usage()
+		return 2
+	}
+
+	// Build the request body. Only set optional fields the user supplied so the
+	// server applies its own defaults for the rest. fs.Visit reports flags the
+	// user actually passed on the command line.
+	body := map[string]any{"goal": goal}
+	if repo != "" {
+		body["repoId"] = repo
+	}
+	if pr != "" {
+		body["prId"] = pr
+	}
+	if issue != "" {
+		body["issueId"] = issue
+	}
+	if agent != "" {
+		body["agentName"] = agent
+	}
+	if branch != "" {
+		body["branch"] = branch
+	}
+	if action != "" {
+		body["humanAction"] = action
+	}
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["iterations"] {
+		body["iterations"] = iterations
+	}
+	if set["cost"] {
+		body["costUsd"] = cost
+	}
+	if set["tests-passed"] {
+		body["testsPassed"] = testsPassed
+	}
+	if set["additions"] || set["deletions"] || set["files"] {
+		body["diffSummary"] = map[string]int{
+			"additions":    additions,
+			"deletions":    deletions,
+			"changedFiles": files,
+		}
+	}
+
+	cl, err := resolveClient(cf.url, cf.token)
+	if err != nil {
+		return fail(err)
+	}
+
+	respBody, err := cl.doJSON("POST", "/api/agent-runs", body)
+	if err != nil {
+		return fail(err)
+	}
+
+	if cf.json {
+		printRaw(respBody)
+		return 0
+	}
+
+	var run agentRun
+	if err := json.Unmarshal(respBody, &run); err != nil {
+		return fail(fmt.Errorf("decode agent run: %w", err))
+	}
+	fmt.Fprintf(os.Stdout, "logged agent run %s\n", run.ID)
+	return 0
+}
+
+// ── gittrack runs [--repo ID] [--pr ID] [--issue ID] [--agent N] [--limit N] ──
+
+func cmdRuns(args []string) int {
+	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
+	var cf commonFlags
+	registerCommon(fs, &cf)
+	var repo, pr, issue, agent string
+	var limit int
+	fs.StringVar(&repo, "repo", "", "filter by repo id")
+	fs.StringVar(&pr, "pr", "", "filter by pull request id")
+	fs.StringVar(&issue, "issue", "", "filter by issue id")
+	fs.StringVar(&agent, "agent", "", "filter by agent name")
+	fs.IntVar(&limit, "limit", 0, "maximum number of runs to fetch")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: gittrack runs [--repo ID] [--pr ID] [--issue ID] [--agent N] [--limit N] [--json]")
+		fmt.Fprintln(os.Stderr, "List logged agent runs newest-first for the org resolved from the API token.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(reorderArgs(args)); err != nil {
+		return 2
+	}
+
+	cl, err := resolveClient(cf.url, cf.token)
+	if err != nil {
+		return fail(err)
+	}
+
+	q := url.Values{}
+	if repo != "" {
+		q.Set("repo", repo)
+	}
+	if pr != "" {
+		q.Set("pr", pr)
+	}
+	if issue != "" {
+		q.Set("issue", issue)
+	}
+	if agent != "" {
+		q.Set("agent", agent)
+	}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	path := "/api/agent-runs"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+
+	body, err := cl.do("GET", path)
+	if err != nil {
+		return fail(err)
+	}
+
+	if cf.json {
+		printRaw(body)
+		return 0
+	}
+
+	var runs []agentRun
+	if err := json.Unmarshal(body, &runs); err != nil {
+		return fail(fmt.Errorf("decode agent runs: %w", err))
+	}
+	renderRunList(os.Stdout, runs)
+	return 0
 }
 
