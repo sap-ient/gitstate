@@ -13,8 +13,10 @@
  * Reveal motion + lucide icons. Honesty tags on every proxy / needs-CI metric.
  */
 import { useState } from 'react'
-import { HeartPulse, AlertTriangle, RotateCw, Activity, Eye, Crown, Flame } from 'lucide-react'
+import { HeartPulse, AlertTriangle, RotateCw, Activity, Eye, Crown, Flame, Gauge } from 'lucide-react'
 import { useEngHealth } from '../lib/useEngHealth.js'
+import { useEstimation } from '../lib/useEstimation.js'
+import { useRepos } from '../lib/useRepos.js'
 import { Card, Button } from '../components/ui/index.js'
 import { Reveal } from '../components/Reveal.jsx'
 import { SectionHeading } from '../components/enghealth/shared.jsx'
@@ -22,6 +24,7 @@ import { DoraRow } from '../components/enghealth/DoraRow.jsx'
 import { ReviewPanel } from '../components/enghealth/ReviewPanel.jsx'
 import { BusFactorPanel } from '../components/enghealth/BusFactorPanel.jsx'
 import { TechDebtPanel } from '../components/enghealth/TechDebtPanel.jsx'
+import { CalibrationPanel } from '../components/enghealth/CalibrationPanel.jsx'
 
 const todayISO = () => new Date().toISOString().slice(0, 10)
 function isoDaysAgo(days) {
@@ -84,6 +87,8 @@ export default function EngHealth() {
   const [preset, setPreset] = useState('90d')
 
   const { data, loading, error, refetch } = useEngHealth(filters)
+  const estimation = useEstimation()
+  const { repos } = useRepos()
 
   const dora = data?.dora
   const review = data?.review
@@ -146,6 +151,17 @@ export default function EngHealth() {
           {/* Tech debt */}
           <Reveal inView><SectionHeading icon={<Flame size={13} className="text-[var(--chart-3)]" />}>Tech-debt hotspots</SectionHeading></Reveal>
           <Reveal delay={0.05} inView><TechDebtPanel hotspots={techDebt} loading={loading && !data} hasDeepData={hasDeepData} /></Reveal>
+
+          {/* Estimation calibration */}
+          <Reveal inView><SectionHeading icon={<Gauge size={13} className="text-[var(--chart-4)]" />} hint="how the effort estimator is tracking against reality">Estimation calibration</SectionHeading></Reveal>
+          <Reveal delay={0.05} inView>
+            <CalibrationPanel
+              accuracy={estimation.accuracy}
+              calibration={estimation.calibration}
+              loading={estimation.loading && estimation.accuracy.length === 0 && estimation.calibration.length === 0}
+              repos={repos}
+            />
+          </Reveal>
         </>
       )}
     </div>
