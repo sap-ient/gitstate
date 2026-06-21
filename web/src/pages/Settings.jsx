@@ -5,6 +5,7 @@ import {
   ChevronRight, Pencil, Sparkles, KeyRound, Server, Check, Loader2,
   CalendarDays, Link2, Unlink, ArrowUpFromLine, ArrowDownToLine, Bell,
   Webhook, Copy, RefreshCw, Rocket, Eye, EyeOff, CircleDot,
+  Settings as SettingsIcon,
 } from 'lucide-react'
 import { useAuth } from '../lib/useAuth.js'
 import { useOrg } from '../lib/useOrg.js'
@@ -17,13 +18,25 @@ import {
   calendarStartUrl, fetchCalendarStatus, patchCalendar, disconnectCalendar,
 } from '../lib/api.js'
 
-function SectionCard({ icon: Icon, title, description, children, delay = 0, tone = 'default' }) {
-  const iconColor = tone === 'danger' ? 'text-red-400' : 'text-[var(--text-faint)]'
+function SectionCard({ icon: Icon, title, description, children, delay = 0, tone = 'default', accent = 'var(--brand-teal)' }) {
+  const isDanger = tone === 'danger'
+  const chipColor = isDanger ? 'var(--bad)' : accent
   return (
     <Reveal delay={delay}>
-      <Card padding="lg" className={`mb-4 ${tone === 'danger' ? 'border-red-500/20' : ''}`}>
+      <Card
+        padding="lg"
+        className="mb-4"
+        style={isDanger ? { borderColor: 'color-mix(in srgb, var(--bad) 30%, transparent)' } : undefined}
+      >
         <div className="mb-4 flex items-start gap-2.5">
-          {Icon && <Icon size={16} className={`mt-0.5 shrink-0 ${iconColor}`} />}
+          {Icon && (
+            <span
+              className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0"
+              style={{ color: chipColor, background: `color-mix(in srgb, ${chipColor} 14%, transparent)` }}
+            >
+              <Icon size={15} />
+            </span>
+          )}
           <div>
             <h2 className="text-sm font-semibold text-[var(--text)]">{title}</h2>
             {description && <p className="text-xs text-[var(--text-faint)] mt-0.5">{description}</p>}
@@ -44,7 +57,7 @@ function FieldRow({ label, value, hint, action }) {
       </div>
       <div className="text-sm font-mono text-[var(--text-dim)] truncate max-w-[200px]">{value ?? '—'}</div>
       {action ?? (
-        <button className="flex items-center gap-1 text-xs text-[var(--brand-teal)] hover:text-[#5eead4] transition-colors duration-150 shrink-0">
+        <button className="flex items-center gap-1 text-xs text-[var(--brand-teal)] hover:text-[color-mix(in_srgb,var(--brand-teal)_75%,white)] transition-colors duration-150 shrink-0">
           <Pencil size={11} /> Edit
         </button>
       )}
@@ -148,6 +161,7 @@ function LLMSettingsSection({ delay }) {
       title="AI & LLM"
       description="How effort estimates and status summaries are powered."
       delay={delay}
+      accent="var(--chart-5)"
     >
       {loading ? (
         <div className="flex items-center gap-2 py-4 text-xs text-[var(--text-faint)]">
@@ -218,7 +232,7 @@ function LLMSettingsSection({ delay }) {
             </div>
           )}
 
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-[var(--bad)]">{error}</p>}
 
           <div className="flex items-center gap-3">
             <Button
@@ -319,7 +333,7 @@ function CalendarRow({ status, onChanged, brand, label, border }) {
           <Button
             variant="outline" size="sm" onClick={disconnect} disabled={busy}
             leftIcon={busy ? <Loader2 size={13} className="animate-spin" /> : <Unlink size={13} />}
-            className="hover:border-red-500/30 hover:text-red-400 shrink-0"
+            className="hover:border-[color-mix(in_srgb,var(--bad)_30%,transparent)] hover:text-[var(--bad)] shrink-0"
           >
             Disconnect
           </Button>
@@ -346,7 +360,7 @@ function CalendarRow({ status, onChanged, brand, label, border }) {
         </div>
       )}
 
-      {error && <p className="text-xs text-red-400 mt-2 ml-12">{error}</p>}
+      {error && <p className="text-xs text-[var(--bad)] mt-2 ml-12">{error}</p>}
     </div>
   )
 }
@@ -403,6 +417,7 @@ function CalendarSection({ delay }) {
       title="Calendars"
       description="Two-way sync: approved leave becomes an out-of-office event; calendar busy time feeds your availability."
       delay={delay}
+      accent="var(--chart-6)"
     >
       {!statuses ? (
         <div className="flex items-center gap-2 py-4 text-xs text-[var(--text-faint)]">
@@ -429,7 +444,7 @@ function CalendarSection({ delay }) {
           />
         </>
       )}
-      {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
+      {error && <p className="text-xs text-[var(--bad)] mt-2">{error}</p>}
     </SectionCard>
   )
 }
@@ -582,13 +597,14 @@ function WebhooksSection({ delay }) {
       title="Webhooks & CI/CD"
       description="Real-time sync (push/PR/issue) and CI/CD deploys → real DORA deploy frequency & MTTR on Engineering Health."
       delay={delay}
+      accent="var(--chart-4)"
     >
       {loading && !data ? (
         <div className="flex items-center gap-2 py-4 text-xs text-[var(--text-faint)]">
           <Loader2 size={14} className="animate-spin" /> Loading…
         </div>
       ) : error ? (
-        <p className="text-xs text-red-400 py-2">{error}</p>
+        <p className="text-xs text-[var(--bad)] py-2">{error}</p>
       ) : (
         <>
           <div className="flex items-start gap-2 rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-3 mb-1 text-[11px] text-[var(--text-faint)] leading-relaxed">
@@ -624,7 +640,7 @@ function WebhooksSection({ delay }) {
               }
             />
           )}
-          {rotateErr && <p className="text-xs text-red-400 mt-2">{rotateErr}</p>}
+          {rotateErr && <p className="text-xs text-[var(--bad)] mt-2">{rotateErr}</p>}
         </>
       )}
     </SectionCard>
@@ -644,14 +660,19 @@ export default function Settings() {
   return (
     <div className="w-full">
       <Reveal>
-        <div className="mb-8">
-          <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Settings</h1>
-          <p className="text-sm text-[var(--text-faint)] mt-1">Workspace and account preferences.</p>
+        <div className="mb-8 flex items-start gap-3">
+          <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+            <SettingsIcon size={17} className="text-[var(--brand-teal)]" />
+          </span>
+          <div>
+            <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Settings</h1>
+            <p className="text-sm text-[var(--text-faint)] mt-1">Workspace and account preferences.</p>
+          </div>
         </div>
       </Reveal>
 
       {/* Account section */}
-      <SectionCard icon={User} title="Account" description="Your personal account details." delay={0.05}>
+      <SectionCard icon={User} title="Account" description="Your personal account details." delay={0.05} accent="var(--chart-1)">
         <div className="flex items-center gap-4 pb-4 mb-2 border-b border-[var(--border)]">
           <Avatar user={user} />
           <div className="flex-1 min-w-0">
@@ -664,7 +685,7 @@ export default function Settings() {
             size="sm"
             onClick={handleSignOut}
             leftIcon={<LogOut size={13} />}
-            className="hover:border-red-500/30 hover:text-red-400 shrink-0"
+            className="hover:border-[color-mix(in_srgb,var(--bad)_30%,transparent)] hover:text-[var(--bad)] shrink-0"
           >
             Sign out
           </Button>
@@ -680,6 +701,7 @@ export default function Settings() {
         title="Organization"
         description={activeOrg ? `Active workspace: ${activeOrg.name}` : 'Your workspace settings.'}
         delay={0.1}
+        accent="var(--chart-2)"
       >
         <FieldRow label="Name" value={activeOrg?.name ?? '—'} hint="Shown to team members and clients" />
         <FieldRow label="Slug" value={activeOrg?.slug ?? '—'} hint="URL prefix for your workspace" />
@@ -688,7 +710,7 @@ export default function Settings() {
           value={activeOrg?.planKey ? activeOrg.planKey.charAt(0).toUpperCase() + activeOrg.planKey.slice(1) : 'Free'}
           hint="Manage your plan and invoices"
           action={
-            <Link to="/settings/billing" className="flex items-center gap-1 text-xs text-[var(--brand-teal)] hover:text-[#5eead4] transition-colors duration-150 shrink-0">
+            <Link to="/settings/billing" className="flex items-center gap-1 text-xs text-[var(--brand-teal)] hover:text-[color-mix(in_srgb,var(--brand-teal)_75%,white)] transition-colors duration-150 shrink-0">
               <CreditCard size={11} /> Billing
             </Link>
           }
@@ -710,7 +732,7 @@ export default function Settings() {
 
       <LLMSettingsSection delay={0.15} />
 
-      <SectionCard icon={Plug} title="Integrations" description="Connected git platforms." delay={0.2}>
+      <SectionCard icon={Plug} title="Integrations" description="Connected git platforms." delay={0.2} accent="var(--chart-3)">
         <div className="flex items-center gap-3 py-3">
           <div className="w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] flex items-center justify-center shrink-0">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="var(--text)" aria-hidden>
@@ -751,6 +773,7 @@ export default function Settings() {
         title="Notifications"
         description="Push evidence-based status to where your team works — Slack, a webhook, or email."
         delay={0.24}
+        accent="var(--info)"
       >
         <NotificationsBody />
       </SectionCard>

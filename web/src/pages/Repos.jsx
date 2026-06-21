@@ -12,7 +12,7 @@ import { useRepos } from '../lib/useRepos.js'
 import {
   connectStartUrl, fetchConnectStatus, fetchConnectRepos, disconnectPlatform,
 } from '../lib/api.js'
-import { Card, Badge, Button } from '../components/ui/index.js'
+import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 
 /** Brand glyphs — lucide-react has no provider logos. */
@@ -141,7 +141,7 @@ function ConnectForm({ onConnect, onClose }) {
             </div>
           </FormInput>
 
-          <FormInput label={<>Repository <span className="text-red-400">*</span></>} hint="e.g. exo/gitstate">
+          <FormInput label={<>Repository <span className="text-[var(--bad)]">*</span></>} hint="e.g. exo/gitstate">
             <input
               autoFocus required type="text" placeholder="owner/repo-name"
               className={inputCls}
@@ -160,7 +160,7 @@ function ConnectForm({ onConnect, onClose }) {
           </FormInput>
 
           {error && (
-            <p className="flex items-center gap-2 text-xs text-red-400 bg-red-500/[0.08] border border-red-500/20 rounded-[var(--radius-btn)] px-3 py-2">
+            <p className="flex items-center gap-2 text-xs text-[var(--bad)] bg-[color-mix(in_srgb,var(--bad)_8%,transparent)] border border-[color-mix(in_srgb,var(--bad)_25%,transparent)] rounded-[var(--radius-btn)] px-3 py-2">
               <AlertCircle size={13} className="shrink-0" /> {error}
             </p>
           )}
@@ -346,7 +346,7 @@ function ConnectSection({ onImport, onUsePat }) {
         </div>
 
         {error && (
-          <p className="flex items-center gap-2 text-xs text-red-400 bg-red-500/[0.08] border border-red-500/20 rounded-[var(--radius-btn)] px-3 py-2 mb-3">
+          <p className="flex items-center gap-2 text-xs text-[var(--bad)] bg-[color-mix(in_srgb,var(--bad)_8%,transparent)] border border-[color-mix(in_srgb,var(--bad)_25%,transparent)] rounded-[var(--radius-btn)] px-3 py-2 mb-3">
             <AlertCircle size={13} className="shrink-0" /> {error}
           </p>
         )}
@@ -394,7 +394,7 @@ function ConnectSection({ onImport, onUsePat }) {
                       </button>
                       <button
                         onClick={() => handleDisconnect(s.platform)}
-                        className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] hover:text-red-400 hover:bg-red-500/[0.08] transition-colors"
+                        className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] hover:text-[var(--bad)] hover:bg-[color-mix(in_srgb,var(--bad)_8%,transparent)] transition-colors"
                       >
                         <Unlink size={13} /> Disconnect
                       </button>
@@ -475,19 +475,26 @@ export default function Repos() {
     const github = repos.filter(r => r.platform === 'github').length
     const gitlab = repos.filter(r => r.platform === 'gitlab').length
     const synced = repos.filter(r => r.lastSyncedAt).length
-    return { total, github, gitlab, synced }
+    const issues = repos.reduce((sum, r) => sum + (Number(r.issueCount) || 0), 0)
+    const hasIssueData = repos.some(r => r.issueCount != null)
+    return { total, github, gitlab, synced, issues, hasIssueData }
   }, [repos])
 
   return (
     <div className="w-full">
       {/* Header */}
       <Reveal>
-        <div className="flex items-end justify-between mb-6 gap-4">
-          <div>
-            <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Repositories</h1>
-            <p className="text-sm text-[var(--text-faint)] mt-1">
-              Connected repos are the source of truth for dev work.
-            </p>
+        <div className="flex items-start justify-between mb-6 gap-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+              <GitBranch size={17} className="text-[var(--brand-teal)]" />
+            </span>
+            <div>
+              <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Repositories</h1>
+              <p className="text-sm text-[var(--text-faint)] mt-1">
+                Connected repos are the source of truth for dev work.
+              </p>
+            </div>
           </div>
           {!showForm && (
             <Button variant="primary" onClick={() => setShowForm(true)} leftIcon={<Plus size={15} strokeWidth={2.5} />}>
@@ -504,7 +511,7 @@ export default function Repos() {
             'flex items-center gap-2 text-xs rounded-[var(--radius-btn)] px-3 py-2.5 mb-4 border',
             banner.kind === 'ok'
               ? 'text-[var(--brand-teal)] bg-[var(--brand-teal)]/[0.08] border-[var(--brand-teal)]/25'
-              : 'text-red-400 bg-red-500/[0.08] border-red-500/20',
+              : 'text-[var(--bad)] bg-[color-mix(in_srgb,var(--bad)_8%,transparent)] border-[color-mix(in_srgb,var(--bad)_25%,transparent)]',
           ].join(' ')}>
             {banner.kind === 'ok' ? <Check size={14} className="shrink-0" /> : <AlertCircle size={14} className="shrink-0" />}
             {banner.text}
@@ -521,25 +528,41 @@ export default function Repos() {
       {/* Summary strip */}
       {!loading && repos.length > 0 && (
         <Reveal delay={0.05}>
-          <div className="grid grid-cols-3 gap-3 mb-6">
-            <Card padding="sm" className="flex flex-col gap-1">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">Connected</span>
-              <span className="text-2xl font-display font-semibold text-[var(--text)] tabular-nums leading-none">{stats.total}</span>
-            </Card>
-            <Card padding="sm" className="flex flex-col gap-1">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">Platforms</span>
-              <span className="flex items-center gap-2.5 text-sm font-mono text-[var(--text-dim)] mt-1">
-                {stats.github > 0 && <span className="flex items-center gap-1"><GithubMark size={14} className="text-[var(--text)]" />{stats.github}</span>}
-                {stats.gitlab > 0 && <span className="flex items-center gap-1"><GitlabMark size={14} />{stats.gitlab}</span>}
-                {stats.github === 0 && stats.gitlab === 0 && <span className="text-[var(--text-faint)]">—</span>}
-              </span>
-            </Card>
-            <Card padding="sm" className="flex flex-col gap-1">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">Synced</span>
-              <span className="text-2xl font-display font-semibold text-[var(--text)] tabular-nums leading-none">
-                {stats.synced}<span className="text-sm text-[var(--text-faint)]">/{stats.total}</span>
-              </span>
-            </Card>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+            <StatCard
+              label="Connected"
+              value={stats.total.toLocaleString()}
+              sublabel="repositories tracked"
+              accent="var(--chart-1)"
+              icon={<GitBranch size={14} />}
+            />
+            <StatCard
+              label="Synced"
+              value={`${stats.synced}/${stats.total}`}
+              sublabel={stats.synced === stats.total ? 'all repos up to date' : `${stats.total - stats.synced} awaiting first sync`}
+              accent={stats.synced === stats.total ? 'var(--ok)' : 'var(--chart-3)'}
+              icon={<RefreshCw size={14} />}
+            />
+            {stats.hasIssueData ? (
+              <StatCard
+                label="Open issues"
+                value={stats.issues.toLocaleString()}
+                sublabel="tracked across repos"
+                accent="var(--chart-6)"
+                icon={<CircleDot size={14} />}
+              />
+            ) : (
+              <StatCard
+                label="Platforms"
+                value={(stats.github > 0 ? 1 : 0) + (stats.gitlab > 0 ? 1 : 0) || '—'}
+                sublabel={[
+                  stats.github > 0 ? `${stats.github} GitHub` : null,
+                  stats.gitlab > 0 ? `${stats.gitlab} GitLab` : null,
+                ].filter(Boolean).join(' · ') || 'none connected'}
+                accent="var(--chart-2)"
+                icon={<Link2 size={14} />}
+              />
+            )}
           </div>
         </Reveal>
       )}
@@ -574,8 +597,8 @@ export default function Repos() {
 
           {!loading && error && (
             <div className="py-10 px-6 text-center">
-              <AlertCircle size={20} className="mx-auto text-red-400 mb-2" />
-              <p className="text-sm text-red-400">{error}</p>
+              <AlertCircle size={20} className="mx-auto text-[var(--bad)] mb-2" />
+              <p className="text-sm text-[var(--bad)]">{error}</p>
               <p className="text-xs text-[var(--text-faint)] mt-1">Connect a repo above to get started.</p>
             </div>
           )}

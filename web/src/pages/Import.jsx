@@ -94,12 +94,12 @@ export default function Import() {
   return (
     <div className="max-w-3xl mx-auto">
       <div className="flex items-start gap-3 mb-2">
-        <div className="rounded-[var(--radius-btn)] bg-[var(--bg-surface3)] p-2 text-[var(--brand-teal)]">
-          <DownloadCloud size={20} />
-        </div>
+        <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+          <DownloadCloud size={17} className="text-[var(--brand-teal)]" />
+        </span>
         <div>
-          <h1 className="font-display text-2xl font-semibold text-[var(--text)]">Import issues</h1>
-          <p className="text-sm text-[var(--text-muted)] mt-0.5">
+          <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Import issues</h1>
+          <p className="text-sm text-[var(--text-faint)] mt-1">
             Migrate from Jira or Linear. Re-importing is safe — issues are matched on their
             original key, so nothing gets duplicated.
           </p>
@@ -161,7 +161,7 @@ export default function Import() {
       </Reveal>
 
       {step === 2 && error && (
-        <p className="mt-4 text-sm text-red-400 bg-red-500/10 border border-red-500/25 rounded-[var(--radius-btn)] px-3 py-2">
+        <p className="mt-4 text-sm text-[var(--bad)] bg-[color-mix(in_srgb,var(--bad)_10%,transparent)] border border-[color-mix(in_srgb,var(--bad)_25%,transparent)] rounded-[var(--radius-btn)] px-3 py-2">
           {error}
         </p>
       )}

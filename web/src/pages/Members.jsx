@@ -4,10 +4,10 @@
  * Invite/remove controls only shown to owner/admin.
  */
 import { useReducer, useEffect, useCallback } from 'react'
-import { Loader2, UserPlus, X, Crown, ShieldCheck, User, Eye, CreditCard, Users } from 'lucide-react'
+import { Loader2, UserPlus, X, Crown, ShieldCheck, User, Eye, CreditCard, Users, Hammer } from 'lucide-react'
 import { useOrg } from '../lib/useOrg.js'
 import * as api from '../lib/api.js'
-import { Card, Badge, Button } from '../components/ui/index.js'
+import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
 import { Reveal } from '../components/Reveal.jsx'
 
 const ROLES = ['owner', 'admin', 'member', 'stakeholder', 'billing']
@@ -173,7 +173,10 @@ export default function Members() {
   if (!activeOrg) {
     return (
       <div className="max-w-2xl">
-        <div className="mb-8">
+        <div className="mb-8 flex items-start gap-3">
+          <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+            <Users size={17} className="text-[var(--brand-teal)]" />
+          </span>
           <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Members</h1>
         </div>
         <Card padding="xl" className="text-center">
@@ -190,14 +193,48 @@ export default function Members() {
   return (
     <div className="w-full">
       <Reveal>
-        <div className="mb-8">
-          <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Members</h1>
-          <p className="text-sm text-[var(--text-faint)] mt-1">
-            Manage who has access to <span className="text-[var(--text-dim)] font-medium">{activeOrg.name}</span>.
-            {' '}Stakeholders are always <span className="text-[var(--brand-teal)] font-medium">free</span> — no seat cost.
-          </p>
+        <div className="mb-6 flex items-start gap-3">
+          <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+            <Users size={17} className="text-[var(--brand-teal)]" />
+          </span>
+          <div>
+            <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Members</h1>
+            <p className="text-sm text-[var(--text-faint)] mt-1">
+              Manage who has access to <span className="text-[var(--text-dim)] font-medium">{activeOrg.name}</span>.
+              {' '}Stakeholders are always <span className="text-[var(--brand-teal)] font-medium">free</span> — no seat cost.
+            </p>
+          </div>
         </div>
       </Reveal>
+
+      {/* Headline counts */}
+      {!loading && members.length > 0 && (
+        <Reveal delay={0.04}>
+          <div className="grid grid-cols-3 gap-4 mb-6">
+            <StatCard
+              label="Members"
+              value={members.length.toLocaleString()}
+              sublabel={`${members.length === 1 ? 'person' : 'people'} in this org`}
+              accent="var(--chart-2)"
+              icon={<Users size={14} />}
+            />
+            <StatCard
+              label="Billable builders"
+              value={seatCount.toLocaleString()}
+              sublabel="owner / admin / member"
+              accent="var(--chart-1)"
+              icon={<Hammer size={14} />}
+            />
+            <StatCard
+              label="Free stakeholders"
+              value={stakeholderCount.toLocaleString()}
+              sublabel="clients & viewers — no seat cost"
+              accent="var(--ok)"
+              icon={<Eye size={14} />}
+            />
+          </div>
+        </Reveal>
+      )}
 
       {/* Invite form */}
       {canManage && (
@@ -238,8 +275,8 @@ export default function Members() {
                 {inviting ? 'Sending…' : 'Invite'}
               </Button>
             </form>
-            {inviteError && <p className="mt-2 text-xs text-red-400">{inviteError}</p>}
-            {inviteSuccess && <p className="mt-2 text-xs text-[var(--brand-teal)]">{inviteSuccess}</p>}
+            {inviteError && <p className="mt-2 text-xs text-[var(--bad)]">{inviteError}</p>}
+            {inviteSuccess && <p className="mt-2 text-xs text-[var(--ok)]">{inviteSuccess}</p>}
             {inviteLink && (
               <div className="mt-2 flex items-center gap-2 flex-wrap">
                 <span className="text-xs text-[var(--text-muted)]">No email configured — share this link:</span>
@@ -287,7 +324,7 @@ export default function Members() {
           </div>
 
           {error && (
-            <div className="px-6 py-4 text-sm text-red-400">{error}</div>
+            <div className="px-6 py-4 text-sm text-[var(--bad)]">{error}</div>
           )}
 
           {loading && members.length === 0 && (
@@ -349,7 +386,7 @@ export default function Members() {
                 <button
                   onClick={() => handleRemove(member.userId, member.email)}
                   disabled={!!removing[member.userId]}
-                  className="ml-1 p-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-40"
+                  className="ml-1 p-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-[var(--bad)] hover:bg-[color-mix(in_srgb,var(--bad)_10%,transparent)] transition-all disabled:opacity-40"
                   title="Remove member"
                 >
                   {removing[member.userId] ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
