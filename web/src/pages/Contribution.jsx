@@ -17,12 +17,12 @@
  */
 import { useState, useMemo } from 'react'
 import {
-  useContribution, saveWeights, DIMENSION_KEYS,
+  useContribution, saveWeights, DIMENSION_KEYS, DIMENSIONS, dimColor,
   useContributionTrends, useEquity, useKudos,
 } from '../lib/useContribution.js'
 import { useOrg } from '../lib/useOrg.js'
 import { useAuth } from '../lib/useAuth.js'
-import { Button, Card, Badge } from '../components/ui/index.js'
+import { Button, Card, Badge, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 import { WeightTuner } from '../components/contribution/WeightTuner.jsx'
 import { ContributorCard } from '../components/contribution/ContributorCard.jsx'
@@ -31,7 +31,7 @@ import { TrendsChart } from '../components/contribution/TrendsChart.jsx'
 import { EquityLedger } from '../components/contribution/EquityLedger.jsx'
 import { KudosModal, KudosFeed } from '../components/contribution/Kudos.jsx'
 import { computeComposite } from '../components/contribution/helpers.js'
-import { ShieldCheck, Info, Scale, Bot, Users, Sparkles, TrendingUp, Heart } from 'lucide-react'
+import { ShieldCheck, Info, Scale, Bot, Users, Sparkles, TrendingUp, Heart, Crown, ShieldHalf } from 'lucide-react'
 
 // ── period presets ────────────────────────────────────────────────────────────
 
@@ -154,15 +154,40 @@ function EmptyState({ title, body }) {
   )
 }
 
-function SectionHeading({ icon, title, count, hint }) {
+// Section header in the Dashboard idiom: accent icon chip + title + faint subtitle.
+// `icon` is a lucide element; `accent` tints the chip. Falls back gracefully when
+// a coloured bare icon is passed (legacy call sites).
+function SectionHeading({ icon, accent = 'var(--brand-teal)', title, count, hint }) {
   return (
     <div className="flex items-center gap-2.5 mb-3">
-      {icon}
-      <h2 className="text-sm font-semibold text-[var(--text)]">{title}</h2>
-      {count != null && (
-        <span className="text-[11px] font-mono text-[var(--text-faint)] tabular-nums">{count}</span>
-      )}
-      {hint && <span className="text-[11px] text-[var(--text-faint)] ml-1">· {hint}</span>}
+      <span
+        className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0"
+        style={{ color: accent, background: `color-mix(in srgb, ${accent} 14%, transparent)` }}
+      >
+        {icon}
+      </span>
+      <div className="flex items-center gap-2.5">
+        <h2 className="text-sm font-semibold text-[var(--text)]">{title}</h2>
+        {count != null && (
+          <span className="text-[11px] font-mono text-[var(--text-faint)] tabular-nums">{count}</span>
+        )}
+        {hint && <span className="text-[11px] text-[var(--text-faint)]">· {hint}</span>}
+      </div>
+    </div>
+  )
+}
+
+// Compact categorical legend mapping each of the six dimensions to its own
+// swatch — anchors the per-dimension palette used by the per-person bars/radar.
+function DimensionLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      {DIMENSIONS.map((d) => (
+        <span key={d.key} className="inline-flex items-center gap-1.5 text-[10.5px] font-mono text-[var(--text-faint)]" title={d.blurb}>
+          <span className="w-2.5 h-2.5 rounded-[3px]" style={{ background: dimColor(d.key, 60) }} />
+          {d.label}
+        </span>
+      ))}
     </div>
   )
 }
@@ -209,7 +234,7 @@ export default function Contribution() {
   const equity = useEquity({})
   const kudos = useKudos({})
 
-  const kudosCounts = kudos.data?.counts ?? {}
+  const kudosCounts = useMemo(() => kudos.data?.counts ?? {}, [kudos.data])
   // userId → array of composites (oldest→newest) for per-member sparklines.
   const trendByUser = useMemo(() => {
     const map = new Map()
@@ -288,6 +313,33 @@ export default function Contribution() {
     [agents, weights],
   )
 
+  // Cohort headline — derived from the live-weighted roster + fetched kudos.
+  // No invented metrics: top composite, median durability (the survival axis),
+  // team agent-assist share, kudos given.
+  const cohort = useMemo(() => {
+    if (rankedPeople.length === 0) return null
+    const top = rankedPeople[0]
+    const durs = people
+      .map((m) => m.dimensions?.durability?.score)
+      .filter((v) => typeof v === 'number')
+      .sort((a, b) => a - b)
+    const medianDur = durs.length ? durs[Math.floor(durs.length / 2)] : null
+    let human = 0, agent = 0
+    for (const m of people) {
+      human += m.authorship?.humanCommits ?? 0
+      agent += m.authorship?.agentCommits ?? 0
+    }
+    const agentPct = human + agent > 0 ? Math.round((agent / (human + agent)) * 100) : 0
+    const kudosTotal = Object.values(kudosCounts).reduce((s, n) => s + (n || 0), 0)
+    return {
+      topName: top.member.name || top.member.email,
+      topScore: Math.round(top.live),
+      medianDur: medianDur != null ? Math.round(medianDur) : null,
+      agentPct,
+      kudosTotal,
+    }
+  }, [rankedPeople, people, kudosCounts])
+
   return (
     <div className="w-full space-y-6">
       {/* Header */}
@@ -340,6 +392,34 @@ export default function Contribution() {
 
       {tab === 'people' && <Reveal delay={0.05}><CaveatBanner /></Reveal>}
 
+      {/* Cohort headline — the flagship numbers, colour-coded by the dimension palette */}
+      {tab === 'people' && cohort && (
+        <Reveal delay={0.06}>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatCard
+              label="Top composite" value={cohort.topScore}
+              sublabel={cohort.topName}
+              accent="var(--chart-1)" icon={<Crown size={14} />}
+            />
+            <StatCard
+              label="Contributors" value={people.length}
+              sublabel="people in this period"
+              accent="var(--chart-2)" icon={<Users size={14} />}
+            />
+            <StatCard
+              label="Median durability" value={cohort.medianDur != null ? cohort.medianDur : '—'}
+              sublabel="code still alive at HEAD"
+              accent="var(--chart-5)" icon={<ShieldHalf size={14} />}
+            />
+            <StatCard
+              label="Agent-assisted" value={`${cohort.agentPct}%`}
+              sublabel="of team commits"
+              accent="var(--chart-6)" icon={<Bot size={14} />}
+            />
+          </div>
+        </Reveal>
+      )}
+
       {/* Error */}
       {tab === 'people' && error && (
         <Card className="border-red-500/20 bg-red-500/[0.04]">
@@ -352,7 +432,8 @@ export default function Contribution() {
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_340px] gap-6 items-start">
           <Card padding="lg" className="min-w-0">
             <SectionHeading
-              icon={<TrendingUp size={15} className="text-[var(--brand-teal)]" />}
+              icon={<TrendingUp size={15} />}
+              accent="var(--chart-1)"
               title="Composite over time"
               hint="last 6 months · each line is a member"
             />
@@ -372,7 +453,7 @@ export default function Contribution() {
           {/* kudos feed alongside */}
           <Card padding="lg">
             <div className="flex items-center justify-between mb-3">
-              <SectionHeading icon={<Heart size={15} className="text-[var(--brand-indigo)]" />} title="Recent kudos" />
+              <SectionHeading icon={<Heart size={15} />} accent="var(--brand-indigo)" title="Recent kudos" />
             </div>
             <KudosFeed kudos={kudos.data?.kudos ?? []} loading={kudos.loading} />
           </Card>
@@ -401,11 +482,17 @@ export default function Contribution() {
           {/* People */}
           <section>
             <SectionHeading
-              icon={<Users size={15} className="text-[var(--brand-teal)]" />}
+              icon={<Users size={15} />}
+              accent="var(--brand-teal)"
               title="People"
               count={loading ? null : people.length}
               hint="ranked by the live weighting"
             />
+            {!loading && people.length > 0 && (
+              <div className="mb-4 -mt-1 pl-[38px]">
+                <DimensionLegend />
+              </div>
+            )}
             {loading && !data ? (
               <RosterSkeleton />
             ) : people.length === 0 ? (
@@ -435,7 +522,8 @@ export default function Contribution() {
           {rankedAgents.length > 0 && (
             <section>
               <SectionHeading
-                icon={<Bot size={15} className="text-[var(--brand-indigo)]" />}
+                icon={<Bot size={15} />}
+                accent="var(--brand-indigo)"
                 title="Automated agents"
                 count={rankedAgents.length}
                 hint="shown separately — agent output never inflates a person"

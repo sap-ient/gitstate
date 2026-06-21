@@ -18,7 +18,7 @@ import { Avatar } from './shared.jsx'
 function TruckFactorHero({ bus }) {
   const tf = bus?.truckFactor ?? 0
   // 1–2 is scary, 3–4 caution, 5+ healthy.
-  const accent = tf <= 0 ? 'var(--text-faint)' : tf <= 2 ? '#ef4444' : tf <= 4 ? '#eab308' : '#2DD4BF'
+  const accent = tf <= 0 ? 'var(--text-faint)' : tf <= 2 ? 'var(--bad)' : tf <= 4 ? 'var(--warn)' : 'var(--ok)'
   const verdict = tf <= 0 ? 'no blame data yet'
     : tf <= 2 ? 'fragile — knowledge is dangerously concentrated'
     : tf <= 4 ? 'moderate — a few key people carry the codebase'
@@ -26,7 +26,7 @@ function TruckFactorHero({ bus }) {
   return (
     <div className="flex items-center gap-5">
       <div className="relative grid place-items-center w-20 h-20 rounded-full shrink-0"
-        style={{ background: `radial-gradient(circle at 30% 30%, ${accent}22, transparent 70%)`, border: `1px solid ${accent}44` }}>
+        style={{ background: `radial-gradient(circle at 30% 30%, color-mix(in srgb, ${accent} 18%, transparent), transparent 70%)`, border: `1px solid color-mix(in srgb, ${accent} 32%, transparent)` }}>
         <LifeBuoy size={22} style={{ color: accent }} className="absolute opacity-30" />
         <span className="font-display text-3xl font-semibold tabular-nums" style={{ color: accent }}>{tf || '—'}</span>
       </div>
@@ -45,7 +45,7 @@ function TruckFactorHero({ bus }) {
 function OwnerShareBar({ owners }) {
   const top = useMemo(() => (owners || []).slice(0, 8), [owners])
   if (!top.length) return null
-  const palette = ['#2DD4BF', '#6366F1', '#22c55e', '#eab308', '#f97316', '#ec4899', '#38bdf8', '#a78bfa']
+  const palette = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)', 'var(--ok)', 'var(--info)']
   return (
     <div className="mt-5">
       <div className="text-[11px] font-mono uppercase tracking-widest text-[var(--text-faint)] mb-2">Who owns the codebase</div>
@@ -70,7 +70,8 @@ function OwnerShareBar({ owners }) {
 function SingleOwnerAreas({ areas }) {
   if (!areas?.length) {
     return (
-      <div className="rounded-[var(--radius-card)] border border-[#22c55e]/20 bg-[#22c55e]/[0.04] px-4 py-5 text-center">
+      <div className="rounded-[var(--radius-card)] px-4 py-5 text-center"
+        style={{ border: '1px solid color-mix(in srgb, var(--ok) 20%, transparent)', background: 'color-mix(in srgb, var(--ok) 5%, transparent)' }}>
         <p className="text-sm text-[var(--text-dim)]">No single-owner risk areas — ownership is shared across the codebase.</p>
       </div>
     )
@@ -78,18 +79,19 @@ function SingleOwnerAreas({ areas }) {
   return (
     <div className="space-y-2.5">
       {areas.map((a, i) => (
-        <div key={a.area || i} className="rounded-[var(--radius-card)] border border-[#ef4444]/25 bg-[#ef4444]/[0.05] px-4 py-3">
+        <div key={a.area || i} className="rounded-[var(--radius-card)] px-4 py-3"
+          style={{ border: '1px solid color-mix(in srgb, var(--bad) 25%, transparent)', background: 'color-mix(in srgb, var(--bad) 6%, transparent)' }}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <UserX size={13} className="text-[#ef4444] shrink-0" />
+                <UserX size={13} className="text-[var(--bad)] shrink-0" />
                 <span className="font-mono text-sm text-[var(--text-dim)] truncate">{a.area}</span>
               </div>
               <div className="flex items-center gap-2 mt-1.5">
                 <Avatar name={a.topAuthor} size={20} />
                 <span className="text-[11px] font-mono text-[var(--text-faint)]">
                   <span className="text-[var(--text-dim)]">{authorLabel(a.topAuthor)}</span> owns{' '}
-                  <span className="text-[#ef4444] font-semibold">{fmtPct(a.ownershipPct)}</span>
+                  <span className="text-[var(--bad)] font-semibold">{fmtPct(a.ownershipPct)}</span>
                   {a.contributorN > 0 && <> · {fmtNum(a.contributorN)} contributor{a.contributorN === 1 ? '' : 's'}</>}
                 </span>
               </div>
@@ -111,7 +113,9 @@ export function BusFactorPanel({ bus, loading, hasDeepData }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-            <Crown size={15} className="text-[#eab308]" /> Bus factor &amp; ownership risk
+            <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--warn)', background: 'color-mix(in srgb, var(--warn) 14%, transparent)' }}>
+              <Crown size={15} />
+            </span> Bus factor &amp; ownership risk
           </h2>
           <p className="text-xs text-[var(--text-faint)] mt-0.5">Knowledge concentration from git-blame survival — the "if X leaves…" view.</p>
         </div>

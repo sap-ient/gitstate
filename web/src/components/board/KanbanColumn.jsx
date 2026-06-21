@@ -12,8 +12,8 @@ function ColumnEmptyState({ label, isOver, color }) {
       <div
         className="w-8 h-8 rounded-lg flex items-center justify-center mb-1 border border-dashed transition-colors duration-150"
         style={{
-          background: isOver ? `${color}14` : 'var(--bg-surface3)',
-          borderColor: isOver ? `${color}66` : 'var(--border2)',
+          background: isOver ? `color-mix(in srgb, ${color} 12%, transparent)` : 'var(--bg-surface3)',
+          borderColor: isOver ? `color-mix(in srgb, ${color} 45%, transparent)` : 'var(--border2)',
         }}
       >
         <svg width="14" height="14" fill="none" viewBox="0 0 24 24" strokeWidth="1.5"
@@ -35,14 +35,20 @@ export function KanbanColumn({ col, issues, onCardClick, isOver }) {
   return (
     <div className="flex flex-col w-[276px] shrink-0 min-h-0">
       {/* Column header */}
-      <div className="flex items-center gap-2 mb-3 px-0.5 shrink-0">
+      <div
+        className="flex items-center gap-2 mb-3 px-2.5 py-2 shrink-0 rounded-[var(--radius-badge)] border"
+        style={{
+          background: `color-mix(in srgb, ${col.color} 7%, var(--bg-surface))`,
+          borderColor: `color-mix(in srgb, ${col.color} 22%, var(--border))`,
+        }}
+      >
         <div className="w-2 h-2 rounded-full shrink-0" style={{ background: col.color }} />
-        <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest">
+        <span className="text-[11px] font-mono font-semibold uppercase tracking-[0.14em]" style={{ color: col.color }}>
           {col.label}
         </span>
         <span
-          className="text-xs font-mono ml-auto px-1.5 py-0.5 rounded"
-          style={{ color: col.color, background: `${col.color}1a` }}
+          className="text-[11px] font-mono font-semibold ml-auto px-1.5 py-0.5 rounded-full tabular-nums"
+          style={{ color: col.color, background: `color-mix(in srgb, ${col.color} 14%, transparent)` }}
         >
           {issues.length}
         </span>
@@ -54,9 +60,9 @@ export function KanbanColumn({ col, issues, onCardClick, isOver }) {
           ref={setNodeRef}
           className="flex flex-col gap-2.5 rounded-xl p-2 overflow-y-auto flex-1 transition-[background,border-color,box-shadow] duration-150"
           style={{
-            backgroundColor: isOver ? `${col.color}10` : 'color-mix(in srgb, var(--bg-surface2) 45%, transparent)',
-            border: `1px solid ${isOver ? col.color + '55' : 'var(--border)'}`,
-            boxShadow: isOver ? `inset 0 0 0 1px ${col.color}22` : 'none',
+            backgroundColor: isOver ? `color-mix(in srgb, ${col.color} 8%, transparent)` : 'color-mix(in srgb, var(--bg-surface2) 45%, transparent)',
+            border: `1px solid ${isOver ? `color-mix(in srgb, ${col.color} 45%, transparent)` : 'var(--border)'}`,
+            boxShadow: isOver ? `inset 0 0 0 1px color-mix(in srgb, ${col.color} 22%, transparent)` : 'none',
             minHeight: 120,
             maxHeight: 'calc(100vh - 280px)',
           }}

@@ -22,7 +22,7 @@ import { useLeave } from '../lib/useLeave.js'
 import { useOrg } from '../lib/useOrg.js'
 import { useAuth } from '../lib/useAuth.js'
 import * as api from '../lib/api.js'
-import { Card, Badge, Button } from '../components/ui/index.js'
+import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 import {
   BalanceRing, RequestLeaveForm, TeamCalendar, ApprovalQueue,
@@ -62,14 +62,26 @@ function Avatar({ name, email, size = 36 }) {
   )
 }
 
+/** Availability color by utilization — semantic: over-booked reads as --bad. */
+function availColor(utilPct) {
+  if (utilPct == null) return 'var(--chart-1)'
+  if (utilPct > 100) return 'var(--bad)'   // over-booked beyond available
+  if (utilPct >= 60) return 'var(--ok)'    // healthy utilisation
+  if (utilPct >= 30) return 'var(--warn)'  // under-utilised
+  return 'var(--bad)'                       // barely available / blocked
+}
+
 /** Stacked bar: effective (filled) + leave (hatched) against the team max. */
-function CapacityBar({ effective, leave, max }) {
+function CapacityBar({ effective, leave, max, utilPct }) {
   const effPct = max > 0 ? Math.min(100, (effective / max) * 100) : 0
   const leavePct = max > 0 ? Math.min(100 - effPct, (leave / max) * 100) : 0
-  const color = effPct > 75 ? '#22c55e' : effPct > 40 ? 'var(--brand-teal)' : '#f59e0b'
+  const color = availColor(utilPct)
   return (
     <div className="flex h-2 rounded-full bg-[var(--border)] overflow-hidden">
-      <div className="h-full transition-all duration-500" style={{ width: `${effPct}%`, background: color }} />
+      <div
+        className="h-full transition-all duration-500"
+        style={{ width: `${effPct}%`, background: `linear-gradient(90deg, color-mix(in srgb, ${color} 70%, transparent), ${color})` }}
+      />
       <div
         className="h-full transition-all duration-500"
         style={{
@@ -138,11 +150,17 @@ function CapacityCard({ member, maxHours }) {
           <span className="text-xs text-[var(--text-faint)] font-mono">h effective</span>
         </div>
         {utilPct != null && (
-          <span className="text-[11px] font-mono text-[var(--text-muted)] tabular-nums">{utilPct}% of available</span>
+          <span
+            className="text-[11px] font-mono tabular-nums px-1.5 py-0.5 rounded-full"
+            style={{ color: availColor(utilPct), background: `color-mix(in srgb, ${availColor(utilPct)} 12%, transparent)` }}
+            title={utilPct > 100 ? 'Over-booked beyond available hours' : 'Share of available hours used'}
+          >
+            {utilPct}% of available
+          </span>
         )}
       </div>
 
-      <CapacityBar effective={effective} leave={leave} max={maxHours} />
+      <CapacityBar effective={effective} leave={leave} max={maxHours} utilPct={utilPct} />
 
       {/* Detail chips */}
       <div className="flex flex-wrap gap-1.5 text-[11px]">
@@ -284,11 +302,19 @@ export default function Capacity() {
 
   const pending = useMemo(() => leave.filter(e => e.status === 'pending'), [leave])
 
-  const totals = useMemo(() => ({
-    effective: Math.round(enriched.reduce((s, m) => s + (m.effectiveHours ?? 0), 0)),
-    leave: Math.round(enriched.reduce((s, m) => s + (m.approvedLeaveHours ?? 0), 0)),
-    members: enriched.length,
-  }), [enriched])
+  const totals = useMemo(() => {
+    let overbooked = 0
+    for (const m of enriched) {
+      const avail = m.availableHours ?? 0
+      if (avail > 0 && (m.effectiveHours ?? 0) / avail > 1) overbooked += 1
+    }
+    return {
+      effective: Math.round(enriched.reduce((s, m) => s + (m.effectiveHours ?? 0), 0)),
+      leave: Math.round(enriched.reduce((s, m) => s + (m.approvedLeaveHours ?? 0), 0)),
+      members: enriched.length,
+      overbooked,
+    }
+  }, [enriched])
 
   const visibleTabs = TABS.filter(t => !t.manage || canManage)
 
@@ -297,11 +323,16 @@ export default function Capacity() {
       {/* Header */}
       <Reveal>
         <div className="flex items-end justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Leave &amp; Capacity</h1>
-            <p className="text-sm text-[var(--text-faint)] mt-1">
-              Configurable leave types, per-person balances, a team calendar, and effective capacity.
-            </p>
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+              <Gauge size={17} className="text-[var(--brand-teal)]" />
+            </span>
+            <div>
+              <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Leave &amp; Capacity</h1>
+              <p className="text-sm text-[var(--text-faint)] mt-1">
+                Configurable leave types, per-person balances, a team calendar, and effective capacity.
+              </p>
+            </div>
           </div>
           <CalendarConnectedHint />
         </div>
@@ -456,19 +487,28 @@ export default function Capacity() {
             </div>
 
             {!capacityLoading && enriched.length > 0 && (
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                <Card padding="sm" className="flex flex-col gap-1">
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)] flex items-center gap-1"><Users size={11} /> Team</span>
-                  <span className="text-2xl font-display font-semibold text-[var(--text)] tabular-nums leading-none">{totals.members}</span>
-                </Card>
-                <Card padding="sm" className="flex flex-col gap-1">
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)] flex items-center gap-1"><Clock size={11} /> Effective</span>
-                  <span className="text-2xl font-display font-semibold text-[var(--text)] tabular-nums leading-none">{totals.effective}<span className="text-sm text-[var(--text-faint)]">h</span></span>
-                </Card>
-                <Card padding="sm" className="flex flex-col gap-1">
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)] flex items-center gap-1"><Plane size={11} /> On leave</span>
-                  <span className="text-2xl font-display font-semibold text-[var(--text)] tabular-nums leading-none">{totals.leave}<span className="text-sm text-[var(--text-faint)]">h</span></span>
-                </Card>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+                <StatCard
+                  label="Team" value={totals.members}
+                  sublabel="members with availability"
+                  accent="var(--chart-2)" icon={<Users size={14} />}
+                />
+                <StatCard
+                  label="Effective" value={`${totals.effective}h`}
+                  sublabel="available minus approved leave"
+                  accent="var(--chart-1)" icon={<Clock size={14} />}
+                />
+                <StatCard
+                  label="On leave" value={`${totals.leave}h`}
+                  sublabel="approved leave this window"
+                  accent="var(--warn)" icon={<Plane size={14} />}
+                />
+                <StatCard
+                  label="Over-booked" value={totals.overbooked}
+                  sublabel={totals.overbooked ? 'beyond available hours' : 'everyone within capacity'}
+                  accent={totals.overbooked ? 'var(--bad)' : 'var(--ok)'}
+                  icon={<AlertCircle size={14} />}
+                />
               </div>
             )}
 

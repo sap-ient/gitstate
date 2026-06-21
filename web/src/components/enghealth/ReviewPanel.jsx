@@ -53,7 +53,7 @@ function ReviewerLoad({ load }) {
       <div className="flex items-center justify-between mb-3">
         <span className="text-[11px] font-mono text-[var(--text-faint)]">{fmtNum(total)} reviews · {sorted.length} reviewers</span>
         {topShare >= 0.5 && (
-          <span className="inline-flex items-center gap-1 text-[10px] font-mono text-yellow-400">
+          <span className="inline-flex items-center gap-1 text-[10px] font-mono text-[var(--warn)]">
             <ShieldAlert size={11} /> {fmtPct(topShare)} on one reviewer
           </span>
         )}
@@ -69,7 +69,7 @@ function ReviewerLoad({ load }) {
                 <div className="text-xs text-[var(--text-dim)] font-medium truncate">{name}</div>
               </div>
               <div className="flex-1 h-2 rounded-full bg-[var(--bg-surface3)] overflow-hidden min-w-[60px]">
-                <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#2DD4BF,#6366F1)' }} />
+                <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,var(--chart-1),var(--chart-2))' }} />
               </div>
               <span className="font-mono tabular-nums text-xs text-[var(--text-dim)] w-8 text-right">{fmtNum(r.reviewsDone)}</span>
             </div>
@@ -87,7 +87,9 @@ export function ReviewPanel({ review, loading }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-            <Eye size={15} className="text-[var(--brand-teal)]" /> Review health
+            <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-1)', background: 'color-mix(in srgb, var(--chart-1) 14%, transparent)' }}>
+              <Eye size={15} />
+            </span> Review health
           </h2>
           <p className="text-xs text-[var(--text-faint)] mt-0.5">Latency, review coverage, and how review load is spread.</p>
         </div>
@@ -100,18 +102,18 @@ export function ReviewPanel({ review, loading }) {
         <>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
             <Mini
-              icon={<Clock size={12} />} label="Median latency" accent="var(--brand-teal)"
+              icon={<Clock size={12} />} label="Median latency" accent="var(--chart-1)"
               value={fmtHours(d.medianReviewLatencyHours)} sub="open → merge"
               tag={<ProvenanceTag kind="live" note="Real: cycle_times review_secs." />}
             />
             <Mini
-              icon={<ShieldAlert size={12} />} label="Merged w/o review" accent="#eab308"
+              icon={<ShieldAlert size={12} />} label="Merged w/o review" accent="var(--warn)"
               value={d.withoutReviewRate == null ? '—' : fmtPct(d.withoutReviewRate)}
               sub={`${fmtNum(d.mergedWithoutReview)} of ${fmtNum(d.mergedPrs)} PRs`}
               tag={<ProvenanceTag kind="proxy" note={d.withoutReviewNote || 'proxy: PRs with no recorded review window'} />}
             />
             <Mini
-              icon={<GitPullRequest size={12} />} label="Reviewers" accent="var(--brand-indigo)"
+              icon={<GitPullRequest size={12} />} label="Reviewers" accent="var(--chart-2)"
               value={fmtNum((d.reviewerLoad || []).length)} sub="active in range"
             />
           </div>

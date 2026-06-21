@@ -12,9 +12,9 @@ import { Flame, FileWarning, Bug, FlaskConical } from 'lucide-react'
 import { fmtNum, fmtPct } from './format.js'
 
 function riskColor(score) {
-  if (score >= 66) return '#ef4444'
-  if (score >= 40) return '#eab308'
-  return '#2DD4BF'
+  if (score >= 66) return 'var(--bad)'
+  if (score >= 40) return 'var(--warn)'
+  return 'var(--ok)'
 }
 
 function RiskMeter({ score }) {
@@ -36,7 +36,9 @@ export function TechDebtPanel({ hotspots, loading, hasDeepData }) {
     <Card padding="lg">
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-          <Flame size={15} className="text-[#f97316]" /> Tech-debt hotspots
+          <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-3)', background: 'color-mix(in srgb, var(--chart-3) 14%, transparent)' }}>
+            <Flame size={15} />
+          </span> Tech-debt hotspots
         </h2>
         {!loading && rows.length > 0 && <span className="text-xs font-mono text-[var(--text-faint)]">{rows.length} areas</span>}
       </div>
@@ -82,11 +84,11 @@ export function TechDebtPanel({ hotspots, loading, hasDeepData }) {
                   <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--text-dim)]">{fmtNum(h.churn)}</td>
                   <td className="px-2 py-2.5 text-right font-mono tabular-nums hidden sm:table-cell">
                     {h.bugFixes > 0 ? (
-                      <span className="inline-flex items-center gap-1 text-[#ef4444]"><Bug size={10} />{fmtNum(h.bugFixes)}</span>
+                      <span className="inline-flex items-center gap-1 text-[var(--bad)]"><Bug size={10} />{fmtNum(h.bugFixes)}</span>
                     ) : <span className="text-[var(--text-faint)]">0</span>}
                   </td>
                   <td className="px-2 py-2.5 text-right font-mono tabular-nums hidden md:table-cell">
-                    <span className={h.testRatio < 0.05 ? 'text-[#eab308]' : 'text-[var(--text-muted)]'}>
+                    <span className={h.testRatio < 0.05 ? 'text-[var(--warn)]' : 'text-[var(--text-muted)]'}>
                       <FlaskConical size={10} className="inline mr-1 -mt-0.5" />{fmtPct(h.testRatio)}
                     </span>
                   </td>

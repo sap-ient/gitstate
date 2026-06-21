@@ -1,30 +1,47 @@
 /**
  * DoraRow — the DORA-style metric row for Engineering Health.
  *
- * Honesty is front-and-centre:
+ * Restyled onto the gitstate design system (StatCard + multi-series LineChart):
  *   • Change Failure Rate is the HERO stat — powered by REAL SZZ data
- *     (bug_introductions). Tagged "live · SZZ".
- *   • Lead time p50/p90 are real (from cycle_times).
- *   • Deploy frequency is a clearly-marked merge-based PROXY.
- *   • MTTR is an honest "needs CI" placeholder (no fabricated number).
+ *     (bug_introductions). Tagged "live · SZZ", with a semantic ok/warn/bad ramp.
+ *   • The four DORA metrics (deploy freq, lead p50/p90, MTTR) are StatCards,
+ *     each with its own --chart-* accent, icon chip and (where a series exists)
+ *     a sparkline + trend delta. MTTR / change-failure carry --bad/--ok meaning.
+ *   • Change-failure-over-time is a two-series LineChart (merged vs SZZ bug-fixes)
+ *     with the categorical palette + legend.
  *
- * Hand-rolled SVG (change-failure-over-time chart). Both themes.
+ * Both themes, all via semantic var(--…) tokens.
  */
-import { useMemo, useRef, useState } from 'react'
-import { Card } from '../ui/index.js'
+import { useMemo } from 'react'
+import { Card, StatCard } from '../ui/index.js'
 import {
-  AlertOctagon, Timer, Rocket, Wrench, GitMerge, Bug,
+  AlertOctagon, Timer, Rocket, Wrench, GitMerge, Bug, TrendingUp,
 } from 'lucide-react'
+import { LineChart } from '../LineChart.jsx'
 import { fmtPct, fmtHours, fmtRate, fmtNum, fmtDate } from './format.js'
-import { ProvenanceTag, Sparkline } from './shared.jsx'
+import { ProvenanceTag } from './shared.jsx'
 
-// Hero card for the change-failure rate.
+// Percent delta vs the prior-window mean of a numeric series; null without
+// enough signal. `goodWhenDown` flips ok/bad — for lead time, lower is better.
+function trendDelta(values, { goodWhenDown = false } = {}) {
+  const xs = (values || []).filter(v => typeof v === 'number' && isFinite(v))
+  if (xs.length < 4) return null
+  const last = xs[xs.length - 1]
+  const prior = xs.slice(0, -1)
+  const base = prior.reduce((a, b) => a + b, 0) / prior.length
+  if (!base) return null
+  const pct = Math.round(((last - base) / base) * 100)
+  if (pct === 0) return null
+  return { value: pct, dir: pct > 0 ? 'up' : 'down', goodWhenDown, title: `vs prior avg ${base.toFixed(1)}` }
+}
+
+// Hero card for the change-failure rate — the page's anchor stat.
 function HeroChangeFailure({ dora, loading }) {
   const cfr = dora?.changeFailureRate
   const pct = cfr == null ? null : cfr * 100
-  // colour ramp: <15% good (teal), <30% caution (yellow), else red.
+  // semantic ramp: <15% ok, <30% warn, else bad.
   const accent = pct == null ? 'var(--text-faint)'
-    : pct < 15 ? '#2DD4BF' : pct < 30 ? '#eab308' : '#ef4444'
+    : pct < 15 ? 'var(--ok)' : pct < 30 ? 'var(--warn)' : 'var(--bad)'
 
   return (
     <Card padding="lg" className="relative overflow-hidden lg:col-span-2"
@@ -35,8 +52,11 @@ function HeroChangeFailure({ dora, loading }) {
       />
       <div className="flex items-start justify-between relative">
         <div className="flex items-center gap-2">
-          <AlertOctagon size={16} style={{ color: accent }} />
-          <span className="text-[11px] font-mono uppercase tracking-widest text-[var(--text-faint)]">Change failure rate</span>
+          <span className="grid place-items-center w-6 h-6 rounded-[6px] shrink-0"
+            style={{ color: accent, background: `color-mix(in srgb, ${accent} 14%, transparent)` }}>
+            <AlertOctagon size={14} />
+          </span>
+          <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-[var(--text-faint)]">Change failure rate</span>
         </div>
         <ProvenanceTag kind="live" note="Real signal: distinct SZZ bug-fix commits ÷ merged PRs in window." />
       </div>
@@ -70,186 +90,115 @@ function HeroChangeFailure({ dora, loading }) {
   )
 }
 
-function MetricCard({ icon, label, value, sub, accent, tag, loading }) {
-  return (
-    <Card padding="md" className="relative overflow-hidden">
-      <div className="flex items-start justify-between gap-2">
-        <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">{label}</span>
-        {tag}
-      </div>
-      {loading ? (
-        <div className="mt-2.5 h-7 w-16 rounded bg-[var(--bg-surface3)] animate-pulse" />
-      ) : (
-        <div className="mt-1.5 font-display text-2xl font-semibold tabular-nums tracking-tight" style={{ color: accent || 'var(--text)' }}>
-          {value}
-        </div>
-      )}
-      <div className="mt-1 flex items-center gap-1.5 text-[10px] text-[var(--text-faint)]">
-        {icon}{sub}
-      </div>
-    </Card>
-  )
-}
-
-// Change-failure-over-time: merged (bars) vs bug-fixes (bars) + rate line.
+// Change-failure-over-time as two lines (merged vs SZZ bug-fixes), categorical
+// palette + legend. Failure-rate per week is surfaced in the tooltip.
 function ChangeFailureTrend({ trend }) {
-  const [hover, setHover] = useState(null)
-  const svgRef = useRef(null)
   const pts = useMemo(() => (trend || []).filter(p => p?.week), [trend])
-
-  const W = 760, H = 150, PAD = { t: 14, r: 12, b: 22, l: 28 }
-  const innerW = W - PAD.l - PAD.r
-  const innerH = H - PAD.t - PAD.b
-
-  const maxCount = useMemo(() => pts.reduce((m, p) => Math.max(m, p.merged || 0, p.bugFixes || 0), 0) || 1, [pts])
 
   if (!pts.length) {
     return (
-      <div className="flex flex-col items-center justify-center h-[150px] text-center">
-        <Bug size={20} className="text-[var(--text-faint)] mb-2" />
-        <p className="text-sm text-[var(--text-faint)]">No delivery data in this range.</p>
-      </div>
+      <LineChart
+        series={[{ name: 'merged', points: [] }]}
+        width={760} height={200}
+        emptyIcon={<Bug size={20} className="text-[var(--text-faint)]" />}
+        emptyText="No delivery data in this range."
+      />
     )
   }
 
-  const slot = innerW / pts.length
-  const barW = Math.min(6, slot * 0.34)
-  const yCount = (v) => PAD.t + innerH - (v / maxCount) * innerH
-  const yRate = (r) => PAD.t + innerH - (r) * innerH // rate in [0,1]
-
-  const ratePath = pts.map((p, i) => {
-    const x = PAD.l + i * slot + slot / 2
-    const r = p.rate == null ? 0 : p.rate
-    return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${yRate(r).toFixed(1)}`
-  }).join(' ')
-
-  function onMove(e) {
-    const rect = svgRef.current.getBoundingClientRect()
-    const x = (e.clientX - rect.left) * (W / rect.width)
-    let idx = Math.floor((x - PAD.l) / slot)
-    idx = Math.max(0, Math.min(pts.length - 1, idx))
-    setHover({ idx, p: pts[idx] })
-  }
+  const rateByIdx = pts.map(p => (p.rate == null ? null : p.rate))
+  const series = [
+    { name: 'merged', color: 'var(--chart-1)', points: pts.map(p => ({ x: p.week, y: p.merged || 0, raw: p })) },
+    { name: 'bug-fixes', color: 'var(--bad)', points: pts.map(p => ({ x: p.week, y: p.bugFixes || 0, raw: p })) },
+  ]
 
   return (
-    <div className="relative overflow-x-auto">
-      <svg ref={svgRef} width={W} height={H} className="block max-w-full"
-        onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-        {[0, 0.5, 1].map((t, i) => {
-          const y = yCount(Math.round(maxCount * t))
-          return <line key={i} x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray="2 3" />
-        })}
-        {pts.map((p, i) => {
-          const cx = PAD.l + i * slot + slot / 2
-          const hM = ((p.merged || 0) / maxCount) * innerH
-          const hB = ((p.bugFixes || 0) / maxCount) * innerH
-          return (
-            <g key={i}>
-              <rect x={cx - barW - 1} y={PAD.t + innerH - hM} width={barW} height={hM} rx={1.5} fill="#2DD4BF" opacity={hover && hover.idx === i ? 1 : 0.75} />
-              <rect x={cx + 1} y={PAD.t + innerH - hB} width={barW} height={hB} rx={1.5} fill="#ef4444" opacity={hover && hover.idx === i ? 1 : 0.8} />
-            </g>
-          )
-        })}
-        <path d={ratePath} fill="none" stroke="#eab308" strokeWidth="1.75" strokeLinejoin="round" />
-        {[0, Math.floor(pts.length / 2), pts.length - 1].filter((v, i, a) => a.indexOf(v) === i).map(i => (
-          <text key={i} x={PAD.l + i * slot + slot / 2} y={H - 6} textAnchor="middle" fontSize="9" className="font-mono" fill="var(--text-faint)">
-            {fmtDate(pts[i].week)}
-          </text>
-        ))}
-      </svg>
-
-      <div className="flex items-center gap-4 mt-1.5 text-[10px] font-mono text-[var(--text-faint)]">
-        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-[2px] bg-[#2DD4BF]" />merged</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-[2px] bg-[#ef4444]" />bug-fixes</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-0.5 rounded bg-[#eab308]" />failure rate</span>
-      </div>
-
-      {hover && (
-        <div className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full px-2.5 py-1.5 rounded-[var(--radius-badge)] bg-[var(--bg)] border border-[var(--border2)] shadow-[var(--shadow-float)] whitespace-nowrap"
-          style={{ left: `${((PAD.l + hover.idx * slot + slot / 2) / W) * 100}%`, top: 0 }}>
-          <div className="text-[10px] font-mono text-[var(--text-faint)] mb-0.5">{fmtDate(hover.p.week, { month: 'short', day: 'numeric', year: '2-digit' })}</div>
-          <div className="text-xs font-semibold tabular-nums text-[#2DD4BF]">merged: {hover.p.merged || 0}</div>
-          <div className="text-xs font-semibold tabular-nums text-[#ef4444]">bug-fixes: {hover.p.bugFixes || 0}</div>
-          <div className="text-xs font-semibold tabular-nums text-[#eab308]">rate: {hover.p.rate == null ? '—' : fmtPct(hover.p.rate)}</div>
-        </div>
-      )}
-    </div>
+    <LineChart
+      series={series}
+      width={760}
+      height={200}
+      xLabel={p => fmtDate(p.x, { month: 'short', day: 'numeric' })}
+      yLabel={v => `${Math.round(v)}`}
+      tooltip={p => {
+        const i = pts.findIndex(x => x.week === p.x)
+        const r = i >= 0 ? rateByIdx[i] : null
+        return `${fmtDate(p.x, { month: 'short', day: 'numeric', year: '2-digit' })} · rate ${r == null ? '—' : fmtPct(r)}`
+      }}
+    />
   )
 }
 
 export function DoraRow({ dora, loading }) {
   const d = dora ?? {}
-  const leadTrend = useMemo(() => (d.leadTimeTrend || []).map(p => p.medianHours), [d.leadTimeTrend])
+  const leadTrend = useMemo(() => (d.leadTimeTrend || []).map(p => p.medianHours).filter(v => typeof v === 'number'), [d.leadTimeTrend])
+  const cfTrendRates = useMemo(
+    () => (d.changeFailureTrend || []).map(p => p?.rate).filter(v => typeof v === 'number'),
+    [d.changeFailureTrend],
+  )
+
+  // p90 uses the same weekly-median lead trend as a tasteful shape proxy.
+  const leadSpark = leadTrend.length >= 2 ? leadTrend.slice(-16) : null
+  const cfSpark = cfTrendRates.length >= 2 ? cfTrendRates.slice(-16).map(r => r * 100) : null
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <HeroChangeFailure dora={d} loading={loading} />
 
-        <MetricCard
-          label="Lead time p50" accent="var(--brand-teal)"
-          icon={<Timer size={11} />} sub="commit → merge"
-          value={fmtHours(d.leadTimeP50Hours)} loading={loading}
-          tag={<ProvenanceTag kind="live" note="Real: cycle_times lead_time_secs." />}
+        <StatCard
+          label="Lead time p50" accent="var(--chart-2)" icon={<Timer size={14} />}
+          value={fmtHours(d.leadTimeP50Hours)} sublabel="commit → merge · live"
+          spark={leadSpark}
+          delta={leadSpark ? trendDelta(leadSpark, { goodWhenDown: true }) : null}
         />
-        <MetricCard
-          label="Lead time p90" accent="var(--brand-indigo)"
-          icon={<Timer size={11} />} sub="slowest 10%"
-          value={fmtHours(d.leadTimeP90Hours)} loading={loading}
-          tag={<ProvenanceTag kind="live" note="Real: cycle_times lead_time_secs." />}
+        <StatCard
+          label="Lead time p90" accent="var(--chart-3)" icon={<TrendingUp size={14} />}
+          value={fmtHours(d.leadTimeP90Hours)} sublabel="slowest 10% · live"
+          spark={leadSpark}
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        <MetricCard
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard
           label="Deploy frequency"
-          accent={d.deployFrequency?.real ? 'var(--brand-teal)' : 'var(--text)'}
-          icon={<Rocket size={11} />} sub={d.deployFrequency?.unit || 'merges/week'}
+          accent="var(--chart-1)" icon={<Rocket size={14} />}
           value={d.deployFrequency?.value == null ? '—' : fmtRate(d.deployFrequency.value, '')}
-          loading={loading}
-          tag={
-            d.deployFrequency?.real
-              ? <ProvenanceTag kind="live" note={d.deployFrequency?.note || 'real: deployments ingested via webhooks/CI'} />
-              : <ProvenanceTag kind="proxy" note={d.deployFrequency?.note || 'merge-based proxy — connect CI for true deploys'} />
-          }
+          sublabel={`${d.deployFrequency?.unit || 'merges/week'} · ${d.deployFrequency?.real ? 'live' : 'proxy'}`}
         />
-        <MetricCard
+        <StatCard
+          label="Change failure" accent="var(--bad)" icon={<AlertOctagon size={14} />}
+          value={d.changeFailureRate == null ? '—' : fmtPct(d.changeFailureRate)}
+          sublabel="shipped changes a fix repaired"
+          spark={cfSpark}
+          delta={cfSpark ? trendDelta(cfSpark, { goodWhenDown: true }) : null}
+        />
+        <StatCard
           label="MTTR"
-          accent={d.mttr?.real ? 'var(--brand-indigo)' : 'var(--text-faint)'}
-          icon={<Wrench size={11} />}
-          sub={d.mttr?.real && d.mttr?.open > 0 ? `${d.mttr.open} open` : 'time to restore'}
+          accent={d.mttr?.real ? 'var(--ok)' : 'var(--text-faint)'} icon={<Wrench size={14} />}
           value={d.mttr?.real ? fmtHours(d.mttr?.value) : '—'}
-          loading={loading}
-          tag={
-            d.mttr?.real
-              ? <ProvenanceTag kind="live" note={d.mttr?.note || 'real: mean incident resolution time'} />
-              : <ProvenanceTag kind="needsCI" note={d.mttr?.note || 'needs CI/incident data — not yet ingested'} />
-          }
+          sublabel={d.mttr?.real ? (d.mttr?.open > 0 ? `${d.mttr.open} open · live` : 'time to restore · live') : 'needs CI / incident data'}
         />
-        <Card padding="md" className="sm:col-span-2 flex items-center gap-4">
-          <div className="min-w-0">
-            <div className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">Lead-time trend</div>
-            <div className="text-[10px] text-[var(--text-faint)] mt-0.5">weekly median, hours</div>
-          </div>
-          <div className="ml-auto">
-            <Sparkline values={leadTrend} width={160} height={40} color="#6366F1" />
-          </div>
-        </Card>
       </div>
 
       <Card padding="lg">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-              <AlertOctagon size={15} className="text-[#ef4444]" /> Change failure over time
-            </h2>
-            <p className="text-xs text-[var(--text-faint)] mt-0.5">Merged PRs vs SZZ-implicated bug-fixes, per week.</p>
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2.5">
+            <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0"
+              style={{ color: 'var(--bad)', background: 'color-mix(in srgb, var(--bad) 14%, transparent)' }}>
+              <AlertOctagon size={15} />
+            </span>
+            <div>
+              <h2 className="text-sm font-semibold text-[var(--text)]">Change failure over time</h2>
+              <p className="text-xs text-[var(--text-faint)] mt-0.5">Merged PRs vs SZZ-implicated bug-fixes, per week — rate in tooltip.</p>
+            </div>
           </div>
         </div>
         {loading ? (
-          <div className="h-[150px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
+          <div className="h-[200px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
         ) : (
-          <ChangeFailureTrend trend={d.changeFailureTrend} />
+          <div className="overflow-x-auto">
+            <ChangeFailureTrend trend={d.changeFailureTrend} />
+          </div>
         )}
       </Card>
     </div>

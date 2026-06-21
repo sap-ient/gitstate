@@ -8,10 +8,10 @@ import { fmtDate } from './format.js'
 // ── Status badge ────────────────────────────────────────────────────────────────
 
 const STATUS = {
-  draft: { bg: 'rgba(100,116,139,0.14)', border: 'rgba(100,116,139,0.32)', text: '#94a3b8', label: 'Draft' },
-  sent:  { bg: 'rgba(99,102,241,0.12)',  border: 'rgba(99,102,241,0.3)',   text: '#818cf8', label: 'Sent' },
-  paid:  { bg: 'rgba(34,197,94,0.1)',    border: 'rgba(34,197,94,0.3)',    text: '#22c55e', label: 'Paid' },
-  void:  { bg: 'rgba(239,68,68,0.08)',   border: 'rgba(239,68,68,0.25)',   text: '#ef4444', label: 'Void' },
+  draft: { color: 'var(--text-faint)', label: 'Draft' },
+  sent:  { color: 'var(--info)',       label: 'Sent' },
+  paid:  { color: 'var(--ok)',         label: 'Paid' },
+  void:  { color: 'var(--bad)',        label: 'Void' },
 }
 
 export function InvoiceStatusBadge({ status }) {
@@ -19,7 +19,11 @@ export function InvoiceStatusBadge({ status }) {
   return (
     <span
       className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0"
-      style={{ background: s.bg, border: `1px solid ${s.border}`, color: s.text }}
+      style={{
+        background: `color-mix(in srgb, ${s.color} 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${s.color} 30%, transparent)`,
+        color: s.color,
+      }}
     >
       {s.label}
     </span>

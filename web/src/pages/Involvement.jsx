@@ -6,12 +6,33 @@
  *
  * Data from GET /api/metrics/involvement?project=&period=
  */
-import { useState } from 'react'
-import { RefreshCw, Info, Users, GitMerge, Eye, FolderGit2, AlertTriangle, RotateCw } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { RefreshCw, Info, Users, GitMerge, Eye, FolderGit2, AlertTriangle, RotateCw, Activity, Layers } from 'lucide-react'
 import { useInvolvement } from '../lib/useInvolvement.js'
 import { useProjects } from '../lib/useProjects.js'
-import { Card, Badge, Button } from '../components/ui/index.js'
+import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
+
+// Section header in the Dashboard idiom: accent icon chip + title + faint subtitle.
+function SectionHeader({ icon, accent = 'var(--brand-teal)', title, subtitle, right }) {
+  return (
+    <div className="flex items-center justify-between gap-3 mb-4">
+      <div className="flex items-center gap-2.5">
+        <span
+          className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0"
+          style={{ color: accent, background: `color-mix(in srgb, ${accent} 14%, transparent)` }}
+        >
+          {icon}
+        </span>
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--text)]">{title}</h2>
+          {subtitle && <p className="text-xs text-[var(--text-faint)] mt-0.5">{subtitle}</p>}
+        </div>
+      </div>
+      {right}
+    </div>
+  )
+}
 
 function Initials({ name, email }) {
   const text = name
@@ -29,13 +50,16 @@ function DimBar({ label, value, max, color, icon: Icon }) {
   return (
     <div className="flex items-center gap-3">
       <span className="text-[10px] text-[var(--text-faint)] w-28 shrink-0 flex items-center gap-1.5 font-mono">
-        {Icon && <Icon size={11} className="opacity-70" style={{ color }} />}
+        {Icon && <Icon size={11} className="opacity-80" style={{ color }} />}
         {label}
       </span>
       <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-surface3)] overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, background: color }}
+          style={{
+            width: `${pct}%`,
+            background: `linear-gradient(90deg, color-mix(in srgb, ${color} 72%, transparent), ${color})`,
+          }}
         />
       </div>
       <span className="text-[11px] font-mono text-[var(--text-dim)] w-8 text-right shrink-0 tabular-nums">{value}</span>
@@ -47,8 +71,8 @@ function ActivityDot({ active, lastActive }) {
   return (
     <div className="flex items-center gap-1.5" title={active ? 'Active recently' : 'Dormant'}>
       <span className="relative flex w-2 h-2 shrink-0">
-        {active && <span className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-50 animate-ping" />}
-        <span className="relative inline-flex w-2 h-2 rounded-full" style={{ background: active ? '#22c55e' : 'var(--border2)' }} />
+        {active && <span className="absolute inline-flex h-full w-full rounded-full opacity-50 animate-ping" style={{ background: 'var(--ok)' }} />}
+        <span className="relative inline-flex w-2 h-2 rounded-full" style={{ background: active ? 'var(--ok)' : 'var(--border2)' }} />
       </span>
       <span className="text-[10px] text-[var(--text-faint)]">
         {active ? 'active' : 'dormant'}
@@ -84,10 +108,11 @@ function InvolvementCard({ member, maxes }) {
         </div>
       </div>
 
-      {/* Multi-dimension bars — the "texture" view, never a single score */}
+      {/* Multi-dimension bars — the "texture" view, never a single score.
+          One categorical --chart-* color per dimension. */}
       <div className="space-y-2.5">
-        <DimBar label="Features shipped" value={featuresShipped} max={maxes.featuresShipped} color="var(--brand-teal)" icon={GitMerge} />
-        <DimBar label="Reviews done" value={reviewsDone} max={maxes.reviewsDone} color="var(--brand-indigo)" icon={Eye} />
+        <DimBar label="Features shipped" value={featuresShipped} max={maxes.featuresShipped} color="var(--chart-1)" icon={GitMerge} />
+        <DimBar label="Reviews done" value={reviewsDone} max={maxes.reviewsDone} color="var(--chart-2)" icon={Eye} />
       </div>
 
       {/* Areas owned */}
@@ -127,6 +152,21 @@ export default function Involvement() {
     featuresShipped: Math.max(1, ...members.map(m => m.featuresShipped ?? 0)),
     reviewsDone:     Math.max(1, ...members.map(m => m.reviewsDone ?? 0)),
   }
+
+  // Cohort headline numbers — derived purely from the fetched roster, no new metrics.
+  const totals = useMemo(() => {
+    const areas = new Set()
+    let shipped = 0, reviews = 0, active = 0
+    for (const m of members) {
+      shipped += m.featuresShipped ?? 0
+      reviews += m.reviewsDone ?? 0
+      if (m.activeRecently) active += 1
+      if (Array.isArray(m.areasOwned)) for (const a of m.areasOwned) areas.add(a)
+    }
+    return { shipped, reviews, active, areas: areas.size }
+  }, [members])
+
+  const hasData = !loading && members.length > 0
 
   return (
     <div className="w-full space-y-6">
@@ -225,6 +265,34 @@ export default function Involvement() {
         </Reveal>
       )}
 
+      {/* Cohort headline — texture totals, never a ranking */}
+      {hasData && (
+        <Reveal delay={0.1}>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatCard
+              label="Active members" value={`${totals.active}/${members.length}`}
+              sublabel="contributed in this window"
+              accent="var(--chart-1)" icon={<Activity size={14} />}
+            />
+            <StatCard
+              label="Features shipped" value={totals.shipped.toLocaleString()}
+              sublabel="merged across the team"
+              accent="var(--chart-1)" icon={<GitMerge size={14} />}
+            />
+            <StatCard
+              label="Reviews done" value={totals.reviews.toLocaleString()}
+              sublabel="code reviews given"
+              accent="var(--chart-2)" icon={<Eye size={14} />}
+            />
+            <StatCard
+              label="Areas covered" value={totals.areas.toLocaleString()}
+              sublabel="distinct areas owned"
+              accent="var(--chart-5)" icon={<Layers size={14} />}
+            />
+          </div>
+        </Reveal>
+      )}
+
       {/* Loading skeleton */}
       {loading && !members.length && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -238,12 +306,21 @@ export default function Involvement() {
       )}
 
       {/* Cards */}
-      {!loading && members.length > 0 && (
-        <RevealList className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" staggerDelay={0.04}>
-          {members.map(m => (
-            <InvolvementCard key={m.userId ?? m.email} member={m} maxes={maxes} />
-          ))}
-        </RevealList>
+      {hasData && (
+        <Reveal delay={0.12}>
+          <section>
+            <SectionHeader
+              icon={<Users size={15} />} accent="var(--brand-indigo)"
+              title="Across the team"
+              subtitle="Each person as a multi-dimension card — never reduced to one number."
+            />
+            <RevealList className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" staggerDelay={0.04}>
+              {members.map(m => (
+                <InvolvementCard key={m.userId ?? m.email} member={m} maxes={maxes} />
+              ))}
+            </RevealList>
+          </section>
+        </Reveal>
       )}
 
       {/* Empty */}

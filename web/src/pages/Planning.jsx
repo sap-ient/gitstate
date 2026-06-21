@@ -22,7 +22,7 @@ import {
 } from 'lucide-react'
 import { usePlanning } from '../lib/usePlanning.js'
 import { useProjects } from '../lib/useProjects.js'
-import { Card, Button } from '../components/ui/index.js'
+import { Card, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 import {
   CapacityTimeline, VelocityReadout, ForecastCard, WarningsPanel, BacklogVsCapacity,
@@ -39,26 +39,6 @@ function fmtShort(iso) {
   const d = new Date(iso + 'T00:00:00Z')
   if (Number.isNaN(d.getTime())) return iso
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
-}
-
-function StatTile({ icon: Icon, label, value, unit, hint, accent }) {
-  return (
-    <Card padding="md" className="flex flex-col gap-1.5 relative overflow-hidden">
-      <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)] flex items-center gap-1.5">
-        <Icon size={11} /> {label}
-      </span>
-      <div className="flex items-baseline gap-1">
-        <span
-          className="text-2xl font-display font-semibold tabular-nums leading-none"
-          style={{ color: accent ?? 'var(--text)' }}
-        >
-          {value}
-        </span>
-        {unit && <span className="text-xs text-[var(--text-faint)] font-mono">{unit}</span>}
-      </div>
-      {hint && <span className="text-[11px] text-[var(--text-faint)]">{hint}</span>}
-    </Card>
-  )
 }
 
 export default function Planning() {
@@ -88,14 +68,17 @@ export default function Planning() {
       {/* Header */}
       <Reveal>
         <div className="flex items-end justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight flex items-center gap-2.5">
-              <CalendarRange size={22} className="text-[var(--brand-teal)]" /> Planning &amp; Forecasting
-            </h1>
-            <p className="text-sm text-[var(--text-faint)] mt-1 max-w-2xl">
-              What can we realistically ship, and who&apos;s over-allocated or on leave? Capacity, velocity,
-              and a sized backlog combined into a projected completion date — fallbacks labelled, kept honest.
-            </p>
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+              <CalendarRange size={17} className="text-[var(--brand-teal)]" />
+            </span>
+            <div>
+              <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Planning &amp; Forecasting</h1>
+              <p className="text-sm text-[var(--text-faint)] mt-1 max-w-2xl">
+                What can we realistically ship, and who&apos;s over-allocated or on leave? Capacity, velocity,
+                and a sized backlog combined into a projected completion date — fallbacks labelled, kept honest.
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {projects.length > 0 && (
@@ -163,27 +146,30 @@ export default function Planning() {
       {data && hasCapacity && (
         <>
           {/* Headline stats */}
-          <RevealList className="grid grid-cols-2 md:grid-cols-4 gap-3" staggerDelay={0.04}>
-            <StatTile
-              icon={Users} label="Team capacity"
-              value={totals.effDays} unit="person-days"
-              hint={`${totals.members} member${totals.members === 1 ? '' : 's'} · ${totals.leaveDays}d on leave`}
+          <RevealList className="grid grid-cols-2 md:grid-cols-4 gap-4" staggerDelay={0.04}>
+            <StatCard
+              icon={<Users size={14} />} label="Team capacity"
+              value={<>{totals.effDays}<span className="text-base font-mono text-[var(--text-faint)] ml-1">d</span></>}
+              accent="var(--chart-2)"
+              sublabel={`${totals.members} member${totals.members === 1 ? '' : 's'} · ${totals.leaveDays}d on leave`}
             />
-            <StatTile
-              icon={Gauge} label="Velocity"
-              value={v.hasData ? v.meanPerWeek : '—'} unit="items/wk"
-              hint={v.hasData ? `${v.trendLabel} · ${v.sampleWeeks} wks` : 'no recent throughput'}
+            <StatCard
+              icon={<Gauge size={14} />} label="Velocity"
+              value={v.hasData ? <>{v.meanPerWeek}<span className="text-base font-mono text-[var(--text-faint)] ml-1">/wk</span></> : '—'}
+              accent="var(--chart-6)"
+              sublabel={v.hasData ? `${v.trendLabel} · ${v.sampleWeeks} wks` : 'no recent throughput'}
             />
-            <StatTile
-              icon={Layers} label="Backlog"
-              value={b.openCount ?? 0} unit="open"
-              hint={`${Math.round(b.totalEffortDays ?? 0)}d sized${b.usedFallback ? ` · ${b.unestimatedCount} est. fallback` : ''}`}
+            <StatCard
+              icon={<Layers size={14} />} label="Backlog"
+              value={b.openCount ?? 0}
+              accent="var(--chart-3)"
+              sublabel={`${Math.round(b.totalEffortDays ?? 0)}d sized${b.usedFallback ? ` · ${b.unestimatedCount} est. fallback` : ''}`}
             />
-            <StatTile
-              icon={CalendarClock} label="Projected finish"
+            <StatCard
+              icon={<CalendarClock size={14} />} label="Projected finish"
               value={f.feasible ? fmtShort(f.completionDate) : '—'}
-              accent="var(--brand-teal)"
-              hint={f.feasible && f.weeksToComplete > 0 ? `~${f.weeksToComplete} wks at current rate` : 'velocity unknown'}
+              accent="var(--chart-1)"
+              sublabel={f.feasible && f.weeksToComplete > 0 ? `~${f.weeksToComplete} wks at current rate` : 'velocity unknown'}
             />
           </RevealList>
 
@@ -191,11 +177,16 @@ export default function Planning() {
           <Reveal delay={0.04}>
             <Card padding="lg">
               <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
-                <div>
-                  <h2 className="text-sm font-semibold text-[var(--text)]">Weekly capacity timeline</h2>
-                  <p className="text-xs text-[var(--text-faint)] mt-0.5">
-                    Effective person-days per upcoming week — availability minus approved leave. Amber = leave-heavy.
-                  </p>
+                <div className="flex items-center gap-2.5">
+                  <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-2)', background: 'color-mix(in srgb, var(--chart-2) 14%, transparent)' }}>
+                    <CalendarClock size={15} />
+                  </span>
+                  <div>
+                    <h2 className="text-sm font-semibold text-[var(--text)]">Weekly capacity timeline</h2>
+                    <p className="text-xs text-[var(--text-faint)] mt-0.5">
+                      Effective person-days per upcoming week — availability minus approved leave. Amber = leave-heavy.
+                    </p>
+                  </div>
                 </div>
               </div>
               <CapacityTimeline weeks={data.capacity} />
@@ -216,14 +207,22 @@ export default function Planning() {
           {/* Warnings */}
           <Reveal delay={0.12}>
             <section>
-              <h2 className="text-sm font-semibold text-[var(--text)] mb-3 flex items-center gap-2">
-                Over-allocation &amp; understaffed weeks
-                {(data.warnings?.length ?? 0) > 0 && (
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400">
-                    {data.warnings.length}
-                  </span>
-                )}
-              </h2>
+              <div className="flex items-center gap-2.5 mb-3">
+                <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--warn)', background: 'color-mix(in srgb, var(--warn) 14%, transparent)' }}>
+                  <AlertCircle size={15} />
+                </span>
+                <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
+                  Over-allocation &amp; understaffed weeks
+                  {(data.warnings?.length ?? 0) > 0 && (
+                    <span
+                      className="text-[10px] font-mono px-1.5 py-0.5 rounded-full tabular-nums"
+                      style={{ color: 'var(--warn)', background: 'color-mix(in srgb, var(--warn) 15%, transparent)' }}
+                    >
+                      {data.warnings.length}
+                    </span>
+                  )}
+                </h2>
+              </div>
               <WarningsPanel warnings={data.warnings ?? []} />
             </section>
           </Reveal>

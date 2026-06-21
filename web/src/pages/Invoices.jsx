@@ -8,12 +8,13 @@
  * This is the "…and the invoice" half of the wedge: a defensible invoice
  * straight from git. Currency-aware, both themes, lucide icons.
  */
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import {
   Sparkles, Users, FileText, Plus, ChevronRight, ChevronDown, ArrowLeft,
-  Link2, Check, Send, CircleDollarSign, Ban, Trash2, X, GitMerge,
+  Link2, Check, Send, CircleDollarSign, Ban, Trash2, X, GitMerge, Receipt, Hourglass, Wallet,
 } from 'lucide-react'
 import { useCurrency } from '../lib/currency.jsx'
+import { StatCard } from '../components/ui/index.js'
 import { useProjects } from '../lib/useProjects.js'
 import {
   useClients, useInvoiceList, useInvoiceDetail,
@@ -32,9 +33,9 @@ function InvoiceRow({ inv, onClick }) {
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-4 px-4 py-3.5 hover:bg-[var(--bg-surface-2)] transition-colors text-left group"
+      className="w-full flex items-center gap-4 px-4 py-3.5 hover:bg-[var(--bg-surface2)] transition-colors text-left group"
     >
-      <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--bg-surface-2)' }}>
+      <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--bg-surface2)' }}>
         <FileText size={16} className="text-[var(--text-faint)] group-hover:text-[var(--brand-teal)] transition-colors" />
       </div>
       <div className="flex-1 min-w-0">
@@ -64,7 +65,7 @@ function LineItem({ line }) {
   const [open, setOpen] = useState(false)
   const count = line.evidence?.length ?? 0
   return (
-    <div className="rounded-[var(--radius-badge)]" style={{ background: 'var(--bg-surface-2)', border: '1px solid var(--border)' }}>
+    <div className="rounded-[var(--radius-badge)]" style={{ background: 'var(--bg-surface2)', border: '1px solid var(--border)' }}>
       <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-3 px-4 py-3 text-left">
         <ChevronDown size={14} className={`shrink-0 text-[var(--text-faint)] transition-transform ${open ? 'rotate-180' : ''}`} />
         <div className="flex-1 min-w-0">
@@ -89,9 +90,9 @@ function LineItem({ line }) {
 function StatusAction({ icon: Icon, label, onClick, busy, tone = 'default' }) {
   const tones = {
     default: { border: 'var(--border2)', text: 'var(--text)' },
-    teal: { border: 'rgba(45,212,191,0.4)', text: 'var(--brand-teal)' },
-    green: { border: 'rgba(34,197,94,0.4)', text: '#22c55e' },
-    red: { border: 'rgba(239,68,68,0.35)', text: '#ef4444' },
+    teal: { border: 'color-mix(in srgb, var(--brand-teal) 40%, transparent)', text: 'var(--brand-teal)' },
+    green: { border: 'color-mix(in srgb, var(--ok) 40%, transparent)', text: 'var(--ok)' },
+    red: { border: 'color-mix(in srgb, var(--bad) 35%, transparent)', text: 'var(--bad)' },
   }
   const t = tones[tone]
   return (
@@ -191,7 +192,7 @@ function InvoiceDetail({ id, onBack, onChanged }) {
           <StatusAction icon={Trash2} label="Delete" tone="red" busy={busy} onClick={remove} />
         </div>
 
-        {actionError && <p className="text-xs text-red-400 mt-3">{actionError}</p>}
+        {actionError && <p className="text-xs mt-3" style={{ color: 'var(--bad)' }}>{actionError}</p>}
 
         {/* Share link */}
         {shareLink && (
@@ -279,7 +280,7 @@ function ClientsModal({ clients, onClose, createClient }) {
               <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Billing email" className="bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
               <input type="number" min="0" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="Rate / pt" className="bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
             </div>
-            {error && <p className="text-xs text-red-400">{error}</p>}
+            {error && <p className="text-xs" style={{ color: 'var(--bad)' }}>{error}</p>}
             <button onClick={add} disabled={busy || !name.trim()} className="w-full py-2 rounded-[var(--radius-btn)] text-xs font-bold text-[#04121a] disabled:opacity-40 flex items-center justify-center gap-1.5" style={{ background: 'linear-gradient(135deg, var(--brand-teal), var(--brand-indigo))' }}>
               {busy ? <Spinner size={13} /> : <Plus size={13} />} Add client
             </button>
@@ -311,10 +312,24 @@ export default function Invoices() {
   const { invoices, loading, error, refetch } = useInvoiceList()
   const { clients, createClient, refetch: refetchClients } = useClients()
   const { projects } = useProjects()
+  const { format } = useCurrency()
 
   const [selectedId, setSelectedId] = useState(null)
   const [showGenerate, setShowGenerate] = useState(false)
   const [showClients, setShowClients] = useState(false)
+
+  // Headline rollup: outstanding (sent) vs paid vs drafted, in cents.
+  const totals = useMemo(() => {
+    let outstanding = 0, paid = 0, draft = 0, outstandingN = 0, paidN = 0, draftN = 0
+    for (const inv of invoices) {
+      const c = inv.totalCents ?? 0
+      const s = String(inv.status).toLowerCase()
+      if (s === 'sent') { outstanding += c; outstandingN += 1 }
+      else if (s === 'paid') { paid += c; paidN += 1 }
+      else if (s === 'draft') { draft += c; draftN += 1 }
+    }
+    return { outstanding, paid, draft, outstandingN, paidN, draftN }
+  }, [invoices])
 
   if (selectedId) {
     return (
@@ -327,10 +342,15 @@ export default function Invoices() {
   return (
     <div className="w-full">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 mb-8 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold text-[var(--text)] tracking-tight font-display">Invoices</h1>
-          <p className="text-sm text-[var(--text-faint)] mt-1">Client invoices derived from merged delivery — every line backed by git.</p>
+      <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+            <Receipt size={17} className="text-[var(--brand-teal)]" />
+          </span>
+          <div>
+            <h1 className="text-2xl font-semibold text-[var(--text)] tracking-tight font-display">Invoices</h1>
+            <p className="text-sm text-[var(--text-faint)] mt-1">Client invoices derived from merged delivery — every line backed by git.</p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -348,6 +368,33 @@ export default function Invoices() {
           </button>
         </div>
       </div>
+
+      {/* Headline rollup */}
+      {!loading && !error && invoices.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+          <StatCard
+            label="Outstanding"
+            value={format(totals.outstanding / 100)}
+            sublabel={`${totals.outstandingN} sent · awaiting payment`}
+            accent="var(--warn)"
+            icon={<Hourglass size={14} />}
+          />
+          <StatCard
+            label="Paid"
+            value={format(totals.paid / 100)}
+            sublabel={`${totals.paidN} settled invoice${totals.paidN !== 1 ? 's' : ''}`}
+            accent="var(--ok)"
+            icon={<CircleDollarSign size={14} />}
+          />
+          <StatCard
+            label="Drafted"
+            value={format(totals.draft / 100)}
+            sublabel={`${totals.draftN} not yet sent`}
+            accent="var(--info)"
+            icon={<Wallet size={14} />}
+          />
+        </div>
+      )}
 
       {loading ? (
         <LoadingCenter label="Loading invoices…" />

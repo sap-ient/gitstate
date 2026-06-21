@@ -17,7 +17,8 @@ import {
   useContributors, useRepoStats, useDayCommits,
   usePullRequests, useIssueFlow, useAgentShare, useProjects,
 } from '../lib/useAnalytics.js'
-import { Card, Badge } from '../components/ui/index.js'
+import { Card, Badge, StatCard } from '../components/ui/index.js'
+import { LineChart } from '../components/LineChart.jsx'
 import { Reveal } from '../components/Reveal.jsx'
 import {
   GitCommitHorizontal, GitBranch, Users, CalendarDays, Plus, Minus,
@@ -190,22 +191,16 @@ function FiltersBar({ filters, setFilters, preset, setPreset, contributors, repo
 
 // ── stat tiles ────────────────────────────────────────────────────────────────
 
-function StatTile({ icon, label, value, sub, accent, loading }) {
+// Skeleton matching StatCard's shape, shown during the initial summary load.
+function StatCardSkeleton() {
   return (
-    <Card padding="md" className="relative overflow-hidden">
-      <div className="flex items-start justify-between">
-        <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">{label}</span>
-        <span style={{ color: accent }} className="opacity-80">{icon}</span>
+    <div className="rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--bg-surface)] p-5">
+      <div className="flex flex-col gap-3">
+        <div className="h-4 w-20 rounded bg-[var(--bg-surface3)] animate-pulse" />
+        <div className="h-8 w-14 rounded bg-[var(--bg-surface3)] animate-pulse" />
+        <div className="h-3 w-24 rounded bg-[var(--bg-surface3)] animate-pulse" />
       </div>
-      {loading ? (
-        <div className="mt-2 h-7 w-16 rounded bg-[var(--bg-surface3)] animate-pulse" />
-      ) : (
-        <div className="mt-1.5 font-display text-2xl font-semibold text-[var(--text)] tabular-nums tracking-tight">
-          {value}
-        </div>
-      )}
-      {sub && <div className="text-[11px] text-[var(--text-faint)] mt-0.5">{sub}</div>}
-    </Card>
+    </div>
   )
 }
 
@@ -213,22 +208,27 @@ function StatTiles({ summary, loading }) {
   const s = summary ?? {}
   const avg = s.averages ?? {}
   // One balanced, evenly-wrapping grid (10 tiles → 2/3/4/5-up) — avoids the
-  // ragged "7 then 3" layout at 1440px.
+  // ragged "7 then 3" layout at 1440px. Each tile gets a distinct --chart-*
+  // accent (diff tiles carry --ok/--bad semantics).
   const tiles = [
-    { icon: <GitCommitHorizontal size={15} />, label: 'Commits', value: fmtNum(s.totalCommits), accent: 'var(--brand-teal)' },
-    { icon: <GitBranch size={15} />, label: 'Repos', value: fmtNum(s.repos), accent: 'var(--brand-indigo)' },
-    { icon: <Users size={15} />, label: 'Contributors', value: fmtNum(s.contributors), accent: 'var(--brand-teal)' },
-    { icon: <CalendarDays size={15} />, label: 'Active days', value: fmtNum(s.activeDays), accent: 'var(--brand-indigo)' },
-    { icon: <Plus size={15} />, label: 'Additions', value: fmtNum(s.additions), accent: '#22c55e' },
-    { icon: <Minus size={15} />, label: 'Deletions', value: fmtNum(s.deletions), accent: '#ef4444' },
-    { icon: <Sigma size={15} />, label: 'Net lines', value: fmtSigned(s.netLines), accent: 'var(--brand-teal)' },
-    { icon: <Activity size={15} />, label: 'Commits / active day', value: fmtAvg(avg.commitsPerActiveDay), accent: 'var(--brand-indigo)' },
-    { icon: <Users size={15} />, label: 'Commits / contributor', value: fmtAvg(avg.commitsPerContributor), accent: 'var(--brand-teal)' },
-    { icon: <TrendingUp size={15} />, label: 'Lines / commit', value: fmtAvg(avg.linesPerCommit), accent: 'var(--brand-indigo)' },
+    { icon: <GitCommitHorizontal size={14} />, label: 'Commits', value: fmtNum(s.totalCommits), accent: 'var(--chart-1)' },
+    { icon: <GitBranch size={14} />, label: 'Repos', value: fmtNum(s.repos), accent: 'var(--chart-2)' },
+    { icon: <Users size={14} />, label: 'Contributors', value: fmtNum(s.contributors), accent: 'var(--chart-6)' },
+    { icon: <CalendarDays size={14} />, label: 'Active days', value: fmtNum(s.activeDays), accent: 'var(--chart-5)' },
+    { icon: <Plus size={14} />, label: 'Additions', value: fmtNum(s.additions), accent: 'var(--ok)' },
+    { icon: <Minus size={14} />, label: 'Deletions', value: fmtNum(s.deletions), accent: 'var(--bad)' },
+    { icon: <Sigma size={14} />, label: 'Net lines', value: fmtSigned(s.netLines), accent: 'var(--chart-1)' },
+    { icon: <Activity size={14} />, label: 'Commits / active day', value: fmtAvg(avg.commitsPerActiveDay), accent: 'var(--chart-2)' },
+    { icon: <Users size={14} />, label: 'Commits / contributor', value: fmtAvg(avg.commitsPerContributor), accent: 'var(--chart-6)' },
+    { icon: <TrendingUp size={14} />, label: 'Lines / commit', value: fmtAvg(avg.linesPerCommit), accent: 'var(--chart-3)' },
   ]
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-      {tiles.map(t => <StatTile key={t.label} {...t} loading={loading} />)}
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+      {tiles.map(t => (
+        loading
+          ? <StatCardSkeleton key={t.label} />
+          : <StatCard key={t.label} label={t.label} value={t.value} accent={t.accent} icon={t.icon} />
+      ))}
     </div>
   )
 }
@@ -455,43 +455,25 @@ function DayDrillDown({ date, filters, onClose }) {
 function CommitsOverTime({ filters }) {
   const [bucket, setBucket] = useState('day')
   const { data, loading } = useCommitsOverTime(filters, bucket)
-  const [hover, setHover] = useState(null)
-  const svgRef = useRef(null)
-
-  const W = 760, H = 220, PAD = { t: 16, r: 16, b: 26, l: 36 }
-  const innerW = W - PAD.l - PAD.r
-  const innerH = H - PAD.t - PAD.b
 
   const points = useMemo(() => (data || []).filter(d => d?.date), [data])
-  const max = useMemo(() => points.reduce((m, p) => Math.max(m, p.count || 0), 0), [points])
   const total = useMemo(() => points.reduce((a, p) => a + (p.count || 0), 0), [points])
-
-  const xFor = (i) => points.length <= 1 ? PAD.l + innerW / 2 : PAD.l + (i / (points.length - 1)) * innerW
-  const yFor = (v) => PAD.t + innerH - (max <= 0 ? 0 : (v / max) * innerH)
-
-  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i).toFixed(1)} ${yFor(p.count || 0).toFixed(1)}`).join(' ')
-  const areaPath = points.length
-    ? `${linePath} L ${xFor(points.length - 1).toFixed(1)} ${(PAD.t + innerH).toFixed(1)} L ${xFor(0).toFixed(1)} ${(PAD.t + innerH).toFixed(1)} Z`
-    : ''
-
-  // y gridlines
-  const ticks = max > 0 ? [0, 0.5, 1].map(t => Math.round(max * t)) : [0]
-
-  function onMove(e) {
-    if (!points.length) return
-    const rect = svgRef.current.getBoundingClientRect()
-    const x = (e.clientX - rect.left) * (W / rect.width)
-    let idx = Math.round(((x - PAD.l) / innerW) * (points.length - 1))
-    idx = Math.max(0, Math.min(points.length - 1, idx))
-    setHover({ idx, p: points[idx] })
-  }
+  const chartPoints = useMemo(
+    () => points.map(p => ({ x: p.date, y: p.count || 0, raw: p })),
+    [points],
+  )
 
   return (
     <Card padding="lg">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-sm font-semibold text-[var(--text)]">Commits over time</h2>
-          <p className="text-xs text-[var(--text-faint)] mt-0.5">{fmtNum(total)} commits, bucketed by {bucket}</p>
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center gap-2.5">
+          <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-1)', background: 'color-mix(in srgb, var(--chart-1) 14%, transparent)' }}>
+            <Activity size={15} />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold text-[var(--text)]">Commits over time</h2>
+            <p className="text-xs text-[var(--text-faint)] mt-0.5">{fmtNum(total)} commits, bucketed by {bucket}</p>
+          </div>
         </div>
         <div className="inline-flex items-center rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-0.5">
           {['day', 'week'].map(b => (
@@ -511,71 +493,19 @@ function CommitsOverTime({ filters }) {
 
       {loading ? (
         <div className="h-[220px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
-      ) : points.length === 0 ? (
-        <div className="flex flex-col items-center justify-center h-[220px] text-center">
-          <Activity size={22} className="text-[var(--text-faint)] mb-2" />
-          <p className="text-sm text-[var(--text-faint)]">No commits in this range.</p>
-        </div>
       ) : (
-        <div className="relative overflow-x-auto">
-          <svg
-            ref={svgRef} width={W} height={H} className="block max-w-full"
-            onMouseMove={onMove} onMouseLeave={() => setHover(null)}
-          >
-            <defs>
-              <linearGradient id="cotArea" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#2DD4BF" stopOpacity="0.35" />
-                <stop offset="100%" stopColor="#6366F1" stopOpacity="0.02" />
-              </linearGradient>
-              <linearGradient id="cotLine" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor="#2DD4BF" />
-                <stop offset="100%" stopColor="#6366F1" />
-              </linearGradient>
-            </defs>
-
-            {/* gridlines + y labels */}
-            {ticks.map((t, i) => {
-              const y = yFor(t)
-              return (
-                <g key={i}>
-                  <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray="2 3" />
-                  <text x={PAD.l - 6} y={y + 3} textAnchor="end" fontSize="9" className="font-mono" fill="var(--text-faint)">{t}</text>
-                </g>
-              )
-            })}
-
-            {areaPath && <path d={areaPath} fill="url(#cotArea)" />}
-            {linePath && <path d={linePath} fill="none" stroke="url(#cotLine)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
-
-            {/* x labels (first / mid / last) */}
-            {points.length > 0 && [0, Math.floor(points.length / 2), points.length - 1]
-              .filter((v, i, a) => a.indexOf(v) === i).map(i => (
-                <text key={i} x={xFor(i)} y={H - 8} textAnchor="middle" fontSize="9" className="font-mono" fill="var(--text-faint)">
-                  {fmtDate(points[i].date, { month: 'short', day: 'numeric' })}
-                </text>
-              ))}
-
-            {/* hover marker */}
-            {hover && (
-              <g>
-                <line x1={xFor(hover.idx)} y1={PAD.t} x2={xFor(hover.idx)} y2={PAD.t + innerH} stroke="var(--border2)" strokeWidth="1" />
-                <circle cx={xFor(hover.idx)} cy={yFor(hover.p.count || 0)} r="3.5" fill="#2DD4BF" stroke="var(--bg)" strokeWidth="1.5" />
-              </g>
-            )}
-          </svg>
-
-          {hover && (
-            <div
-              className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full px-2.5 py-1.5 rounded-[var(--radius-badge)] bg-[var(--bg)] border border-[var(--border2)] shadow-[var(--shadow-float)] whitespace-nowrap"
-              style={{
-                left: `${(xFor(hover.idx) / W) * 100}%`,
-                top: `${(yFor(hover.p.count || 0) / H) * 100}%`,
-              }}
-            >
-              <div className="text-sm font-semibold text-[var(--text)] tabular-nums">{hover.p.count} commit{hover.p.count === 1 ? '' : 's'}</div>
-              <div className="text-[10px] font-mono text-[var(--text-faint)]">{fmtDate(hover.p.date)}</div>
-            </div>
-          )}
+        <div className="overflow-x-auto">
+          <LineChart
+            points={chartPoints}
+            width={760}
+            height={220}
+            color="var(--chart-1)"
+            xLabel={p => fmtDate(p.x, { month: 'short', day: 'numeric' })}
+            yLabel={v => fmtNum(Math.round(v))}
+            tooltip={p => `${fmtDate(p.x)} · ${p.y} commit${p.y === 1 ? '' : 's'}`}
+            emptyIcon={<Activity size={22} className="text-[var(--text-faint)]" />}
+            emptyText="No commits in this range."
+          />
         </div>
       )}
     </Card>
@@ -649,7 +579,7 @@ function ContributorLeaderboard({ contributors, loading }) {
                     <td className="px-2 py-2.5">
                       <div className="flex items-center gap-2">
                         <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-surface3)] overflow-hidden min-w-[60px]">
-                          <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#2DD4BF,#6366F1)' }} />
+                          <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,var(--chart-1),var(--chart-2))' }} />
                         </div>
                         <span className="font-mono tabular-nums text-[var(--text-dim)] w-9 text-right">{fmtNum(c.commits)}</span>
                       </div>
@@ -684,7 +614,11 @@ function RepoTable({ repos, loading }) {
   return (
     <Card padding="lg">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-[var(--text)]">Repositories</h2>
+        <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
+          <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-2)', background: 'color-mix(in srgb, var(--chart-2) 14%, transparent)' }}>
+            <GitBranch size={15} />
+          </span> Repositories
+        </h2>
         {!loading && <span className="text-xs font-mono text-[var(--text-faint)]">{sorted.length} repos</span>}
       </div>
       {loading ? (
@@ -734,101 +668,30 @@ function RepoTable({ repos, loading }) {
 // ── shared mini stacked/grouped bar chart (SVG) ───────────────────────────────
 
 /**
- * TwoSeriesBars — a compact SVG showing two daily series as either grouped or
- * stacked bars over a shared x-axis. `series` = [{date, a, b}], with labels +
- * colors for a/b. Hover shows a tooltip. Used by PR throughput, issue flow and
- * agent share.
+ * TwoSeriesChart — two daily series ({date, a, b}) drawn as a two-line
+ * multi-series LineChart on the categorical palette, with legend + tooltip.
+ * Keeps the prior call signature (labelA/labelB, colorA/colorB, height) so the
+ * PR-throughput / issue-flow / agent-share panels stay untouched.
  */
-function TwoSeriesBars({ series, labelA, labelB, colorA, colorB, stacked = false, height = 180 }) {
-  const [hover, setHover] = useState(null)
-  const svgRef = useRef(null)
-  const W = 760, H = height, PAD = { t: 14, r: 12, b: 24, l: 30 }
-  const innerW = W - PAD.l - PAD.r
-  const innerH = H - PAD.t - PAD.b
-
+function TwoSeriesChart({ series, labelA, labelB, colorA, colorB, height = 200 }) {
   const pts = useMemo(() => (series || []).filter(d => d?.date), [series])
-  const max = useMemo(() => pts.reduce((m, p) => {
-    const v = stacked ? (p.a || 0) + (p.b || 0) : Math.max(p.a || 0, p.b || 0)
-    return Math.max(m, v)
-  }, 0) || 1, [pts, stacked])
-
-  if (!pts.length) {
-    return (
-      <div className="flex flex-col items-center justify-center text-center" style={{ height }}>
-        <Activity size={20} className="text-[var(--text-faint)] mb-2" />
-        <p className="text-sm text-[var(--text-faint)]">No data in this range.</p>
-      </div>
-    )
-  }
-
-  const slot = innerW / pts.length
-  const barW = stacked ? Math.min(14, slot * 0.7) : Math.min(7, slot * 0.38)
-  const yFor = (v) => PAD.t + innerH - (v / max) * innerH
-  const ticks = [0, 0.5, 1].map(t => Math.round(max * t)).filter((v, i, a) => a.indexOf(v) === i)
-
-  function onMove(e) {
-    const rect = svgRef.current.getBoundingClientRect()
-    const x = (e.clientX - rect.left) * (W / rect.width)
-    let idx = Math.floor((x - PAD.l) / slot)
-    idx = Math.max(0, Math.min(pts.length - 1, idx))
-    setHover({ idx, p: pts[idx] })
-  }
+  const chartSeries = useMemo(() => ([
+    { name: labelA, color: colorA, points: pts.map(p => ({ x: p.date, y: p.a || 0, raw: p })) },
+    { name: labelB, color: colorB, points: pts.map(p => ({ x: p.date, y: p.b || 0, raw: p })) },
+  ]), [pts, labelA, labelB, colorA, colorB])
 
   return (
-    <div className="relative overflow-x-auto">
-      <svg ref={svgRef} width={W} height={H} className="block max-w-full"
-        onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-        {ticks.map((t, i) => {
-          const y = yFor(t)
-          return (
-            <g key={i}>
-              <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray="2 3" />
-              <text x={PAD.l - 5} y={y + 3} textAnchor="end" fontSize="9" className="font-mono" fill="var(--text-faint)">{t}</text>
-            </g>
-          )
-        })}
-        {pts.map((p, i) => {
-          const cx = PAD.l + i * slot + slot / 2
-          const a = p.a || 0, b = p.b || 0
-          if (stacked) {
-            const hA = (a / max) * innerH, hB = (b / max) * innerH
-            const yA = PAD.t + innerH - hA
-            const yB = yA - hB
-            return (
-              <g key={i}>
-                <rect x={cx - barW / 2} y={yA} width={barW} height={hA} rx={1.5} fill={colorA} opacity={hover && hover.idx === i ? 1 : 0.85} />
-                <rect x={cx - barW / 2} y={yB} width={barW} height={hB} rx={1.5} fill={colorB} opacity={hover && hover.idx === i ? 1 : 0.85} />
-              </g>
-            )
-          }
-          const hA = (a / max) * innerH, hB = (b / max) * innerH
-          return (
-            <g key={i}>
-              <rect x={cx - barW - 1} y={PAD.t + innerH - hA} width={barW} height={hA} rx={1.5} fill={colorA} opacity={hover && hover.idx === i ? 1 : 0.8} />
-              <rect x={cx + 1} y={PAD.t + innerH - hB} width={barW} height={hB} rx={1.5} fill={colorB} opacity={hover && hover.idx === i ? 1 : 0.8} />
-            </g>
-          )
-        })}
-        {[0, Math.floor(pts.length / 2), pts.length - 1].filter((v, i, a) => a.indexOf(v) === i).map(i => (
-          <text key={i} x={PAD.l + i * slot + slot / 2} y={H - 7} textAnchor="middle" fontSize="9" className="font-mono" fill="var(--text-faint)">
-            {fmtDate(pts[i].date, { month: 'short', day: 'numeric' })}
-          </text>
-        ))}
-      </svg>
-
-      <div className="flex items-center gap-4 mt-1.5 text-[10px] font-mono text-[var(--text-faint)]">
-        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-[2px]" style={{ background: colorA }} />{labelA}</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-[2px]" style={{ background: colorB }} />{labelB}</span>
-      </div>
-
-      {hover && (
-        <div className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full px-2.5 py-1.5 rounded-[var(--radius-badge)] bg-[var(--bg)] border border-[var(--border2)] shadow-[var(--shadow-float)] whitespace-nowrap"
-          style={{ left: `${((PAD.l + hover.idx * slot + slot / 2) / W) * 100}%`, top: 0 }}>
-          <div className="text-[10px] font-mono text-[var(--text-faint)] mb-0.5">{fmtDate(hover.p.date)}</div>
-          <div className="text-xs font-semibold tabular-nums" style={{ color: colorA }}>{labelA}: {hover.p.a || 0}</div>
-          <div className="text-xs font-semibold tabular-nums" style={{ color: colorB }}>{labelB}: {hover.p.b || 0}</div>
-        </div>
-      )}
+    <div className="overflow-x-auto">
+      <LineChart
+        series={chartSeries}
+        width={760}
+        height={Math.max(height, 190)}
+        xLabel={p => fmtDate(p.x, { month: 'short', day: 'numeric' })}
+        yLabel={v => fmtNum(Math.round(v))}
+        tooltip={p => `${fmtDate(p.x)} · ${p.y}`}
+        emptyIcon={<Activity size={20} className="text-[var(--text-faint)]" />}
+        emptyText="No data in this range."
+      />
     </div>
   )
 }
@@ -862,7 +725,9 @@ function PullRequestPanel({ filters }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-            <GitPullRequest size={15} className="text-[var(--brand-teal)]" /> Pull requests
+            <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-1)', background: 'color-mix(in srgb, var(--chart-1) 14%, transparent)' }}>
+              <GitPullRequest size={15} />
+            </span> Pull requests
           </h2>
           <p className="text-xs text-[var(--text-faint)] mt-0.5">Merge rate, lead time, and opened/merged throughput.</p>
         </div>
@@ -874,19 +739,19 @@ function PullRequestPanel({ filters }) {
       ) : (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
-            <MiniMetric icon={<GitMerge size={13} />} label="Merge rate" accent="#22c55e"
+            <MiniMetric icon={<GitMerge size={13} />} label="Merge rate" accent="var(--ok)"
               value={fmtPct(mergePct)} sub={`${fmtNum(d.merged)} merged`} />
-            <MiniMetric icon={<Timer size={13} />} label="Lead p50" accent="var(--brand-teal)"
+            <MiniMetric icon={<Timer size={13} />} label="Lead p50" accent="var(--chart-1)"
               value={fmtHours(d.leadTimeP50Hours)} sub="first commit → merge" />
-            <MiniMetric icon={<Timer size={13} />} label="Lead p90" accent="var(--brand-indigo)"
+            <MiniMetric icon={<Timer size={13} />} label="Lead p90" accent="var(--chart-2)"
               value={fmtHours(d.leadTimeP90Hours)} sub="slowest 10%" />
-            <MiniMetric icon={<CircleDot size={13} />} label="Open" accent="#eab308"
+            <MiniMetric icon={<CircleDot size={13} />} label="Open" accent="var(--warn)"
               value={fmtNum(d.open)} sub={`${fmtNum(d.closed)} closed`} />
-            <MiniMetric icon={<Sigma size={13} />} label="Avg files" accent="var(--brand-indigo)"
+            <MiniMetric icon={<Sigma size={13} />} label="Avg files" accent="var(--chart-5)"
               value={fmtAvg(d.avgChangedFiles)} sub="changed / PR" />
           </div>
-          <TwoSeriesBars series={series} labelA="opened" labelB="merged"
-            colorA="#2DD4BF" colorB="#22c55e" />
+          <TwoSeriesChart series={series} labelA="opened" labelB="merged"
+            colorA="var(--chart-1)" colorB="var(--ok)" />
         </>
       )}
     </Card>
@@ -896,10 +761,10 @@ function PullRequestPanel({ filters }) {
 // ── issue-flow panel ──────────────────────────────────────────────────────────
 
 const ISSUE_STATES = [
-  { key: 'open', label: 'Open', color: '#eab308', icon: <CircleDot size={13} /> },
-  { key: 'inProgress', label: 'In progress', color: '#2DD4BF', icon: <Activity size={13} /> },
-  { key: 'done', label: 'Done', color: '#22c55e', icon: <CircleCheck size={13} /> },
-  { key: 'closed', label: 'Closed', color: '#94a3b8', icon: <X size={13} /> },
+  { key: 'open', label: 'Open', color: 'var(--warn)', icon: <CircleDot size={13} /> },
+  { key: 'inProgress', label: 'In progress', color: 'var(--chart-1)', icon: <Activity size={13} /> },
+  { key: 'done', label: 'Done', color: 'var(--ok)', icon: <CircleCheck size={13} /> },
+  { key: 'closed', label: 'Closed', color: 'var(--text-muted)', icon: <X size={13} /> },
 ]
 
 function IssueFlowPanel({ filters }) {
@@ -930,7 +795,9 @@ function IssueFlowPanel({ filters }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-            <ListChecks size={15} className="text-[var(--brand-indigo)]" /> Issue flow
+            <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-2)', background: 'color-mix(in srgb, var(--chart-2) 14%, transparent)' }}>
+              <ListChecks size={15} />
+            </span> Issue flow
           </h2>
           <p className="text-xs text-[var(--text-faint)] mt-0.5">State breakdown, opened vs closed over time, and per-project split.</p>
         </div>
@@ -963,8 +830,8 @@ function IssueFlowPanel({ filters }) {
             </div>
           </div>
 
-          <TwoSeriesBars series={series} labelA="opened" labelB="closed"
-            colorA="#6366F1" colorB="#22c55e" height={170} />
+          <TwoSeriesChart series={series} labelA="opened" labelB="closed"
+            colorA="var(--chart-2)" colorB="var(--ok)" height={190} />
 
           {/* per-project */}
           {byProject.length > 0 && (
@@ -986,12 +853,12 @@ function IssueFlowPanel({ filters }) {
                       <tr key={p.project || i} className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors">
                         <td className="px-2 py-2.5 text-[var(--text-dim)] font-medium truncate max-w-[200px]">{p.project}</td>
                         <td className="px-2 py-2.5">
-                          <div className="h-1.5 rounded-full bg-[#eab308]/30 overflow-hidden min-w-[60px]">
-                            <div className="h-full rounded-full bg-[#22c55e]" style={{ width: `${donePct}%` }} />
+                          <div className="h-1.5 rounded-full overflow-hidden min-w-[60px]" style={{ background: 'color-mix(in srgb, var(--warn) 30%, transparent)' }}>
+                            <div className="h-full rounded-full" style={{ width: `${donePct}%`, background: 'var(--ok)' }} />
                           </div>
                         </td>
-                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[#eab308]">{fmtNum(p.open)}</td>
-                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[#22c55e]">{fmtNum(p.done)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--warn)]">{fmtNum(p.open)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--ok)]">{fmtNum(p.done)}</td>
                       </tr>
                     )
                   })}
@@ -1022,7 +889,9 @@ function AgentSharePanel({ filters }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-            <Bot size={15} className="text-[var(--brand-indigo)]" /> Agent vs human
+            <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-2)', background: 'color-mix(in srgb, var(--chart-2) 14%, transparent)' }}>
+              <Bot size={15} />
+            </span> Agent vs human
           </h2>
           <p className="text-xs text-[var(--text-faint)] mt-0.5">Share of commits authored by coding agents over time.</p>
         </div>
@@ -1042,17 +911,17 @@ function AgentSharePanel({ filters }) {
               <div className="text-[11px] font-mono text-[var(--text-faint)] mt-1">agent-authored</div>
             </div>
             <div className="flex-1 grid grid-cols-2 gap-3">
-              <MiniMetric icon={<Cpu size={13} />} label="Agent" accent="#6366F1" value={fmtNum(d.agentCommits)} />
-              <MiniMetric icon={<User size={13} />} label="Human" accent="#2DD4BF" value={fmtNum(d.humanCommits)} />
+              <MiniMetric icon={<Cpu size={13} />} label="Agent" accent="var(--chart-2)" value={fmtNum(d.agentCommits)} />
+              <MiniMetric icon={<User size={13} />} label="Human" accent="var(--chart-1)" value={fmtNum(d.humanCommits)} />
             </div>
           </div>
           {/* split bar */}
           <div className="flex h-2.5 rounded-full overflow-hidden bg-[var(--bg-surface3)] mb-5">
-            <div style={{ width: `${agentPct}%`, background: '#6366F1' }} />
-            <div style={{ width: `${100 - agentPct}%`, background: '#2DD4BF' }} />
+            <div style={{ width: `${agentPct}%`, background: 'var(--chart-2)' }} />
+            <div style={{ width: `${100 - agentPct}%`, background: 'var(--chart-1)' }} />
           </div>
-          <TwoSeriesBars series={series} labelA="agent" labelB="human"
-            colorA="#6366F1" colorB="#2DD4BF" stacked height={170} />
+          <TwoSeriesChart series={series} labelA="agent" labelB="human"
+            colorA="var(--chart-2)" colorB="var(--chart-1)" height={190} />
         </>
       )}
     </Card>
@@ -1072,7 +941,9 @@ function ProjectTable({ filters }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-2">
-            <Folder size={15} className="text-[var(--brand-teal)]" /> Projects
+            <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-1)', background: 'color-mix(in srgb, var(--chart-1) 14%, transparent)' }}>
+              <Folder size={15} />
+            </span> Projects
           </h2>
           <p className="text-xs text-[var(--text-faint)] mt-0.5">Commits, contributors, churn, and issue health per project.</p>
         </div>
@@ -1126,10 +997,14 @@ function ProjectTable({ filters }) {
 
 // ── section heading ───────────────────────────────────────────────────────────
 
-function SectionHeading({ children }) {
+function SectionHeading({ icon, children, hint }) {
   return (
     <div className="flex items-center gap-3 pt-2">
-      <h2 className="text-[11px] font-mono uppercase tracking-[0.18em] text-[var(--text-faint)]">{children}</h2>
+      <div className="flex items-center gap-2">
+        {icon}
+        <h2 className="text-[11px] font-mono uppercase tracking-[0.18em] text-[var(--text-faint)]">{children}</h2>
+      </div>
+      {hint && <span className="text-[10px] font-mono text-[var(--text-faint)]/70">{hint}</span>}
       <div className="flex-1 h-px bg-[var(--border)]" />
     </div>
   )
@@ -1200,9 +1075,14 @@ export default function Analytics() {
       <Reveal delay={0.1} inView>
         <Card padding="lg">
           <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-sm font-semibold text-[var(--text)]">Contribution heatmap</h2>
-              <p className="text-xs text-[var(--text-faint)] mt-0.5">Click any day to see its commits</p>
+            <div className="flex items-center gap-2.5">
+              <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-1)', background: 'color-mix(in srgb, var(--chart-1) 14%, transparent)' }}>
+                <CalendarDays size={15} />
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold text-[var(--text)]">Contribution heatmap</h2>
+                <p className="text-xs text-[var(--text-faint)] mt-0.5">Click any day to see its commits</p>
+              </div>
             </div>
           </div>
           <Heatmap
@@ -1222,18 +1102,18 @@ export default function Analytics() {
       <Reveal delay={0.05} inView><CommitsOverTime filters={filters} /></Reveal>
 
       {/* ── Delivery: PRs + issues ─────────────────────────────────────────── */}
-      <Reveal inView><SectionHeading>Delivery</SectionHeading></Reveal>
+      <Reveal inView><SectionHeading icon={<GitPullRequest size={13} className="text-[var(--chart-1)]" />}>Delivery</SectionHeading></Reveal>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
         <Reveal delay={0.05} inView><PullRequestPanel filters={filters} /></Reveal>
         <Reveal delay={0.08} inView><IssueFlowPanel filters={filters} /></Reveal>
       </div>
 
       {/* ── Authorship: agent vs human ─────────────────────────────────────── */}
-      <Reveal inView><SectionHeading>Authorship</SectionHeading></Reveal>
+      <Reveal inView><SectionHeading icon={<Bot size={13} className="text-[var(--chart-2)]" />}>Authorship</SectionHeading></Reveal>
       <Reveal delay={0.05} inView><AgentSharePanel filters={filters} /></Reveal>
 
       {/* ── People & projects ──────────────────────────────────────────────── */}
-      <Reveal inView><SectionHeading>People & projects</SectionHeading></Reveal>
+      <Reveal inView><SectionHeading icon={<Users size={13} className="text-[var(--chart-6)]" />}>People & projects</SectionHeading></Reveal>
 
       {/* Leaderboard */}
       <div id="leaderboard" />

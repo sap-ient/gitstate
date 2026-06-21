@@ -29,10 +29,10 @@ import { KanbanCardOverlay } from './KanbanCard.jsx'
 import * as api from '../../lib/api.js'
 
 const COLUMNS = [
-  { id: 'open',        label: 'Open',        color: '#f59e0b' },
-  { id: 'in_progress', label: 'In Progress', color: '#6366F1' },
-  { id: 'done',        label: 'Done',        color: '#2DD4BF' },
-  { id: 'closed',      label: 'Closed',      color: '#64748b' },
+  { id: 'open',        label: 'Open',        color: 'var(--chart-3)' },
+  { id: 'in_progress', label: 'In Progress', color: 'var(--chart-2)' },
+  { id: 'done',        label: 'Done',        color: 'var(--chart-1)' },
+  { id: 'closed',      label: 'Closed',      color: 'var(--text-faint)' },
 ]
 
 const dropAnimation = {

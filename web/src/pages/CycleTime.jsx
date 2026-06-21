@@ -4,11 +4,11 @@
  * Hand-rolled SVG via <LineChart>. Includes repo/date filters.
  */
 import { useState } from 'react'
-import { Timer, GitMerge, AlertTriangle, RotateCw } from 'lucide-react'
+import { Timer, GitMerge, AlertTriangle, RotateCw, Gauge, Activity, TrendingUp, Zap, Hourglass } from 'lucide-react'
 import { useCycleTime } from '../lib/useCycleTime.js'
 import { useRepos } from '../lib/useRepos.js'
 import { LineChart } from '../components/LineChart.jsx'
-import { Card, Button } from '../components/ui/index.js'
+import { Card, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 
 function Spinner() {
@@ -33,21 +33,32 @@ function computeStats(points) {
 
 const filterInputCls = "bg-[var(--bg)] text-xs text-[var(--text-muted)] rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/40 transition-colors cursor-pointer"
 
-// A single stat tile, matching the Analytics StatTile rhythm.
-function StatTile({ label, value, accent, hint, loading }) {
+// Skeleton matching StatCard's shape, shown during the initial load.
+function StatCardSkeleton() {
   return (
-    <Card padding="md" className="relative overflow-hidden">
-      <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-faint)]">{label}</span>
-      {loading ? (
-        <div className="mt-2 h-7 w-14 rounded bg-[var(--bg-surface3)] animate-pulse" />
-      ) : (
-        <div className="mt-1.5 font-display text-2xl font-semibold tabular-nums tracking-tight" style={{ color: accent || 'var(--text)' }}>
-          {value}
-        </div>
-      )}
-      {hint && <div className="text-[10px] text-[var(--text-faint)] mt-0.5">{hint}</div>}
-    </Card>
+    <div className="rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--bg-surface)] p-5">
+      <div className="flex flex-col gap-3">
+        <div className="h-4 w-20 rounded bg-[var(--bg-surface3)] animate-pulse" />
+        <div className="h-8 w-14 rounded bg-[var(--bg-surface3)] animate-pulse" />
+        <div className="h-3 w-24 rounded bg-[var(--bg-surface3)] animate-pulse" />
+      </div>
+    </div>
   )
+}
+
+// Percent delta + direction between the last value and the prior-window mean of
+// a numeric series. Returns null without enough signal. `goodWhenDown` flips the
+// ok/bad semantics — for lead time, lower is better.
+function trendDelta(values, { goodWhenDown = false } = {}) {
+  const xs = (values || []).filter(v => typeof v === 'number' && isFinite(v))
+  if (xs.length < 4) return null
+  const last = xs[xs.length - 1]
+  const prior = xs.slice(0, -1)
+  const base = prior.reduce((a, b) => a + b, 0) / prior.length
+  if (!base) return null
+  const pct = Math.round(((last - base) / base) * 100)
+  if (pct === 0) return null
+  return { value: pct, dir: pct > 0 ? 'up' : 'down', goodWhenDown, title: `vs prior avg ${base.toFixed(1)}d` }
 }
 
 export default function CycleTime() {
@@ -60,6 +71,7 @@ export default function CycleTime() {
 
   const stats = computeStats(points)
   const hasData = !loading && points.length > 0
+  const isInitialLoad = loading && points.length === 0
 
   const chartPoints = points.map(pt => ({
     x: pt.date,
@@ -69,12 +81,34 @@ export default function CycleTime() {
     repo: pt.repo,
   }))
 
+  // Chronological lead-time series → a real sparkline on the headline tiles, plus
+  // a trend delta (lower lead time is the "good" direction).
+  const leadSeries = points.map(p => p.days).filter(n => typeof n === 'number' && !Number.isNaN(n))
+  const sparkLead = leadSeries.length >= 2 ? leadSeries.slice(-24) : null
+  const leadDelta = sparkLead ? trendDelta(sparkLead, { goodWhenDown: true }) : null
+
   const statTiles = [
-    { label: 'Avg', accent: 'var(--brand-teal)', value: stats ? `${stats.avg.toFixed(1)}d` : '—', hint: 'mean lead time' },
-    { label: 'Median (p50)', accent: 'var(--text)', value: stats ? `${stats.p50.toFixed(1)}d` : '—', hint: 'typical PR' },
-    { label: 'p90', accent: 'var(--brand-indigo)', value: stats ? `${stats.p90.toFixed(1)}d` : '—', hint: 'slowest 10%' },
-    { label: 'Fastest', accent: '#22c55e', value: stats ? `${stats.min.toFixed(1)}d` : '—', hint: 'min' },
-    { label: 'Slowest', accent: '#ef4444', value: stats ? `${stats.max.toFixed(1)}d` : '—', hint: 'max' },
+    {
+      label: 'Avg', accent: 'var(--chart-1)', icon: <Gauge size={14} />,
+      value: stats ? `${stats.avg.toFixed(1)}d` : '—', sublabel: 'mean lead time',
+      spark: sparkLead, delta: leadDelta,
+    },
+    {
+      label: 'Median (p50)', accent: 'var(--chart-2)', icon: <Activity size={14} />,
+      value: stats ? `${stats.p50.toFixed(1)}d` : '—', sublabel: 'typical PR',
+    },
+    {
+      label: 'p90', accent: 'var(--chart-3)', icon: <TrendingUp size={14} />,
+      value: stats ? `${stats.p90.toFixed(1)}d` : '—', sublabel: 'slowest 10%',
+    },
+    {
+      label: 'Fastest', accent: 'var(--ok)', icon: <Zap size={14} />,
+      value: stats ? `${stats.min.toFixed(1)}d` : '—', sublabel: 'quickest merge',
+    },
+    {
+      label: 'Slowest', accent: 'var(--bad)', icon: <Hourglass size={14} />,
+      value: stats ? `${stats.max.toFixed(1)}d` : '—', sublabel: 'longest in range',
+    },
   ]
 
   return (
@@ -151,8 +185,12 @@ export default function CycleTime() {
 
       {/* Stats row — skeletons while loading, dashes when empty */}
       {!error && (
-        <RevealList className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" staggerDelay={0.04}>
-          {statTiles.map(t => <StatTile key={t.label} {...t} loading={loading && points.length === 0} />)}
+        <RevealList className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4" staggerDelay={0.04}>
+          {statTiles.map(t => (
+            isInitialLoad
+              ? <StatCardSkeleton key={t.label} />
+              : <StatCard key={t.label} {...t} />
+          ))}
         </RevealList>
       )}
 
@@ -160,14 +198,21 @@ export default function CycleTime() {
       <Reveal delay={0.05} inView>
         <Card padding="lg">
           <div className="flex items-center justify-between mb-5">
-            <div>
-              <h2 className="text-sm font-semibold text-[var(--text)]">Lead time per merged PR</h2>
-              <p className="text-xs text-[var(--text-faint)] mt-0.5">Days from PR open → merge, chronological</p>
+            <div className="flex items-center gap-2.5">
+              <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-1)', background: 'color-mix(in srgb, var(--chart-1) 14%, transparent)' }}>
+                <GitMerge size={15} />
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold text-[var(--text)]">Lead time per merged PR</h2>
+                <p className="text-xs text-[var(--text-faint)] mt-0.5">Days from PR open → merge, chronological</p>
+              </div>
             </div>
-            {loading && <Spinner />}
-            {hasData && (
-              <span className="text-xs font-mono text-[var(--text-faint)]">{chartPoints.length} PRs</span>
-            )}
+            <div className="flex items-center gap-3">
+              {loading && <Spinner />}
+              {hasData && (
+                <span className="text-[11px] font-mono text-[var(--text-faint)] rounded-full px-2.5 py-1 bg-[var(--bg-surface2)] border border-[var(--border)] tabular-nums">{chartPoints.length} PRs</span>
+              )}
+            </div>
           </div>
 
           {loading && points.length === 0 ? (
@@ -177,7 +222,7 @@ export default function CycleTime() {
               points={chartPoints}
               width={760}
               height={220}
-              color="var(--brand-teal)"
+              color="var(--chart-1)"
               xLabel={pt => {
                 const d = new Date(pt.x)
                 return isNaN(d) ? pt.x : `${d.getMonth() + 1}/${d.getDate()}`
@@ -205,8 +250,16 @@ export default function CycleTime() {
         <Reveal delay={0.05} inView>
           <Card padding="lg">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-[var(--text)]">Merged pull requests</h2>
-              <span className="text-xs font-mono text-[var(--text-faint)]">{points.length} rows</span>
+              <div className="flex items-center gap-2.5">
+                <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-2)', background: 'color-mix(in srgb, var(--chart-2) 14%, transparent)' }}>
+                  <GitMerge size={15} />
+                </span>
+                <div>
+                  <h2 className="text-sm font-semibold text-[var(--text)]">Merged pull requests</h2>
+                  <p className="text-xs text-[var(--text-faint)] mt-0.5">Every PR in range, newest first</p>
+                </div>
+              </div>
+              <span className="text-[11px] font-mono text-[var(--text-faint)] rounded-full px-2.5 py-1 bg-[var(--bg-surface2)] border border-[var(--border)] tabular-nums">{points.length} rows</span>
             </div>
             <div className="overflow-x-auto -mx-1">
               <table className="w-full text-xs">
@@ -222,7 +275,7 @@ export default function CycleTime() {
                   {points.slice().reverse().map((pt, i) => (
                     <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors">
                       <td className="px-2 py-2.5 text-[var(--text-faint)] font-mono whitespace-nowrap">{pt.date}</td>
-                      <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--brand-teal)] whitespace-nowrap">
+                      <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--chart-1)] whitespace-nowrap">
                         {typeof pt.days === 'number' ? `${pt.days.toFixed(1)}d` : '—'}
                       </td>
                       <td className="px-2 py-2.5 text-[var(--text-muted)] truncate max-w-[280px]">{pt.title || <span className="text-[var(--text-faint)] italic">untitled</span>}</td>

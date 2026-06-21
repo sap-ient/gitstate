@@ -140,11 +140,11 @@ export default function EngHealth() {
           <Reveal delay={0.05} inView><ReviewPanel review={review} loading={loading && !data} /></Reveal>
 
           {/* Bus factor */}
-          <Reveal inView><SectionHeading icon={<Crown size={13} className="text-[#eab308]" />} hint="if a key person leaves…">Bus factor &amp; ownership</SectionHeading></Reveal>
+          <Reveal inView><SectionHeading icon={<Crown size={13} className="text-[var(--warn)]" />} hint="if a key person leaves…">Bus factor &amp; ownership</SectionHeading></Reveal>
           <Reveal delay={0.05} inView><BusFactorPanel bus={bus} loading={loading && !data} hasDeepData={hasDeepData} /></Reveal>
 
           {/* Tech debt */}
-          <Reveal inView><SectionHeading icon={<Flame size={13} className="text-[#f97316]" />}>Tech-debt hotspots</SectionHeading></Reveal>
+          <Reveal inView><SectionHeading icon={<Flame size={13} className="text-[var(--chart-3)]" />}>Tech-debt hotspots</SectionHeading></Reveal>
           <Reveal delay={0.05} inView><TechDebtPanel hotspots={techDebt} loading={loading && !data} hasDeepData={hasDeepData} /></Reveal>
         </>
       )}

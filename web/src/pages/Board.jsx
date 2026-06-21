@@ -17,7 +17,8 @@ import { ListView } from '../components/ListView.jsx'
 import { TableView } from '../components/TableView.jsx'
 import { IssueDrawer } from '../components/IssueDrawer.jsx'
 import { CreateIssueModal } from '../components/CreateIssueModal.jsx'
-import { Card, Badge, Button } from '../components/ui/index.js'
+import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
+import { LayoutGrid, CircleDot, Loader, CheckCircle2, Archive } from 'lucide-react'
 
 const VIEWS = [
   {
@@ -118,6 +119,24 @@ export default function Board() {
   const gitCount = issues.filter(i => i.source === 'git').length
   const nativeCount = issues.filter(i => i.source === 'native').length
 
+  // Board-level state rollup (effective state: manual override > derived > state).
+  const stateCounts = useMemo(() => {
+    const c = { open: 0, in_progress: 0, done: 0, closed: 0 }
+    for (const i of issues) {
+      const eff = i.manualStateOverride ?? i.derivedState ?? i.state ?? 'open'
+      if (c[eff] != null) c[eff] += 1
+      else c.open += 1
+    }
+    return c
+  }, [issues])
+
+  const summary = [
+    { label: 'Open', value: stateCounts.open, sublabel: 'in backlog', accent: 'var(--chart-3)', icon: <CircleDot size={14} /> },
+    { label: 'In progress', value: stateCounts.in_progress, sublabel: 'active work', accent: 'var(--chart-2)', icon: <Loader size={14} /> },
+    { label: 'Done', value: stateCounts.done, sublabel: 'merged / shipped', accent: 'var(--chart-1)', icon: <CheckCircle2 size={14} /> },
+    { label: 'Closed', value: stateCounts.closed, sublabel: 'archived', accent: 'var(--text-faint)', icon: <Archive size={14} /> },
+  ]
+
   // Called by KanbanBoard when a card is dropped to a new column
   const handleIssueStateChange = useCallback((issueId, newState) => {
     // Sync the drawer if the moved issue is currently open
@@ -132,17 +151,22 @@ export default function Board() {
   return (
     <div className="min-h-full flex flex-col">
       {/* Page header */}
-      <div className="flex items-start justify-between mb-5">
-        <div>
-          <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Work</h1>
-          <div className="flex items-center gap-3 mt-1">
-            <p className="text-sm text-[var(--text-faint)]">Board · List · Table</p>
-            {!loading && (
-              <div className="flex items-center gap-2">
-                {gitCount > 0 && <Badge color="teal">{gitCount} git</Badge>}
-                {nativeCount > 0 && <Badge>{nativeCount} manual</Badge>}
-              </div>
-            )}
+      <div className="flex items-start justify-between mb-5 gap-4">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 grid place-items-center w-9 h-9 rounded-[var(--radius-btn)] bg-[var(--brand-teal)]/10 border border-[var(--brand-teal)]/20 shrink-0">
+            <LayoutGrid size={17} className="text-[var(--brand-teal)]" />
+          </span>
+          <div>
+            <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Work</h1>
+            <div className="flex items-center gap-3 mt-1">
+              <p className="text-sm text-[var(--text-faint)]">Board · List · Table</p>
+              {!loading && (
+                <div className="flex items-center gap-2">
+                  {gitCount > 0 && <Badge color="teal">{gitCount} git</Badge>}
+                  {nativeCount > 0 && <Badge>{nativeCount} manual</Badge>}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -161,6 +185,22 @@ export default function Board() {
 
       {/* Two-truth-modes banner */}
       <TwoTruthsBanner />
+
+      {/* Board-level state rollup */}
+      {!loading && !error && issues.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+          {summary.map(s => (
+            <StatCard
+              key={s.label}
+              label={s.label}
+              value={s.value.toLocaleString()}
+              sublabel={s.sublabel}
+              accent={s.accent}
+              icon={s.icon}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Controls bar */}
       <div className="flex items-center gap-2 flex-wrap mb-5">
