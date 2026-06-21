@@ -243,6 +243,10 @@ func RegisterAdminRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Config
 	mux.Handle("GET /admin",                      guard(http.HandlerFunc(h.analytics)))
 	mux.Handle("GET /admin/users",                guard(http.HandlerFunc(h.users)))
 	mux.Handle("GET /admin/orgs",                 guard(http.HandlerFunc(h.orgs)))
+	mux.Handle("GET /admin/cogs",                 guard(http.HandlerFunc(h.cogs)))
+	mux.Handle("GET /admin/analytics",            guard(http.HandlerFunc(h.geoAnalytics)))
+	mux.Handle("GET /admin/analytics/feed",       guard(http.HandlerFunc(h.geoAnalyticsFeed)))
+	mux.Handle("GET /admin/analytics/online",     guard(http.HandlerFunc(h.geoAnalyticsOnline)))
 	mux.Handle("GET /admin/events",               guard(http.HandlerFunc(h.sseEvents)))
 	mux.Handle("POST /admin/users/{id}/promote",  guard(http.HandlerFunc(h.promoteUser)))
 	mux.Handle("POST /admin/users/{id}/demote",   guard(http.HandlerFunc(h.demoteUser)))
@@ -474,12 +478,14 @@ func (h *adminHandlers) setSuper(w http.ResponseWriter, r *http.Request, value b
 			http.Error(w, "db: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Use 409 (not 401/403): the admin auth wrapper converts any 401/403 from a
+		// handler into a login redirect, which would mask this refusal.
 		if isEmailAllowed(target.Email, h.cfg.Admin.SuperAdminEmails) {
-			http.Error(w, "cannot revoke a supreme admin defined in configuration (SUPER_ADMIN_EMAILS)", http.StatusForbidden)
+			http.Error(w, "cannot revoke a supreme admin defined in configuration (SUPER_ADMIN_EMAILS)", http.StatusConflict)
 			return
 		}
 		if actor := middleware.UserFromContext(r.Context()); actor != nil && actor.ID == id {
-			http.Error(w, "cannot revoke your own super-admin access", http.StatusForbidden)
+			http.Error(w, "cannot revoke your own super-admin access", http.StatusConflict)
 			return
 		}
 	}
