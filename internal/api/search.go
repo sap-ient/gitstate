@@ -36,9 +36,13 @@ type searchHandlers struct {
 
 // searchResponse is the compact, LLM-friendly payload.
 type searchResponse struct {
-	Query   string               `json:"query"`
-	Fuzzy   bool                 `json:"fuzzy"`
-	Results []store.SearchResult `json:"results"`
+	Query string `json:"query"`
+	Fuzzy bool   `json:"fuzzy"`
+	// Semantic is true when the pgvector semantic ranker contributed to the
+	// results (i.e. some issues were embedded and matched), so the caller knows
+	// the hits include meaning-based matches fused with full-text via RRF.
+	Semantic bool                 `json:"semantic"`
+	Results  []store.SearchResult `json:"results"`
 }
 
 // GET /api/search?q=&type=issues,prs,commits&limit=
@@ -72,12 +76,13 @@ func (h *searchHandlers) search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		results []store.SearchResult
-		fuzzy   bool
+		results  []store.SearchResult
+		fuzzy    bool
+		semantic bool
 	)
 	if err := h.db.WithOrg(r.Context(), orgID, func(tx pgx.Tx) error {
 		var e error
-		results, fuzzy, e = store.Search(r.Context(), tx, orgID, query, types, limit)
+		results, fuzzy, semantic, e = store.Search(r.Context(), tx, orgID, query, types, limit)
 		return e
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "search failed")
@@ -88,8 +93,9 @@ func (h *searchHandlers) search(w http.ResponseWriter, r *http.Request) {
 		results = []store.SearchResult{}
 	}
 	writeJSON(w, http.StatusOK, searchResponse{
-		Query:   query,
-		Fuzzy:   fuzzy,
-		Results: results,
+		Query:    query,
+		Fuzzy:    fuzzy,
+		Semantic: semantic,
+		Results:  results,
 	})
 }

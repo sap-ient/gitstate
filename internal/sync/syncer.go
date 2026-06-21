@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/exo/gitstate/internal/db"
+	"github.com/exo/gitstate/internal/embed"
 	"github.com/exo/gitstate/internal/metrics"
 	"github.com/exo/gitstate/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -153,6 +154,17 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 	}
 	if err := metricsSvc.RecomputeCalibration(ctx, orgID); err != nil {
 		log.Error("sync: recompute calibration", "err", err)
+	}
+
+	// ── 6. Post-sync embeddings: keep the semantic (pgvector) index current ────
+	// Freshly upserted/edited issues need a (re)computed embedding so semantic
+	// search can find them by meaning. The local embedder is deterministic and
+	// network-free; the pass is idempotent (only NULL/stale rows). Non-fatal: a
+	// failure here must never fail the sync.
+	if n, err := embed.EmbedPendingIssues(ctx, database, orgID); err != nil {
+		log.Error("sync: embed pending issues", "err", err)
+	} else if n > 0 {
+		log.Info("sync: embedded pending issues", "count", n)
 	}
 
 	log.Info("sync: repo sync complete",

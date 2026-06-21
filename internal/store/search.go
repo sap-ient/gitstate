@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/exo/gitstate/internal/embed"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -92,35 +93,211 @@ func clampLimit(limit int) int {
 	return limit
 }
 
-// Search runs full-text search across the requested entity types, falling back to
-// fuzzy (pg_trgm / ILIKE) matching when FTS finds nothing. The returned bool is
-// true when the fuzzy fallback produced the results, so callers can tell the user
-// the hit was approximate.
+// rrfK is the Reciprocal Rank Fusion constant. The standard value (60) damps the
+// contribution of low-ranked items so a result must place well in at least one
+// ranker to surface; a hit appearing in BOTH the FTS and vector rankings is
+// rewarded by the sum of its reciprocal ranks.
+const rrfK = 60.0
+
+// Search runs HYBRID search across the requested entity types.
 //
-// tx MUST come from db.WithOrg so RLS scopes the query to orgID. The query string
+// Issues are searched two ways and fused with Reciprocal Rank Fusion (RRF):
+//  1. Full-text (websearch_to_tsquery / ts_rank) — exact lexical matches.
+//  2. Vector KNN — the query is embedded with the same local embedder used at
+//     index time and the HNSW cosine index returns the semantically nearest
+//     issues, so "login is broken" can surface an "authentication redirect" issue
+//     that shares no keyword.
+//
+// The two rankings are de-duplicated and re-ranked by RRF (Σ 1/(rrfK+rank)). PRs
+// and commits remain FTS-only and are appended after the fused issue list. When the
+// FTS pass matches nothing at all (and vectors add nothing), the typo-tolerant
+// fuzzy fallback fires exactly as before.
+//
+// Returns (results, fuzzy, semantic). `fuzzy` is true when the fuzzy fallback
+// produced the hits; `semantic` is true when the vector ranker actually
+// contributed (i.e. some issues were embedded and matched). Before any issue is
+// embedded, semantic is false and behaviour is identical to the pre-vector path.
+//
+// tx MUST come from db.WithOrg so RLS scopes every read to orgID. The query string
 // is only ever bound as a parameter; never interpolated.
-func Search(ctx context.Context, tx pgx.Tx, orgID, query string, types []string, limit int) ([]SearchResult, bool, error) {
+func Search(ctx context.Context, tx pgx.Tx, orgID, query string, types []string, limit int) ([]SearchResult, bool, bool, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	wanted := normalizeSearchTypes(types)
 	limit = clampLimit(limit)
 
-	results, err := searchFTS(ctx, tx, wanted, query, limit)
+	ftsResults, err := searchFTS(ctx, tx, wanted, query, limit)
 	if err != nil {
-		return nil, false, err
-	}
-	if len(results) > 0 {
-		return results, false, nil
+		return nil, false, false, err
 	}
 
-	// Nothing matched the structured query — try typo-tolerant fuzzy search.
-	results, err = searchFuzzy(ctx, tx, wanted, query, limit)
-	if err != nil {
-		return nil, false, err
+	// Vector KNN over issues (only when issues are in scope). Returns nothing
+	// before any issue is embedded, in which case the fusion is a no-op and we
+	// behave exactly like FTS-only.
+	var vecHits []VectorHit
+	if wantsIssues(wanted) {
+		qVec := embed.Embed(query)
+		vecHits, err = SearchIssuesByVector(ctx, tx, embed.ToPGVector(qVec), limit)
+		if err != nil {
+			return nil, false, false, err
+		}
 	}
-	return results, len(results) > 0, nil
+
+	fused, semantic := fuseHybrid(ftsResults, vecHits, limit)
+	if len(fused) > 0 {
+		// Vector-only issues carry just an ID — hydrate their row data.
+		if semantic {
+			if err := HydrateMissingIssues(ctx, tx, fused); err != nil {
+				return nil, false, false, err
+			}
+		}
+		return fused, false, semantic, nil
+	}
+
+	// Nothing matched FTS or vectors — try typo-tolerant fuzzy search.
+	fuzzy, err := searchFuzzy(ctx, tx, wanted, query, limit)
+	if err != nil {
+		return nil, false, false, err
+	}
+	return fuzzy, len(fuzzy) > 0, false, nil
+}
+
+// wantsIssues reports whether the issue type is in scope.
+func wantsIssues(wanted []string) bool {
+	for _, t := range wanted {
+		if t == SearchTypeIssue {
+			return true
+		}
+	}
+	return false
+}
+
+// fuseHybrid merges the FTS results with the vector KNN issue hits using
+// Reciprocal Rank Fusion and returns the top `limit` rows by fused score. It also
+// reports whether the vector ranker actually contributed any issue that the FTS
+// pass did not already surface (or improved an issue's standing), i.e. whether the
+// result is "semantic".
+//
+// FTS already carries full result rows (issue/pr/commit). Vector hits are issue IDs
+// only; an issue that appears ONLY in the vector ranking is hydrated lazily — but
+// because the hot path wants a single round trip, we instead keep FTS rows as the
+// source of truth for row data and let vectors re-rank / boost them. Issues found
+// only by the vector ranker are fetched in a follow-up batch by the caller-free
+// helper below.
+func fuseHybrid(fts []SearchResult, vecHits []VectorHit, limit int) ([]SearchResult, bool) {
+	// RRF score per result key. Key = type+"\x00"+id so PRs/commits never collide
+	// with issues.
+	type fusedRow struct {
+		res   SearchResult
+		score float64
+	}
+	order := []string{} // preserves first-seen order for stable output
+	rows := map[string]*fusedRow{}
+
+	keyOf := func(typ, id string) string { return typ + "\x00" + id }
+
+	// FTS contributes by its rank position (0-based → rank 1-based).
+	for i, r := range fts {
+		k := keyOf(r.Type, r.ID)
+		if _, ok := rows[k]; !ok {
+			rows[k] = &fusedRow{res: r}
+			order = append(order, k)
+		}
+		rows[k].score += 1.0 / (rrfK + float64(i+1))
+	}
+
+	// Vector hits contribute to issue rows. A vector-only issue (not in the FTS
+	// set) is recorded with a placeholder row carrying its similarity as Rank; the
+	// caller hydrates these via HydrateMissingIssues. semantic is set when a vector
+	// hit either introduces a new issue or boosts an FTS issue's score.
+	semantic := false
+	for i, vh := range vecHits {
+		k := keyOf(SearchTypeIssue, vh.IssueID)
+		if _, ok := rows[k]; !ok {
+			rows[k] = &fusedRow{res: SearchResult{
+				Type: SearchTypeIssue,
+				ID:   vh.IssueID,
+				Rank: vh.Similarity, // cosine similarity until hydrated
+			}}
+			order = append(order, k)
+			semantic = true
+		} else {
+			// The vector ranker reinforced an existing FTS issue.
+			semantic = true
+		}
+		rows[k].score += 1.0 / (rrfK + float64(i+1))
+	}
+
+	// Stable sort by fused score (desc), tie-broken by first-seen order.
+	out := make([]*fusedRow, 0, len(rows))
+	for _, k := range order {
+		out = append(out, rows[k])
+	}
+	// Insertion sort keeps it stable and is fine for the small (≤limit) set.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].score > out[j-1].score; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+
+	results := make([]SearchResult, 0, len(out))
+	for _, fr := range out {
+		results = append(results, fr.res)
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results, semantic
+}
+
+// HydrateMissingIssues fills in the title/number/state/snippet for any issue-typed
+// result whose row was introduced by the vector ranker (FTS never saw it, so only
+// the ID is set). It runs one batched SELECT for all such IDs. Results whose Title
+// is already populated (came from FTS) are left untouched. tx MUST come from
+// db.WithOrg.
+func HydrateMissingIssues(ctx context.Context, tx pgx.Tx, results []SearchResult) error {
+	var ids []string
+	idx := map[string]int{}
+	for i, r := range results {
+		if r.Type == SearchTypeIssue && r.Title == "" {
+			ids = append(ids, r.ID)
+			idx[r.ID] = i
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	const q = `
+		SELECT id::text, COALESCE(number,0), COALESCE(title,''),
+		       left(COALESCE(title,'') || ' ' || COALESCE(body,''), 160) AS snippet,
+		       COALESCE(repo_id::text,''), COALESCE(state,'')
+		FROM issues
+		WHERE id = ANY($1)`
+	rows, err := tx.Query(ctx, q, ids)
+	if err != nil {
+		return fmt.Errorf("store: hydrate vector issues: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, title, snippet, repoID, state string
+		var number int
+		if err := rows.Scan(&id, &number, &title, &snippet, &repoID, &state); err != nil {
+			return fmt.Errorf("store: scan hydrate row: %w", err)
+		}
+		if i, ok := idx[id]; ok {
+			r := &results[i]
+			r.Number = number
+			r.Title = strings.TrimSpace(title)
+			r.Snippet = strings.TrimSpace(snippet)
+			r.RepoID = repoID
+			r.State = state
+		}
+	}
+	return rows.Err()
 }
 
 // searchFTS UNIONs one websearch_to_tsquery branch per requested entity type and

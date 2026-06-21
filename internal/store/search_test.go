@@ -108,7 +108,7 @@ func TestSearchFTSAndFuzzy(t *testing.T) {
 	var fuzzy bool
 	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		var e error
-		results, fuzzy, e = Search(ctx, tx, orgID, "authentication", nil, 20)
+		results, fuzzy, _, e = Search(ctx, tx, orgID, "authentication", nil, 20)
 		return e
 	}); err != nil {
 		t.Fatalf("Search FTS: %v", err)
@@ -160,7 +160,7 @@ func TestSearchFTSAndFuzzy(t *testing.T) {
 	// ── 3. Type filter narrows the result set. ──
 	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		var e error
-		results, fuzzy, e = Search(ctx, tx, orgID, "authentication", []string{"prs"}, 20)
+		results, fuzzy, _, e = Search(ctx, tx, orgID, "authentication", []string{"prs"}, 20)
 		return e
 	}); err != nil {
 		t.Fatalf("Search type-filter: %v", err)
@@ -177,7 +177,7 @@ func TestSearchFTSAndFuzzy(t *testing.T) {
 	// ── 4. Fuzzy fallback: a typo finds the issue and reports fuzzy=true. ──
 	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		var e error
-		results, fuzzy, e = Search(ctx, tx, orgID, "athentication redirct", []string{"issues"}, 20)
+		results, fuzzy, _, e = Search(ctx, tx, orgID, "athentication redirct", []string{"issues"}, 20)
 		return e
 	}); err != nil {
 		t.Fatalf("Search fuzzy: %v", err)

@@ -32,6 +32,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -42,8 +43,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/exo/gitstate/internal/calibration"
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
+	"github.com/exo/gitstate/internal/embed"
 	"github.com/exo/gitstate/internal/gitanalysis"
 	"github.com/exo/gitstate/internal/store"
 )
@@ -155,11 +158,115 @@ func main() {
 		_ = rng // master rng reserved for future cross-repo variation
 	}
 
+	// Embed issues so semantic (pgvector) search works on the demo out of the box.
+	if n, err := embed.EmbedPendingIssues(ctx, database, org.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "seedgit: embed issues: %v\n", err)
+	} else if n > 0 {
+		fmt.Printf("  Embeddings: %d issues vectorized (semantic search ready)\n", n)
+	}
+
+	// Seed a realistic effort-estimate history (predicted vs actual from real cycle
+	// times) so the self-calibrating estimator has curves + accuracy to show.
+	if err := seedCalibration(ctx, database, org.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "seedgit: seed calibration: %v\n", err)
+	}
+
 	printOrgSummary(ctx, database, org.ID, authors)
 
 	if *keep {
 		fmt.Printf("\n(kept generated repos under %s)\n", root)
 	}
+}
+
+// seedCalibration creates a realistic effort-estimate history so the
+// self-calibrating estimator (and the Eng-Health → Estimation calibration view)
+// has curves + accuracy to show on the demo. For every merged PR with an observed
+// cycle time it writes an effort_estimate whose difficulty tracks the actual lead
+// time and whose predicted_secs is deliberately biased low (so the UI honestly
+// reports "estimates run ~N% low") — varied per repo/area cohort — then runs the
+// real RecomputeCalibration. Idempotent: clears prior seed rows (model='seed-demo').
+func seedCalibration(ctx context.Context, database *db.DB, orgID string) error {
+	areas := []string{"api", "worker", "web", "db"}
+	changeTypes := []string{"feature", "fix", "refactor", "chore"}
+	sizes := []string{"xs", "s", "m", "l", "xl"}
+	rng := rand.New(rand.NewSource(0x5345454447495423))
+
+	err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM effort_estimates WHERE org_id=$1 AND model='seed-demo'`, orgID); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT ct.pr_id, ct.lead_time_secs, pr.repo_id::text
+			FROM cycle_times ct JOIN pull_requests pr ON pr.id = ct.pr_id
+			WHERE ct.org_id=$1 AND ct.pr_id IS NOT NULL AND ct.lead_time_secs IS NOT NULL AND ct.lead_time_secs > 0`, orgID)
+		if err != nil {
+			return err
+		}
+		type row struct {
+			prID   string
+			actual int64
+			repoID string
+		}
+		var list []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.prID, &r.actual, &r.repoID); err != nil {
+				rows.Close()
+				return err
+			}
+			list = append(list, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		const insert = `
+			INSERT INTO effort_estimates
+				(org_id, pr_id, difficulty, rationale, predicted_secs, actual_secs,
+				 cohort_key, size_bucket, change_type, model, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'seed-demo', now())`
+		for i, r := range list {
+			diff := difficultyFromSecs(r.actual)
+			area := areas[i%len(areas)]
+			// Bias varies by area so some cohorts are well-calibrated and others run low.
+			bias := 0.70 + 0.10*float64(indexOf(areas, area)) // 0.70..1.00
+			predicted := float64(r.actual) * bias * (0.92 + 0.16*rng.Float64())
+			cohort := fmt.Sprintf("repo:%s|area:%s", r.repoID, area)
+			ct := changeTypes[i%len(changeTypes)]
+			sz := sizes[int(math.Min(4, math.Floor(diff/2)))]
+			if _, err := tx.Exec(ctx, insert, orgID, r.prID, diff,
+				"seeded calibration sample", predicted, r.actual, cohort, sz, ct); err != nil {
+				return err
+			}
+		}
+		if len(list) > 0 {
+			fmt.Printf("  Calibration: seeded %d estimate samples (predicted vs actual)\n", len(list))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return calibration.RecomputeCalibration(ctx, database, orgID, time.Now())
+}
+
+// difficultyFromSecs maps an observed lead time onto a 1..10 difficulty on a log
+// scale (~30 min → 1, ~5 days → 10) so the seeded curve is monotonic + realistic.
+func difficultyFromSecs(secs int64) float64 {
+	lo, hi := math.Log(1800), math.Log(5*86400)
+	v := math.Log(math.Max(float64(secs), 1800))
+	d := 1 + 9*(v-lo)/(hi-lo)
+	return math.Max(1, math.Min(10, d))
+}
+
+func indexOf(s []string, v string) float64 {
+	for i, x := range s {
+		if x == v {
+			return float64(i)
+		}
+	}
+	return 0
 }
 
 // ── author profiles ───────────────────────────────────────────────────────────
