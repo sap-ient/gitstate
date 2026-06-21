@@ -22,8 +22,23 @@ type Config struct {
 	Auth     AuthConfig     `yaml:"auth"`
 	Git      GitConfig      `yaml:"git"`
 	LLM      LLMConfig      `yaml:"llm"`
-	Billing  BillingConfig  `yaml:"billing"`
-	Admin    AdminConfig    `yaml:"admin"`
+	Billing    BillingConfig    `yaml:"billing"`
+	Admin      AdminConfig      `yaml:"admin"`
+	Accounting AccountingConfig `yaml:"accounting"`
+}
+
+// AccountingConfig holds Xero / QuickBooks OAuth app credentials (cloud-only).
+// Each provider's Enabled is derived: true iff ClientID + ClientSecret are set.
+type AccountingConfig struct {
+	Xero       OAuthCreds `yaml:"xero"`
+	QuickBooks OAuthCreds `yaml:"quickbooks"`
+}
+
+// OAuthCreds is a generic client id/secret pair with a derived Enabled flag.
+type OAuthCreds struct {
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	Enabled      bool   `yaml:"-"`
 }
 
 // AppConfig holds core application settings.
@@ -254,6 +269,11 @@ func Load() (*Config, error) {
 		cfg.Auth.Providers.Microsoft.ClientID != "" &&
 			cfg.Auth.Providers.Microsoft.ClientSecret != ""
 
+	cfg.Accounting.Xero.Enabled =
+		cfg.Accounting.Xero.ClientID != "" && cfg.Accounting.Xero.ClientSecret != ""
+	cfg.Accounting.QuickBooks.Enabled =
+		cfg.Accounting.QuickBooks.ClientID != "" && cfg.Accounting.QuickBooks.ClientSecret != ""
+
 	return cfg, nil
 }
 
@@ -333,6 +353,10 @@ func overlayEnv(cfg *Config) {
 	setStr(&cfg.Auth.Providers.Google.ClientSecret, "OAUTH_GOOGLE_CLIENT_SECRET")
 	setStr(&cfg.Auth.Providers.Microsoft.ClientID, "OAUTH_MICROSOFT_CLIENT_ID")
 	setStr(&cfg.Auth.Providers.Microsoft.ClientSecret, "OAUTH_MICROSOFT_CLIENT_SECRET")
+	setStr(&cfg.Accounting.Xero.ClientID, "XERO_CLIENT_ID")
+	setStr(&cfg.Accounting.Xero.ClientSecret, "XERO_CLIENT_SECRET")
+	setStr(&cfg.Accounting.QuickBooks.ClientID, "QUICKBOOKS_CLIENT_ID")
+	setStr(&cfg.Accounting.QuickBooks.ClientSecret, "QUICKBOOKS_CLIENT_SECRET")
 	setStr(&cfg.Auth.Providers.Microsoft.Tenant, "OAUTH_MICROSOFT_TENANT")
 
 	// Git
