@@ -43,3 +43,7 @@ internal/web/embed/*
 # Local Claude settings
 .claude/
 /billsim
+
+# stray command binaries built into repo root
+/gittrack
+/gitstate-mcp
