@@ -184,7 +184,7 @@ export default function Planning() {
                   <div>
                     <h2 className="text-sm font-semibold text-[var(--text)]">Weekly capacity timeline</h2>
                     <p className="text-xs text-[var(--text-faint)] mt-0.5">
-                      Effective person-days per upcoming week — availability minus approved leave. Amber = leave-heavy.
+                      Effective person-days per upcoming week — availability minus approved leave. Leave-heavy weeks flagged.
                     </p>
                   </div>
                 </div>
