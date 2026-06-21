@@ -55,6 +55,7 @@ const SLUG_ICONS = {
   concepts: Compass,
   'derived-state': GitMerge,
   'effort-and-estimation': Brain,
+  'agents-and-mcp': Brain,
   'data-model': Database,
   'connecting-repos': Plug,
   integrations: Plug,
