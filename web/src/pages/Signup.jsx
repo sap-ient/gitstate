@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { signup, ApiError } from '../lib/api.js'
+import { signup, fetchConfig, ApiError } from '../lib/api.js'
 import { useAuth } from '../lib/useAuth.js'
 import { LogoFull } from '../components/Logo.jsx'
+import { ProviderButtons } from '../components/OAuthProviders.jsx'
 
 function Spinner() {
   return (
@@ -22,10 +23,16 @@ export default function Signup() {
   const [confirm, setConfirm] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [config, setConfig] = useState(null)
+  const [configLoading, setConfigLoading] = useState(true)
 
   useEffect(() => {
     if (isAuthed) navigate('/', { replace: true })
   }, [isAuthed, navigate])
+
+  useEffect(() => {
+    fetchConfig().then(setConfig).catch(() => {}).finally(() => setConfigLoading(false))
+  }, [])
 
   function validate() {
     if (!name.trim()) return 'Full name is required.'
@@ -88,6 +95,17 @@ export default function Signup() {
           <p className="text-sm text-[var(--text-muted)] text-center mb-7">
             Start tracking your projects from git
           </p>
+
+          {!configLoading && (
+            <>
+              <ProviderButtons providers={config?.auth?.providers} />
+              <div className="flex items-center gap-3 mb-6">
+                <div className="flex-1 h-px bg-[var(--border)]" />
+                <span className="text-xs text-[var(--text-faint)] font-mono">or</span>
+                <div className="flex-1 h-px bg-[var(--border)]" />
+              </div>
+            </>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <div>

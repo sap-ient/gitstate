@@ -3,45 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { login, fetchConfig, ApiError } from '../lib/api.js'
 import { useAuth } from '../lib/useAuth.js'
 import { LogoFull } from '../components/Logo.jsx'
-
-function OAuthButton({ href, children, icon }) {
-  return (
-    <a
-      href={href}
-      className="flex items-center justify-center gap-2.5 w-full px-4 py-2.5 rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg-surface)] text-sm font-medium text-[var(--text)] hover:bg-[var(--bg-surface2)] hover:border-[var(--border2)] transition-all duration-150"
-    >
-      {icon}
-      {children}
-    </a>
-  )
-}
-
-const PROVIDER_META = {
-  github: {
-    label: 'Continue with GitHub',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.21 3.44 9.63 8.21 11.19.6.11.82-.26.82-.57 0-.28-.01-1.02-.02-2-3.34.72-4.04-1.59-4.04-1.59-.55-1.38-1.34-1.75-1.34-1.75-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.22 1.84 1.22 1.07 1.8 2.81 1.28 3.5.98.11-.76.42-1.28.76-1.57-2.67-.3-5.47-1.31-5.47-5.84 0-1.29.47-2.34 1.24-3.17-.12-.3-.54-1.52.12-3.16 0 0 1.01-.32 3.3 1.21a11.6 11.6 0 0 1 3-.4c1.02 0 2.05.13 3 .4 2.29-1.53 3.3-1.21 3.3-1.21.66 1.64.24 2.86.12 3.16.77.83 1.24 1.88 1.24 3.17 0 4.54-2.81 5.53-5.49 5.83.43.36.81 1.08.81 2.18 0 1.58-.01 2.85-.01 3.24 0 .31.21.69.83.57C20.56 21.91 24 17.5 24 12.29 24 5.78 18.63.5 12 .5z" />
-      </svg>
-    ),
-  },
-  gitlab: {
-    label: 'Continue with GitLab',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-        <path fill="#E24329" d="M12 21.42 15.31 11.2H8.69L12 21.42Z" />
-        <path fill="#FC6D26" d="M12 21.42 8.69 11.2H4.05L12 21.42Z" />
-        <path fill="#FCA326" d="M4.05 11.2 3.04 14.3a.69.69 0 0 0 .25.77L12 21.42 4.05 11.2Z" />
-        <path fill="#E24329" d="M4.05 11.2h4.64L6.69 5.05a.34.34 0 0 0-.65 0L4.05 11.2Z" />
-        <path fill="#FC6D26" d="M12 21.42 15.31 11.2h4.64L12 21.42Z" />
-        <path fill="#FCA326" d="m19.95 11.2 1.01 3.1a.69.69 0 0 1-.25.77L12 21.42l7.95-10.22Z" />
-        <path fill="#E24329" d="M19.95 11.2h-4.64l2-6.15a.34.34 0 0 1 .65 0l1.99 6.15Z" />
-      </svg>
-    ),
-  },
-}
-
-const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
+import { ProviderButtons } from '../components/OAuthProviders.jsx'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -102,8 +64,9 @@ export default function Login() {
   }
 
   const providers = config?.auth?.providers ?? {}
-  const enabledProviders = Object.entries(providers).filter(([, enabled]) => enabled)
-  const showOAuth = !configLoading && enabledProviders.length > 0
+  // Always render the GitHub/GitLab buttons once config has loaded — greyed-out
+  // (disabled) when that provider isn't configured on this server.
+  const showOAuth = !configLoading
 
   const inputCls = "w-full px-3.5 py-2.5 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] text-sm text-[var(--text)] placeholder-[var(--text-faint)] outline-none focus:border-[var(--brand-teal)] focus:ring-1 focus:ring-[var(--brand-teal)]/30 transition-all duration-150"
 
@@ -136,21 +99,7 @@ export default function Login() {
 
           {showOAuth && (
             <>
-              <div className="space-y-2.5 mb-6">
-                {enabledProviders.map(([name]) => {
-                  const meta = PROVIDER_META[name]
-                  if (!meta) return null
-                  return (
-                    <OAuthButton
-                      key={name}
-                      href={`${BASE}/auth/oauth/${name}/start`}
-                      icon={meta.icon}
-                    >
-                      {meta.label}
-                    </OAuthButton>
-                  )
-                })}
-              </div>
+              <ProviderButtons providers={providers} />
               <div className="flex items-center gap-3 mb-6">
                 <div className="flex-1 h-px bg-[var(--border)]" />
                 <span className="text-xs text-[var(--text-faint)] font-mono">or</span>
