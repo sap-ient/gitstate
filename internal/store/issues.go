@@ -55,24 +55,26 @@ type IssueFilter struct {
 // UpsertIssue inserts or updates a synced (source='git') issue.
 // Uses ON CONFLICT (org_id, platform, external_id) to update.
 //
-// Because the sync goroutine runs outside a request context we cannot rely on
-// db.WithOrg's SET LOCAL. Instead we set app.current_org at session level on
-// the acquired connection, do the upsert, then reset it. This is safe because
-// the acquired connection is released back to the pool after the call, and the
-// SET is connection-scoped rather than session-global in pgx pools.
+// The sync goroutine runs outside a request context, so we open our own tx and
+// set a transaction-LOCAL app.current_org (RLS scope) — NOT a session-level SET
+// (which would leak the org to the next pool user) and NOT a bind param in a bare
+// `SET` (which Postgres rejects, SQLSTATE 42601 — a bug this code previously had).
 func UpsertIssue(ctx context.Context, pool *pgxpool.Pool, orgID string, u IssueUpsert) error {
 	labels := u.Labels
 	if labels == nil {
 		labels = []string{}
 	}
 
-	conn, err := pool.Acquire(ctx)
+	// A transaction with a transaction-LOCAL org GUC: a bind param is invalid in a
+	// bare `SET` (SQLSTATE 42601), and a session-level set_config would leak the org
+	// to the next pool user — so use set_config(...,true) inside a tx (like WithOrg).
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("store: upsert issue: acquire conn: %w", err)
+		return fmt.Errorf("store: upsert issue: begin: %w", err)
 	}
-	defer conn.Release()
+	defer tx.Rollback(ctx)
 
-	if _, err := conn.Exec(ctx, "SET app.current_org = $1", orgID); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_org', $1, true)", orgID); err != nil {
 		return fmt.Errorf("store: upsert issue: set org: %w", err)
 	}
 
@@ -94,14 +96,14 @@ func UpsertIssue(ctx context.Context, pool *pgxpool.Pool, orgID string, u IssueU
 		repoID = &u.RepoID
 	}
 
-	_, err = conn.Exec(ctx, q,
+	_, err = tx.Exec(ctx, q,
 		orgID, repoID, u.Source, u.Platform, u.ExternalID,
 		u.Number, u.Title, u.Body, u.State, labels,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert issue %s/%s: %w", u.Platform, u.ExternalID, err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // ListIssues returns issues for an org, optionally filtered.
@@ -145,15 +147,15 @@ func ListIssues(ctx context.Context, tx pgx.Tx, orgID string, f IssueFilter) ([]
 
 // ListIssuesByRepo returns all issues for a specific repo.
 // Used by the sync goroutine to map issue numbers → IDs for derived-state writes.
-// Sets app.current_org at session level on the acquired connection.
+// Runs in a tx with a transaction-local app.current_org (RLS-scoped, leak-safe).
 func ListIssuesByRepo(ctx context.Context, pool *pgxpool.Pool, orgID, repoID string) ([]Issue, error) {
-	conn, err := pool.Acquire(ctx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store: list issues by repo: acquire conn: %w", err)
+		return nil, fmt.Errorf("store: list issues by repo: begin: %w", err)
 	}
-	defer conn.Release()
+	defer tx.Rollback(ctx)
 
-	if _, err := conn.Exec(ctx, "SET app.current_org = $1", orgID); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_org', $1, true)", orgID); err != nil {
 		return nil, fmt.Errorf("store: list issues by repo: set org: %w", err)
 	}
 
@@ -166,39 +168,45 @@ func ListIssuesByRepo(ctx context.Context, pool *pgxpool.Pool, orgID, repoID str
 		FROM issues
 		WHERE org_id = $1 AND repo_id = $2`
 
-	rows, err := conn.Query(ctx, q, orgID, repoID)
+	rows, err := tx.Query(ctx, q, orgID, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list issues by repo: %w", err)
 	}
-	defer rows.Close()
-
-	return scanIssues(rows)
+	out, err := scanIssues(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: list issues by repo: commit: %w", err)
+	}
+	return out, nil
 }
 
 // SetDerivedState updates the derived_state column for a single issue.
-// Uses the raw pool with explicit org_id for cross-org safety.
+// Runs in a tx with a transaction-local app.current_org (RLS-scoped, leak-safe).
 func SetDerivedState(ctx context.Context, pool *pgxpool.Pool, orgID, issueID, derivedState string) error {
-	conn, err := pool.Acquire(ctx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("store: set derived state: acquire conn: %w", err)
+		return fmt.Errorf("store: set derived state: begin: %w", err)
 	}
-	defer conn.Release()
+	defer tx.Rollback(ctx)
 
-	if _, err := conn.Exec(ctx, "SET app.current_org = $1", orgID); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_org', $1, true)", orgID); err != nil {
 		return fmt.Errorf("store: set derived state: set org: %w", err)
 	}
 
 	const q = `
 		UPDATE issues SET derived_state = $3, updated_at = now()
 		WHERE id = $1 AND org_id = $2`
-	tag, err := conn.Exec(ctx, q, issueID, orgID, derivedState)
+	tag, err := tx.Exec(ctx, q, issueID, orgID, derivedState)
 	if err != nil {
 		return fmt.Errorf("store: set derived state %s: %w", issueID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // NativeIssueInput is the input for CreateNativeIssue (source='native', decisions P1).
