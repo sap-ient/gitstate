@@ -13,6 +13,22 @@ export default defineConfig({
     tailwindcss(),
     react(),
   ],
+  build: {
+    // Route-splitting (React.lazy in App.jsx) keeps the entry chunk small;
+    // bump the warning ceiling so legitimately-grouped vendor code is quiet.
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        // Group the stable React/router runtime into one long-cached vendor
+        // chunk, separate from per-route app code that changes frequently.
+        manualChunks(id) {
+          if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//.test(id)) {
+            return 'react-vendor'
+          }
+        },
+      },
+    },
+  },
   // Dev: the frontend uses relative API paths; proxy them to the Go backend on :8080
   // so there's no cross-origin/CORS concern in `npm run dev` / `dev:full`.
   server: {
