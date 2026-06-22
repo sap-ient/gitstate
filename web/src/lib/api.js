@@ -310,6 +310,11 @@ export function fetchConnectRepos(platform) {
   return get(`/api/connect/${platform}/repos`)
 }
 
+/** Trigger a sequential background re-sync of EVERY repo in the active org. */
+export function syncAllRepos() {
+  return post('/api/repos/sync-all', {})
+}
+
 /** Disconnect a platform (deletes the stored encrypted token). */
 export function disconnectPlatform(platform) {
   return del(`/api/connect/${platform}`)

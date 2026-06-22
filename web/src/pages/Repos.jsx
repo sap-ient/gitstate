@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { useRepos } from '../lib/useRepos.js'
 import {
-  connectStartUrl, fetchConnectStatus, fetchConnectRepos, disconnectPlatform,
+  connectStartUrl, fetchConnectStatus, fetchConnectRepos, disconnectPlatform, syncAllRepos,
 } from '../lib/api.js'
 import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
@@ -512,6 +512,24 @@ function ConnectSection({ onImport, onUsePat }) {
 
 export default function Repos() {
   const { repos, loading, error, connectRepo, syncRepo, refetch } = useRepos()
+  const [syncingAll, setSyncingAll] = useState(false)
+
+  const handleSyncAll = useCallback(async () => {
+    setSyncingAll(true)
+    try {
+      await syncAllRepos()
+      // The sync runs sequentially in the background (clone + git-analysis per repo);
+      // poll a few times so the synced count + activity update as it progresses.
+      let ticks = 0
+      const id = setInterval(async () => {
+        ticks += 1
+        await refetch()
+        if (ticks >= 20) { clearInterval(id); setSyncingAll(false) }
+      }, 6000)
+    } catch {
+      setSyncingAll(false)
+    }
+  }, [refetch])
   const [showForm, setShowForm] = useState(false)
 
   // Surface the ?connected=<platform> / ?error= redirect outcome from the OAuth
@@ -638,6 +656,21 @@ export default function Repos() {
       {/* Connect form */}
       {showForm && (
         <ConnectForm onConnect={connectRepo} onClose={() => setShowForm(false)} />
+      )}
+
+      {/* Sync-all toolbar */}
+      {!loading && !error && repos.length > 0 && (
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs text-[var(--text-faint)]">
+            {syncingAll
+              ? 'Cloning + analyzing each repo in the background — Contribution & Analytics fill in as they finish.'
+              : 'Sync pulls issues/PRs and runs git-history analysis (commits, contribution, cycle time).'}
+          </p>
+          <Button variant="outline" size="sm" onClick={handleSyncAll} disabled={syncingAll}
+            leftIcon={<RefreshCw size={13} className={syncingAll ? 'animate-spin' : ''} />}>
+            {syncingAll ? 'Syncing all…' : 'Sync all'}
+          </Button>
+        </div>
       )}
 
       {/* Repo list */}
