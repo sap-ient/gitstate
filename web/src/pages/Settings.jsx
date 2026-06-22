@@ -19,6 +19,7 @@ import {
   get, put,
   calendarStartUrl, fetchCalendarStatus, patchCalendar, disconnectCalendar,
   accountingStartUrl, disconnectAccounting,
+  fetchProfile, patchProfile,
 } from '../lib/api.js'
 
 function SectionCard({ icon: Icon, title, description, children, delay = 0, tone = 'default', accent = 'var(--brand-teal)' }) {
@@ -782,6 +783,120 @@ function WebhooksSection({ delay }) {
   )
 }
 
+// AccountBody — the editable account block. Loads the authoritative profile from
+// the API (the JWT email can be a `@users.noreply.*` placeholder when a user signed
+// in with GitHub/GitLab and kept their email private) and, in that case, prompts
+// for a real contact email used for notifications + billing receipts.
+function AccountBody({ user, onSignOut }) {
+  const [profile, setProfile] = useState(null)
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState(null) // { ok: bool, text }
+
+  useEffect(() => {
+    fetchProfile()
+      .then((p) => {
+        setProfile(p)
+        setName(p.name ?? '')
+        setEmail(p.emailIsPlaceholder ? '' : (p.email ?? ''))
+      })
+      .catch(() => { /* fall back to JWT user below */ })
+  }, [])
+
+  const placeholder = profile?.emailIsPlaceholder
+  const shownEmail = profile?.email ?? user?.email ?? ''
+
+  async function save(e) {
+    e.preventDefault()
+    setMsg(null)
+    const body = {}
+    if (name.trim() && name.trim() !== (profile?.name ?? '')) body.name = name.trim()
+    if (email.trim() && email.trim() !== (profile?.email ?? '')) body.email = email.trim()
+    if (Object.keys(body).length === 0) { setMsg({ ok: true, text: 'Nothing changed.' }); return }
+    setSaving(true)
+    try {
+      const updated = await patchProfile(body)
+      setProfile(updated)
+      setName(updated.name ?? '')
+      setEmail(updated.emailIsPlaceholder ? '' : (updated.email ?? ''))
+      setMsg({ ok: true, text: 'Saved.' })
+    } catch (err) {
+      setMsg({ ok: false, text: err.message ?? 'Could not save.' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const inputCls = "w-full px-3 py-2 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] text-sm text-[var(--text)] placeholder-[var(--text-faint)] outline-none focus:border-[var(--brand-teal)] focus:ring-1 focus:ring-[var(--brand-teal)]/30 transition-all"
+
+  return (
+    <>
+      <div className="flex items-center gap-4 pb-4 mb-4 border-b border-[var(--border)]">
+        <Avatar user={user} />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-[var(--text)] truncate">{profile?.name || user?.name || 'Unknown'}</p>
+          <p className="text-xs text-[var(--text-faint)] truncate mt-0.5">
+            {placeholder ? 'No contact email yet' : shownEmail}
+          </p>
+          {user?.role && <Badge color="teal" className="mt-1.5">{user.role}</Badge>}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onSignOut}
+          leftIcon={<LogOut size={13} />}
+          className="hover:border-[color-mix(in_srgb,var(--bad)_30%,transparent)] hover:text-[var(--bad)] shrink-0"
+        >
+          Sign out
+        </Button>
+      </div>
+
+      {placeholder && (
+        <div className="flex items-start gap-2.5 mb-4 rounded-[var(--radius-btn)] px-3.5 py-3 bg-[color-mix(in_srgb,var(--warn)_10%,transparent)] border border-[color-mix(in_srgb,var(--warn)_30%,transparent)]">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+            Your git provider kept your email private, so we couldn't get one. Add a
+            real contact email below so we can send notifications and billing receipts.
+          </p>
+        </div>
+      )}
+
+      <form onSubmit={save} className="space-y-3">
+        <div>
+          <label htmlFor="acct-name" className="block text-xs font-medium text-[var(--text-muted)] mb-1">Display name</label>
+          <input id="acct-name" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+        </div>
+        <div>
+          <label htmlFor="acct-email" className="block text-xs font-medium text-[var(--text-muted)] mb-1">
+            Contact email{placeholder ? '' : ''}
+          </label>
+          <input
+            id="acct-email"
+            type="email"
+            className={inputCls}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={placeholder ? 'you@example.com' : (shownEmail || 'you@example.com')}
+          />
+          <p className="text-[11px] text-[var(--text-faint)] mt-1">Used for auth, notifications, and receipts.</p>
+        </div>
+        <div className="flex items-center gap-3 pt-1">
+          <Button type="submit" variant="primary" size="sm" disabled={saving}
+            leftIcon={saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+          {msg && (
+            <span className={`text-xs ${msg.ok ? 'text-[var(--ok)]' : 'text-[var(--bad)]'}`} role="status" aria-live="polite">
+              {msg.text}
+            </span>
+          )}
+        </div>
+      </form>
+    </>
+  )
+}
+
 export default function Settings() {
   const { user, logout } = useAuth()
   const { activeOrg, orgRole } = useOrg()
@@ -808,27 +923,7 @@ export default function Settings() {
 
       {/* Account section */}
       <SectionCard icon={User} title="Account" description="Your personal account details." delay={0.05} accent="var(--chart-1)">
-        <div className="flex items-center gap-4 pb-4 mb-2 border-b border-[var(--border)]">
-          <Avatar user={user} />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-[var(--text)] truncate">{user?.name ?? 'Unknown'}</p>
-            <p className="text-xs text-[var(--text-faint)] truncate mt-0.5">{user?.email ?? ''}</p>
-            {user?.role && <Badge color="teal" className="mt-1.5">{user.role}</Badge>}
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSignOut}
-            leftIcon={<LogOut size={13} />}
-            className="hover:border-[color-mix(in_srgb,var(--bad)_30%,transparent)] hover:text-[var(--bad)] shrink-0"
-          >
-            Sign out
-          </Button>
-        </div>
-
-        <FieldRow label="Display name" value={user?.name} hint="Shown on commits and mentions" />
-        <FieldRow label="Email" value={user?.email} hint="Used for auth and notifications" />
-        <FieldRow label="Password" value="••••••••" hint="Change your password" />
+        <AccountBody user={user} onSignOut={handleSignOut} />
       </SectionCard>
 
       <SectionCard

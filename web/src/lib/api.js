@@ -286,6 +286,20 @@ export function connectStartUrl(platform) {
   return `${BASE}/api/connect/${platform}/start?${qs.toString()}`
 }
 
+/**
+ * The authenticated user's profile: {id, email, name, avatarUrl, emailIsPlaceholder}.
+ * emailIsPlaceholder is true when login came from an OAuth account whose email was
+ * hidden (a `@users.noreply.*` address) — Settings prompts for a real contact email.
+ */
+export function fetchProfile() {
+  return get('/api/profile')
+}
+
+/** Update the authenticated user's display name and/or contact email. */
+export function patchProfile(body) {
+  return patch('/api/profile', body)
+}
+
 /** Fetch the org's connection status: [{platform, connected, login, configured}]. */
 export function fetchConnectStatus() {
   return get('/api/connect/status')
