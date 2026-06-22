@@ -2,7 +2,12 @@
  * useCycleTime — fetch cycle-time lead times from /api/metrics/cycle-time.
  * Params: { repo, from, to } — all optional.
  * Returns: { points, loading, error, refetch }
- * points shape: Array<{ date: string, days: number, title?: string, repo?: string }>
+ * points shape: Array<{
+ *   date: string,        // merge date (YYYY-MM-DD) — the chart's chronological x-axis
+ *   days: number|null,   // lead time (first commit → merge) in days
+ *   reviewDays: number|null, // time open / in review (PR open → merge) in days
+ *   title?: string, repo?: string
+ * }>
  */
 import { useReducer, useEffect, useCallback, useRef } from 'react'
 import { useOrg } from './useOrg.js'
@@ -39,15 +44,24 @@ export function useCycleTime(filters = {}) {
       const data = await api.get(`/api/metrics/cycle-time${qs ? `?${qs}` : ''}`)
       if (genRef.current !== gen) return
       const raw = Array.isArray(data) ? data : (data?.points ?? [])
-      // API rows are { leadTimeSecs, computedAt, prId, ... }; the page wants { date, days }.
-      const points = raw.map(r => ({
-        date: typeof r.computedAt === 'string' ? r.computedAt.slice(0, 10) : (r.date ?? ''),
-        days: typeof r.leadTimeSecs === 'number' ? r.leadTimeSecs / 86400
-          : (typeof r.days === 'number' ? r.days : null),
-        title: r.title,
-        repo: r.repo,
-        prId: r.prId,
-      }))
+      // API rows: { leadTimeSecs, reviewSecs, mergedAt, title, repo, prId, ... }.
+      // The chart plots lead time chronologically by MERGE date (not compute date).
+      const secsToDays = s => (typeof s === 'number' ? s / 86400 : null)
+      const points = raw
+        .map(r => ({
+          date: typeof r.mergedAt === 'string' && r.mergedAt
+            ? r.mergedAt.slice(0, 10)
+            : (typeof r.computedAt === 'string' ? r.computedAt.slice(0, 10) : (r.date ?? '')),
+          days: typeof r.leadTimeSecs === 'number' ? r.leadTimeSecs / 86400
+            : (typeof r.days === 'number' ? r.days : null),
+          reviewDays: secsToDays(r.reviewSecs),
+          title: r.title,
+          repo: r.repo,
+          prId: r.prId,
+        }))
+        // Drop rows without a measurable lead time so the chart/stats stay honest
+        // (no zero-spikes for PRs that have no first-commit timestamp).
+        .filter(p => typeof p.days === 'number' && !Number.isNaN(p.days))
       dispatch({ type: 'FETCH_DONE', points })
     } catch (e) {
       if (genRef.current !== gen) return

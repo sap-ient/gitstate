@@ -19,6 +19,16 @@ function Spinner() {
   )
 }
 
+// humanizeDays renders a lead-time value in the most readable unit:
+//   < 1h → minutes, < 1 day → hours, < 14 days → days (1 decimal), else weeks.
+function humanizeDays(d) {
+  if (typeof d !== 'number' || Number.isNaN(d)) return '—'
+  if (d < 1 / 24) return `${Math.max(1, Math.round(d * 24 * 60))}m`
+  if (d < 1) return `${(d * 24).toFixed(1)}h`
+  if (d < 14) return `${d.toFixed(1)}d`
+  return `${(d / 7).toFixed(1)}w`
+}
+
 function computeStats(points) {
   const ys = points.map(p => p.days).filter(n => typeof n === 'number' && !Number.isNaN(n))
   if (!ys.length) return null
@@ -90,24 +100,24 @@ export default function CycleTime() {
   const statTiles = [
     {
       label: 'Avg', accent: 'var(--chart-1)', icon: <Gauge size={14} />,
-      value: stats ? `${stats.avg.toFixed(1)}d` : '—', sublabel: 'mean lead time',
+      value: stats ? humanizeDays(stats.avg) : '—', sublabel: 'mean lead time',
       spark: sparkLead, delta: leadDelta,
     },
     {
       label: 'Median (p50)', accent: 'var(--chart-2)', icon: <Activity size={14} />,
-      value: stats ? `${stats.p50.toFixed(1)}d` : '—', sublabel: 'typical PR',
+      value: stats ? humanizeDays(stats.p50) : '—', sublabel: 'typical PR',
     },
     {
       label: 'p90', accent: 'var(--chart-3)', icon: <TrendingUp size={14} />,
-      value: stats ? `${stats.p90.toFixed(1)}d` : '—', sublabel: 'slowest 10%',
+      value: stats ? humanizeDays(stats.p90) : '—', sublabel: 'slowest 10%',
     },
     {
       label: 'Fastest', accent: 'var(--ok)', icon: <Zap size={14} />,
-      value: stats ? `${stats.min.toFixed(1)}d` : '—', sublabel: 'quickest merge',
+      value: stats ? humanizeDays(stats.min) : '—', sublabel: 'quickest merge',
     },
     {
       label: 'Slowest', accent: 'var(--bad)', icon: <Hourglass size={14} />,
-      value: stats ? `${stats.max.toFixed(1)}d` : '—', sublabel: 'longest in range',
+      value: stats ? humanizeDays(stats.max) : '—', sublabel: 'longest in range',
     },
   ]
 
@@ -122,7 +132,7 @@ export default function CycleTime() {
           <div>
             <h1 className="font-display text-2xl font-semibold text-[var(--text)] tracking-tight">Cycle Time</h1>
             <p className="text-sm text-[var(--text-faint)] mt-1">
-              Lead time from PR open to merge — derived from git, no estimates entered.
+              Lead time from first commit to merge — derived from git, no estimates entered.
             </p>
           </div>
         </div>
@@ -204,7 +214,7 @@ export default function CycleTime() {
               </span>
               <div>
                 <h2 className="text-sm font-semibold text-[var(--text)]">Lead time per merged PR</h2>
-                <p className="text-xs text-[var(--text-faint)] mt-0.5">Days from PR open → merge, chronological</p>
+                <p className="text-xs text-[var(--text-faint)] mt-0.5">Days from first commit → merge, by merge date</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -233,7 +243,7 @@ export default function CycleTime() {
                 const dateStr = isNaN(d) ? pt.x : d.toLocaleDateString()
                 return [
                   dateStr,
-                  `${pt.y.toFixed(1)} days`,
+                  humanizeDays(pt.y),
                   pt.title ? `"${pt.title}"` : '',
                   pt.repo ? `@ ${pt.repo}` : '',
                 ].filter(Boolean).join(' · ')
@@ -276,7 +286,7 @@ export default function CycleTime() {
                     <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors">
                       <td className="px-2 py-2.5 text-[var(--text-faint)] font-mono whitespace-nowrap">{pt.date}</td>
                       <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--chart-1)] whitespace-nowrap">
-                        {typeof pt.days === 'number' ? `${pt.days.toFixed(1)}d` : '—'}
+                        {humanizeDays(pt.days)}
                       </td>
                       <td className="px-2 py-2.5 text-[var(--text-muted)] truncate max-w-[280px]">{pt.title || <span className="text-[var(--text-faint)] italic">untitled</span>}</td>
                       <td className="px-2 py-2.5 text-[var(--text-faint)] font-mono hidden sm:table-cell truncate max-w-[180px]">{pt.repo || '—'}</td>

@@ -7,10 +7,10 @@
  * Data from GET /api/metrics/involvement?project=&period=
  */
 import { useState, useMemo } from 'react'
-import { RefreshCw, Info, Users, GitMerge, Eye, FolderGit2, AlertTriangle, RotateCw, Activity, Layers } from 'lucide-react'
+import { RefreshCw, Info, Users, GitMerge, Eye, FolderGit2, AlertTriangle, RotateCw, Activity, Layers, GitCommit, Bot } from 'lucide-react'
 import { useInvolvement } from '../lib/useInvolvement.js'
 import { useProjects } from '../lib/useProjects.js'
-import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
+import { Card, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
 
 // Section header in the Dashboard idiom: accent icon chip + title + faint subtitle.
@@ -87,10 +87,16 @@ function InvolvementCard({ member, maxes }) {
     name, email,
     featuresShipped = 0,
     reviewsDone = 0,
-    areasOwned = [],
+    areasOwned = 0,
     activeRecently = false,
     lastActive,
+    isAgent = false,
+    dimensions = {},
   } = member
+
+  const commits = dimensions.commitCount ?? 0
+  const added = dimensions.linesAdded ?? 0
+  const deleted = dimensions.linesDeleted ?? 0
 
   return (
     <Card padding="md" hoverable className="flex flex-col gap-4">
@@ -99,7 +105,12 @@ function InvolvementCard({ member, maxes }) {
         <Initials name={name} email={email} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold text-[var(--text)] truncate">{name ?? email}</span>
+            <span className="text-sm font-semibold text-[var(--text)] truncate">{name || email}</span>
+            {isAgent && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-[var(--brand-indigo)]/10 text-[var(--brand-indigo)] border border-[var(--brand-indigo)]/20">
+                <Bot size={10} /> agent
+              </span>
+            )}
             <ActivityDot active={activeRecently} lastActive={lastActive} />
           </div>
           {name && email && (
@@ -113,23 +124,18 @@ function InvolvementCard({ member, maxes }) {
       <div className="space-y-2.5">
         <DimBar label="Features shipped" value={featuresShipped} max={maxes.featuresShipped} color="var(--chart-1)" icon={GitMerge} />
         <DimBar label="Reviews done" value={reviewsDone} max={maxes.reviewsDone} color="var(--chart-2)" icon={Eye} />
+        <DimBar label="Areas owned" value={areasOwned} max={maxes.areasOwned} color="var(--chart-5)" icon={FolderGit2} />
       </div>
 
-      {/* Areas owned */}
-      {areasOwned.length > 0 ? (
-        <div>
-          <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-widest mb-1.5 flex items-center gap-1 font-mono">
-            <FolderGit2 size={10} /> Areas owned
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {areasOwned.map(area => (
-              <Badge key={area} color="indigo">{area}</Badge>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div className="text-[10px] text-[var(--text-faint)] font-mono">No owned areas in this window</div>
-      )}
+      {/* Commit-volume texture — an independent fact, not summed into any score. */}
+      <div className="flex items-center justify-between text-[10px] font-mono text-[var(--text-faint)] pt-1 border-t border-[var(--border)]">
+        <span className="flex items-center gap-1"><GitCommit size={10} /> {commits.toLocaleString()} commits</span>
+        <span className="tabular-nums">
+          <span className="text-[var(--ok)]">+{added.toLocaleString()}</span>
+          {' / '}
+          <span className="text-[var(--bad)]">-{deleted.toLocaleString()}</span>
+        </span>
+      </div>
     </Card>
   )
 }
@@ -151,19 +157,20 @@ export default function Involvement() {
   const maxes = {
     featuresShipped: Math.max(1, ...members.map(m => m.featuresShipped ?? 0)),
     reviewsDone:     Math.max(1, ...members.map(m => m.reviewsDone ?? 0)),
+    areasOwned:      Math.max(1, ...members.map(m => m.areasOwned ?? 0)),
   }
 
   // Cohort headline numbers — derived purely from the fetched roster, no new metrics.
   const totals = useMemo(() => {
-    const areas = new Set()
-    let shipped = 0, reviews = 0, active = 0
+    let shipped = 0, reviews = 0, active = 0, areas = 0
     for (const m of members) {
       shipped += m.featuresShipped ?? 0
       reviews += m.reviewsDone ?? 0
       if (m.activeRecently) active += 1
-      if (Array.isArray(m.areasOwned)) for (const a of m.areasOwned) areas.add(a)
+      // areas_owned is a per-person breadth count; the cohort figure is the widest.
+      areas = Math.max(areas, m.areasOwned ?? 0)
     }
-    return { shipped, reviews, active, areas: areas.size }
+    return { shipped, reviews, active, areas }
   }, [members])
 
   const hasData = !loading && members.length > 0
@@ -285,8 +292,8 @@ export default function Involvement() {
               accent="var(--chart-2)" icon={<Eye size={14} />}
             />
             <StatCard
-              label="Areas covered" value={totals.areas.toLocaleString()}
-              sublabel="distinct areas owned"
+              label="Widest ownership" value={totals.areas.toLocaleString()}
+              sublabel="most areas owned by one person"
               accent="var(--chart-5)" icon={<Layers size={14} />}
             />
           </div>

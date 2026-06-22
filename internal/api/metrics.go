@@ -64,29 +64,36 @@ type metricsHandlers struct {
 type cycleTimeResponse struct {
 	ID           string  `json:"id"`
 	PRID         *string `json:"prId,omitempty"`
-	LeadTimeSecs *int64  `json:"leadTimeSecs"`  // first_commit_at → merged_at
-	ReviewSecs   *int64  `json:"reviewSecs"`    // pr.created_at → merged_at
+	LeadTimeSecs *int64  `json:"leadTimeSecs"` // first_commit_at → merged_at (DORA lead time)
+	ReviewSecs   *int64  `json:"reviewSecs"`   // pr.created_at → merged_at (time open / in review)
+	MergedAt     string  `json:"mergedAt"`     // the event time the chart plots against
+	Title        string  `json:"title,omitempty"`
+	Repo         string  `json:"repo,omitempty"`
 	ComputedAt   string  `json:"computedAt"`
 }
 
-// involvementResponse carries involvement TEXTURE for one user in one period.
+// involvementResponse carries aggregated involvement TEXTURE for one PERSON over
+// the requested window (one card per person, never per month×project row).
 // Field contract (decisions P2):
-//   - features_shipped: merged PRs authored (observable shipping activity)
-//   - reviews_done:     PRs reviewed / merged by others (invisible senior work)
-//   - areas_owned:      distinct repos/areas touched (breadth of ownership)
-//   - active:           true if any activity in the period
-//   - dimensions:       extensible jsonb with additional texture (no score ever added)
+//   - featuresShipped: merged PRs authored (observable shipping activity)
+//   - reviewsDone:     code reviews given (the invisible senior work)
+//   - areasOwned:      distinct repos/areas touched (breadth of ownership)
+//   - activeRecently:  true if active in any period within the window
+//   - lastActive:      most recent period the person was active (display only)
+//   - dimensions:      extensible jsonb with additional texture (no score ever)
 //
 // There is intentionally NO "score", "rank", "composite", or "total" field.
 type involvementResponse struct {
-	ID              string                 `json:"id"`
-	UserID          *string                `json:"userId,omitempty"`
-	ProjectID       *string                `json:"projectId,omitempty"`
-	PeriodStart     string                 `json:"periodStart"`
+	UserID          string                 `json:"userId"`
+	Name            string                 `json:"name,omitempty"`
+	Email           string                 `json:"email,omitempty"`
+	AvatarURL       string                 `json:"avatarUrl,omitempty"`
 	FeaturesShipped int                    `json:"featuresShipped"` // merged PRs authored
 	ReviewsDone     int                    `json:"reviewsDone"`     // the invisible work
 	AreasOwned      int                    `json:"areasOwned"`      // distinct repos touched
-	Active          bool                   `json:"active"`
+	ActiveRecently  bool                   `json:"activeRecently"`
+	LastActive      string                 `json:"lastActive,omitempty"`
+	IsAgent         bool                   `json:"isAgent"`
 	Dimensions      map[string]interface{} `json:"dimensions"` // extensible texture only
 }
 
@@ -153,11 +160,18 @@ func (h *metricsHandlers) cycleTime(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]cycleTimeResponse, 0, len(cts))
 	for _, ct := range cts {
+		mergedAt := ""
+		if !ct.MergedAt.IsZero() {
+			mergedAt = ct.MergedAt.UTC().Format(time.RFC3339)
+		}
 		out = append(out, cycleTimeResponse{
 			ID:           ct.ID,
 			PRID:         ct.PRID,
 			LeadTimeSecs: ct.LeadTimeSecs,
 			ReviewSecs:   ct.ReviewSecs,
+			MergedAt:     mergedAt,
+			Title:        ct.Title,
+			Repo:         ct.Repo,
 			ComputedAt:   ct.ComputedAt.UTC().Format(time.RFC3339),
 		})
 	}
@@ -178,54 +192,103 @@ func (h *metricsHandlers) involvement(w http.ResponseWriter, r *http.Request) {
 	orgID := middleware.OrgFromContext(r.Context())
 	projectID := r.URL.Query().Get("project")
 
-	var periodStart time.Time
-	if s := r.URL.Query().Get("period"); s != "" {
-		if t, err := time.Parse("2006-01-02", s); err == nil {
-			periodStart = t.UTC()
-		}
-	}
+	// Resolve the window. The UI sends a relative token (7d/30d/90d); we also
+	// accept an explicit YYYY-MM-DD lower bound for ad-hoc queries. The window
+	// start bounds which monthly involvement periods are aggregated into each
+	// person's card.
+	now := time.Now().UTC()
+	windowStart := involvementWindowStart(r.URL.Query().Get("period"), now)
 
-	// Trigger a recompute for the requested period when provided so fresh data
-	// is always returned. ComputeInvolvement is idempotent (upsert).
-	if !periodStart.IsZero() {
-		if err := h.svc.ComputeInvolvement(r.Context(), orgID, periodStart); err != nil {
+	// Recompute every calendar month the window touches so the texture is fresh.
+	// ComputeInvolvement is idempotent (upsert) and self-heals orphan/stale rows.
+	for _, m := range monthsInWindow(windowStart, now) {
+		if err := h.svc.ComputeInvolvement(r.Context(), orgID, m); err != nil {
 			slog.Warn("metrics: compute involvement failed (returning cached data)",
-				"org_id", orgID, "period_start", periodStart, "err", err)
-			// Non-fatal: return stored data.
+				"org_id", orgID, "period_start", m, "err", err)
+			// Non-fatal: return whatever is stored.
 		}
 	}
 
 	// WithOrg sets the RLS org context — involvement has RLS enabled, so a bare pool
 	// would return zero rows under the non-superuser role.
-	var invs []*store.Involvement
+	var members []*store.InvolvementMember
 	if err := h.db.WithOrg(r.Context(), orgID, func(tx pgx.Tx) error {
 		var e error
-		invs, e = store.ListInvolvement(r.Context(), tx, orgID, store.InvolvementFilter{
-			ProjectID:   projectID,
-			PeriodStart: periodStart,
-		})
+		members, e = store.ListInvolvementMembers(r.Context(), tx, orgID, windowStart, projectID)
 		return e
 	}); err != nil {
 		writeMetricsError(w, "list involvement", err)
 		return
 	}
 
-	out := make([]involvementResponse, 0, len(invs))
-	for _, inv := range invs {
-		out = append(out, involvementResponse{
-			ID:              inv.ID,
-			UserID:          inv.UserID,
-			ProjectID:       inv.ProjectID,
-			PeriodStart:     inv.PeriodStart.Format("2006-01-02"),
-			FeaturesShipped: inv.FeaturesShipped,
-			ReviewsDone:     inv.ReviewsDone,
-			AreasOwned:      inv.AreasOwned,
-			Active:          inv.Active,
-			Dimensions:      inv.Dimensions,
-		})
+	out := make([]involvementResponse, 0, len(members))
+	for _, m := range members {
+		resp := involvementResponse{
+			UserID:          m.UserID,
+			Name:            m.Name,
+			Email:           m.Email,
+			AvatarURL:       m.AvatarURL,
+			FeaturesShipped: m.FeaturesShipped,
+			ReviewsDone:     m.ReviewsDone,
+			AreasOwned:      m.AreasOwned,
+			ActiveRecently:  m.Active,
+			IsAgent:         m.IsAgent,
+			Dimensions: map[string]interface{}{
+				"commitCount":  m.CommitCount,
+				"linesAdded":   m.LinesAdded,
+				"linesDeleted": m.LinesDeleted,
+				"isAgent":      m.IsAgent,
+			},
+		}
+		if !m.LastActive.IsZero() {
+			resp.LastActive = m.LastActive.Format("2006-01-02")
+		}
+		out = append(out, resp)
 	}
 
 	writeJSON(w, http.StatusOK, out)
+}
+
+// involvementWindowStart maps a period token to the inclusive lower bound on
+// involvement period_start. Accepts "7d"/"30d"/"90d" (relative) or an explicit
+// "YYYY-MM-DD". Unknown/empty defaults to a 30-day window. The returned bound is
+// truncated to the first day of its calendar month, because involvement is
+// bucketed monthly — a 30-day window must still include the month a recent
+// period started in.
+func involvementWindowStart(period string, now time.Time) time.Time {
+	days := 30
+	switch period {
+	case "7d":
+		days = 7
+	case "30d", "":
+		days = 30
+	case "90d":
+		days = 90
+	default:
+		if t, err := time.Parse("2006-01-02", period); err == nil {
+			return monthStart(t.UTC())
+		}
+	}
+	return monthStart(now.AddDate(0, 0, -days))
+}
+
+// monthStart returns the first instant (UTC midnight) of t's calendar month.
+func monthStart(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+// monthsInWindow lists the first-of-month timestamps from windowStart's month
+// through now's month inclusive, so every period the window aggregates is
+// recomputed. Capped defensively at 24 months.
+func monthsInWindow(windowStart, now time.Time) []time.Time {
+	var out []time.Time
+	m := monthStart(windowStart)
+	endM := monthStart(now)
+	for i := 0; !m.After(endM) && i < 24; i++ {
+		out = append(out, m)
+		m = m.AddDate(0, 1, 0)
+	}
+	return out
 }
 
 // ── POST /api/metrics/estimate/{prId} ────────────────────────────────────────

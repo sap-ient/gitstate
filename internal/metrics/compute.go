@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/exo/gitstate/internal/calibration"
@@ -51,6 +52,14 @@ func (s *Service) ComputeCycleTimes(ctx context.Context, orgID, repoID string) e
 			return fmt.Errorf("metrics.ComputeCycleTimes: list PRs: %w", err)
 		}
 
+		// Bot-authored PRs (dependabot, agents) inflate "throughput" without
+		// representing human cycle time — exclude them by author_login. An
+		// identity is a bot when every one of its commits is agent-authored.
+		botLogins, err := agentLogins(ctx, tx, orgID)
+		if err != nil {
+			return fmt.Errorf("metrics.ComputeCycleTimes: agent logins: %w", err)
+		}
+
 		computed := 0
 		for _, pr := range prs {
 			// Only PRs that are actually merged carry meaningful cycle-time data.
@@ -58,6 +67,15 @@ func (s *Service) ComputeCycleTimes(ctx context.Context, orgID, repoID string) e
 				continue
 			}
 			if pr.MergedAt.IsZero() {
+				continue
+			}
+			if _, isBot := botLogins[strings.ToLower(pr.AuthorLogin)]; isBot {
+				// Self-heal: drop any stale cycle_time row a bot PR may already have
+				// (e.g. seeded before bot exclusion existed) so stats stay human-only.
+				if err := store.DeleteCycleTimeForPR(ctx, tx, orgID, pr.ID); err != nil {
+					slog.Warn("metrics: delete bot cycle_time failed",
+						"org_id", orgID, "pr_id", pr.ID, "err", err)
+				}
 				continue
 			}
 
@@ -97,6 +115,32 @@ func (s *Service) ComputeCycleTimes(ctx context.Context, orgID, repoID string) e
 	})
 }
 
+// agentLogins returns the set of lower-cased author_login values that are bots
+// — identities whose every commit is agent-authored (is_agent). Used to exclude
+// bot PRs from human cycle-time stats. Runs inside the caller's org-scoped tx.
+func agentLogins(ctx context.Context, tx pgx.Tx, orgID string) (map[string]struct{}, error) {
+	const q = `
+		SELECT lower(author_login)
+		FROM commits
+		WHERE org_id = $1 AND author_login IS NOT NULL AND author_login <> ''
+		GROUP BY lower(author_login)
+		HAVING bool_and(is_agent)`
+	rows, err := tx.Query(ctx, q, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var login string
+		if err := rows.Scan(&login); err != nil {
+			return nil, err
+		}
+		out[login] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
 // ── ComputeInvolvement ───────────────────────────────────────────────────────
 //
 // Involvement is stored as TEXTURE — independent observable dimensions (P2).
@@ -131,156 +175,178 @@ func (s *Service) ComputeInvolvement(ctx context.Context, orgID string, periodSt
 	start := time.Date(periodStart.Year(), periodStart.Month(), periodStart.Day(), 0, 0, 0, 0, time.UTC)
 	end := periodEnd(start)
 
-	stats := make(map[string]*userStats) // key = author_login
+	// stats is keyed by the RESOLVED user_id so each row maps to a real users row
+	// (the upsert's natural key includes user_id). A contributor with commits/PRs
+	// but no users row is skipped from the persisted texture — there is nothing to
+	// attribute the row to, and writing a null-user_id row produces an orphan the
+	// reporting layer (which joins involvement→users) can never surface. This is
+	// the bug that previously left recompute writing rows nobody could read.
+	stats := make(map[string]*userStats)
+	getStat := func(userID string) *userStats {
+		us, ok := stats[userID]
+		if !ok {
+			us = &userStats{}
+			stats[userID] = us
+		}
+		return us
+	}
 
 	// All reads + writes run inside ONE db.WithOrg tx so RLS (FORCE RLS on the
 	// non-superuser app role) sees app.current_org — on the bare pool every query
 	// below would return ZERO rows and the recompute would silently write nothing.
-	var totalMerged int
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		// ── Dimension: features_shipped (merged PRs authored by this user) ────────
+		// Resolve the PR author_login → users via the matching commit author_email
+		// (PRs carry no email; commits carry both). GATE: merged only, humans and
+		// agents alike (agents are flagged via is_agent, never silently dropped, so
+		// the texture stays honest — the UI separates them).
 		const prQ = `
-			SELECT COALESCE(author_login,'') AS login, COUNT(*) AS cnt
-			FROM pull_requests
-			WHERE org_id = $1
-			  AND state = 'merged'
-			  AND merged_at >= $2
-			  AND merged_at <= $3
-			  AND author_login IS NOT NULL
-			  AND author_login != ''
-			GROUP BY author_login`
+			WITH ident AS (
+				SELECT DISTINCT lower(author_login) AS login,
+				       lower(author_email::text)    AS email
+				FROM commits
+				WHERE org_id = $1 AND author_login IS NOT NULL AND author_login <> ''
+			)
+			SELECT u.id::text AS user_id, COUNT(*) AS cnt
+			FROM pull_requests p
+			JOIN ident i ON i.login = lower(p.author_login)
+			JOIN users  u ON lower(u.email::text) = i.email
+			WHERE p.org_id = $1
+			  AND p.state = 'merged'
+			  AND p.merged_at >= $2 AND p.merged_at <= $3
+			  AND p.author_login IS NOT NULL AND p.author_login <> ''
+			GROUP BY u.id`
 
 		prRows, err := tx.Query(ctx, prQ, orgID, start, end)
 		if err != nil {
 			return fmt.Errorf("metrics.ComputeInvolvement: query merged PRs: %w", err)
 		}
-		defer prRows.Close()
-
 		for prRows.Next() {
-			var login string
+			var userID string
 			var cnt int
-			if err := prRows.Scan(&login, &cnt); err != nil {
+			if err := prRows.Scan(&userID, &cnt); err != nil {
+				prRows.Close()
 				return fmt.Errorf("metrics.ComputeInvolvement: scan merged PR row: %w", err)
 			}
-			if _, ok := stats[login]; !ok {
-				stats[login] = &userStats{repos: make(map[string]struct{})}
-			}
-			stats[login].featuresShipped = cnt
+			getStat(userID).featuresShipped = cnt
 		}
 		if err := prRows.Err(); err != nil {
+			prRows.Close()
 			return fmt.Errorf("metrics.ComputeInvolvement: merged PR rows: %w", err)
 		}
 		prRows.Close()
 
-		// ── Dimension: areas_owned + additions/deletions (via commits) ────────────
+		// ── Dimensions: areas_owned + commit volume (via commits → users) ─────────
+		// areas_owned = distinct repos a user committed to in the period.
+		// is_agent    = the identity's commits are entirely agent-authored.
 		const commitQ = `
-			SELECT COALESCE(author_login, COALESCE(author_email,'unknown')) AS login,
-			       repo_id::text,
-			       COALESCE(SUM(additions),0),
-			       COALESCE(SUM(deletions),0)
-			FROM commits
-			WHERE org_id = $1
-			  AND committed_at >= $2
-			  AND committed_at <= $3
-			GROUP BY login, repo_id`
+			SELECT u.id::text AS user_id,
+			       COUNT(DISTINCT c.repo_id)              AS areas,
+			       COUNT(*)                               AS commits,
+			       COALESCE(SUM(c.additions),0)           AS adds,
+			       COALESCE(SUM(c.deletions),0)           AS dels,
+			       bool_and(c.is_agent)                   AS all_agent
+			FROM commits c
+			JOIN users u ON lower(u.email::text) = lower(c.author_email::text)
+			WHERE c.org_id = $1
+			  AND c.committed_at >= $2 AND c.committed_at <= $3
+			GROUP BY u.id`
 
 		commitRows, err := tx.Query(ctx, commitQ, orgID, start, end)
 		if err != nil {
 			return fmt.Errorf("metrics.ComputeInvolvement: query commits: %w", err)
 		}
-		defer commitRows.Close()
-
 		for commitRows.Next() {
-			var login, repoID string
-			var adds, dels int
-			if err := commitRows.Scan(&login, &repoID, &adds, &dels); err != nil {
+			var userID string
+			var areas, commits, adds, dels int
+			var allAgent *bool
+			if err := commitRows.Scan(&userID, &areas, &commits, &adds, &dels, &allAgent); err != nil {
+				commitRows.Close()
 				return fmt.Errorf("metrics.ComputeInvolvement: scan commit row: %w", err)
 			}
-			if _, ok := stats[login]; !ok {
-				stats[login] = &userStats{repos: make(map[string]struct{})}
-			}
-			stats[login].repos[repoID] = struct{}{}
-			stats[login].additions += adds
-			stats[login].deletions += dels
+			us := getStat(userID)
+			us.areas = areas
+			us.commits = commits
+			us.additions = adds
+			us.deletions = dels
+			us.isAgent = allAgent != nil && *allAgent
 		}
 		if err := commitRows.Err(); err != nil {
+			commitRows.Close()
 			return fmt.Errorf("metrics.ComputeInvolvement: commit rows: %w", err)
 		}
 		commitRows.Close()
 
-		// ── Dimension: reviews_done (total merged count for the period) ──────────
-		const totalQ = `
-			SELECT COUNT(*)
-			FROM pull_requests
-			WHERE org_id = $1
-			  AND state = 'merged'
-			  AND merged_at >= $2
-			  AND merged_at <= $3`
-		if err := tx.QueryRow(ctx, totalQ, orgID, start, end).Scan(&totalMerged); err != nil {
-			return fmt.Errorf("metrics.ComputeInvolvement: count total merged: %w", err)
-		}
-
-		return s.upsertInvolvement(ctx, tx, orgID, start, end, stats, totalMerged)
+		return s.upsertInvolvement(ctx, tx, orgID, start, end, stats)
 	}); err != nil {
 		return err
 	}
 	return nil
 }
 
-// userStats accumulates per-login dimension values before upserting.
+// userStats accumulates per-user dimension values before upserting.
 type userStats struct {
 	featuresShipped int
+	areas           int             // distinct repos committed to (areas_owned)
+	commits         int             // commit volume in the period (texture only)
 	additions       int
 	deletions       int
-	repos           map[string]struct{} // distinct repos with commits
+	isAgent         bool // identity is entirely agent-authored
 }
 
-// upsertInvolvement writes one involvement row per user inside the caller's
-// org-scoped tx. reviews_done is the conservative "merged PRs by others"
-// approximation (totalMerged − features_shipped): it gives a floor for review
-// activity so seniors/tech-leads aren't zeroed. A full review-event signal would
-// replace this once the sync layer stores reviewer logins.
-func (s *Service) upsertInvolvement(ctx context.Context, tx pgx.Tx, orgID string, start, end time.Time, stats map[string]*userStats, totalMerged int) error {
-	for login, us := range stats {
-		reviewsDone := totalMerged - us.featuresShipped
-		if reviewsDone < 0 {
-			reviewsDone = 0
-		}
+// upsertInvolvement writes one involvement row per RESOLVED user inside the
+// caller's org-scoped tx.
+//
+// reviews_done is deliberately NOT fabricated here. gitstate has no review-event
+// signal in the sync layer yet, so the old "every merged PR by someone else"
+// approximation (totalMerged − features_shipped) wildly over-credited anyone who
+// shipped little — a part-time committer looked like they reviewed the whole org.
+// Until real review data lands we PRESERVE whatever reviews_done the prior rows
+// carry (ReplaceUserInvolvement carries the MAX forward) rather than overwrite it
+// with a misleading number. New rows start at 0 reviews, honestly empty.
+//
+// ReplaceUserInvolvement deletes any prior rows for (user, period) — across every
+// project partition — and writes one org-level row, so recompute is idempotent
+// and the reporting layer never double-counts a user across lineages.
+func (s *Service) upsertInvolvement(ctx context.Context, tx pgx.Tx, orgID string, start, end time.Time, stats map[string]*userStats) error {
+	written := 0
+	for userID, us := range stats {
+		active := us.featuresShipped > 0 || us.areas > 0 || us.commits > 0
 
-		active := us.featuresShipped > 0 || len(us.repos) > 0
-
-		// extensible dimensions — independent facts, no score
+		// extensible dimensions — independent facts, no score. Keys mirror the seed
+		// shape so the texture reads consistently across seeded + recomputed rows.
 		dimensions := map[string]interface{}{
-			"additions":    us.additions,
-			"deletions":    us.deletions,
-			"author_login": login,
-			"period_end":   end.Format(time.RFC3339),
-			// reviews_done_note: approximation until review-event sync lands
-			"reviews_done_basis": "merged_prs_by_others",
+			"commit_count":  us.commits,
+			"lines_added":   us.additions,
+			"lines_deleted": us.deletions,
+			"is_agent":      us.isAgent,
+			"period_end":    end.Format(time.RFC3339),
 		}
 
+		uid := userID
 		in := store.InvolvementUpsertInput{
 			OrgID:           orgID,
-			UserID:          nil, // author_login used; user UUID lookup deferred to reporting layer
+			UserID:          &uid,
+			ProjectID:       nil, // org-level: commits/PRs carry no project attribution
 			PeriodStart:     start,
 			FeaturesShipped: us.featuresShipped,
-			ReviewsDone:     reviewsDone,
-			AreasOwned:      len(us.repos),
+			ReviewsDone:     0, // preserved-on-conflict; see doc comment
+			AreasOwned:      us.areas,
 			Active:          active,
 			Dimensions:      dimensions,
 		}
 
-		// Store author_login in dimensions so the reporting layer can join to users.
-		if err := store.UpsertInvolvement(ctx, tx, in); err != nil {
-			slog.Warn("metrics: upsert involvement failed",
-				"org_id", orgID, "login", login, "err", err)
+		if err := store.ReplaceUserInvolvement(ctx, tx, in); err != nil {
+			slog.Warn("metrics: replace involvement failed",
+				"org_id", orgID, "user_id", userID, "err", err)
 			continue
 		}
+		written++
 	}
 
 	slog.Info("metrics.ComputeInvolvement: done",
 		"org_id", orgID, "period_start", start.Format("2006-01-02"),
-		"users_computed", len(stats))
+		"users_computed", written)
 	return nil
 }
 

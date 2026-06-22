@@ -5,7 +5,10 @@
  * members shape: Array<{
  *   userId, name, email, avatarUrl?,
  *   featuresShipped: number, reviewsDone: number,
- *   areasOwned: string[], activeRecently: boolean, lastActive?: string
+ *   areasOwned: number,           // distinct areas/repos owned
+ *   activeRecently: boolean, lastActive?: string,
+ *   isAgent: boolean,
+ *   dimensions: { commitCount, linesAdded, linesDeleted, isAgent }
  * }>
  */
 import { useReducer, useEffect, useCallback, useRef } from 'react'
