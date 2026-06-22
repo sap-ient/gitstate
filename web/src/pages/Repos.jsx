@@ -6,7 +6,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react'
 import {
   GitBranch, Plus, RefreshCw, Loader2, X, Check,
   CircleDot, GitPullRequest, AlertCircle, Clock, ArrowRight,
-  Link2, Unlink, KeyRound, Download,
+  Link2, Unlink, KeyRound, Download, Building2,
 } from 'lucide-react'
 import { useRepos } from '../lib/useRepos.js'
 import {
@@ -256,6 +256,8 @@ function ConnectSection({ onImport, onUsePat }) {
   const [pickerRepos, setPickerRepos] = useState([])
   const [pickerLoading, setPickerLoading] = useState(false)
   const [importing, setImporting] = useState(null) // fullName being imported
+  const [bulk, setBulk] = useState(null) // { owner, done, total } during a per-org import-all
+  const [query, setQuery] = useState('') // filter the picker list
 
   const refresh = useCallback(() => {
     return fetchConnectStatus()
@@ -322,6 +324,23 @@ function ConnectSection({ onImport, onUsePat }) {
     } finally {
       setImporting(null)
     }
+  }, [onImport])
+
+  // Import every repo under one owner (org or user) sequentially, with progress.
+  const importGroup = useCallback(async (platform, owner, repos) => {
+    setBulk({ owner, done: 0, total: repos.length })
+    let done = 0, failed = 0
+    for (const rp of repos) {
+      try {
+        await onImport({ platform, fullName: rp.fullName })
+      } catch {
+        failed += 1
+      }
+      done += 1
+      setBulk({ owner, done, total: repos.length })
+    }
+    setBulk(null)
+    if (failed) setError(`${failed} of ${repos.length} repos in ${owner} failed to import.`)
   }, [onImport])
 
   return (
@@ -408,7 +427,7 @@ function ConnectSection({ onImport, onUsePat }) {
 
                 {/* Import picker */}
                 {isPicking && (
-                  <div className="border-t border-[var(--border)] bg-[var(--bg-surface2)]/40 max-h-72 overflow-auto">
+                  <div className="border-t border-[var(--border)] bg-[var(--bg-surface2)]/40">
                     {pickerLoading && (
                       <div className="px-4 py-6 flex items-center justify-center text-xs text-[var(--text-faint)]">
                         <Loader2 size={14} className="animate-spin mr-2" /> Loading repositories…
@@ -417,20 +436,69 @@ function ConnectSection({ onImport, onUsePat }) {
                     {!pickerLoading && pickerRepos.length === 0 && (
                       <p className="px-4 py-6 text-center text-xs text-[var(--text-faint)]">No repositories available to this token.</p>
                     )}
-                    {!pickerLoading && pickerRepos.map(rp => (
-                      <div key={rp.externalId || rp.fullName} className="flex items-center gap-3 px-4 py-2.5 border-b border-[var(--border)] last:border-0">
-                        <GitBranch size={13} className="text-[var(--text-faint)] shrink-0" />
-                        <span className="flex-1 min-w-0 text-xs font-mono text-[var(--text-dim)] truncate">{rp.fullName}</span>
-                        <button
-                          onClick={() => importRepo(s.platform, rp.fullName)}
-                          disabled={importing === rp.fullName}
-                          className="flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-[var(--radius-badge)] text-[var(--brand-teal)] hover:bg-[var(--brand-teal)]/[0.1] transition-colors disabled:opacity-60 shrink-0"
-                        >
-                          {importing === rp.fullName ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} strokeWidth={2.5} />}
-                          Import
-                        </button>
-                      </div>
-                    ))}
+                    {!pickerLoading && pickerRepos.length > 0 && (() => {
+                      // Group by owner (org/user) so you can import a whole org at once
+                      // and ignore your personal repos. GitHub lists every repo the token
+                      // can see across all granted owners — grouping makes that navigable.
+                      const q = query.trim().toLowerCase()
+                      const filtered = q ? pickerRepos.filter(r => r.fullName.toLowerCase().includes(q)) : pickerRepos
+                      const groups = {}
+                      for (const r of filtered) {
+                        const owner = r.fullName.includes('/') ? r.fullName.split('/')[0] : '(personal)'
+                        ;(groups[owner] ||= []).push(r)
+                      }
+                      const owners = Object.keys(groups).sort((a, b) => a.localeCompare(b))
+                      return (
+                        <>
+                          <div className="px-4 py-2 bg-[var(--bg-surface2)] border-b border-[var(--border)]">
+                            <input
+                              value={query}
+                              onChange={(e) => setQuery(e.target.value)}
+                              placeholder={`Filter ${pickerRepos.length} repositories by name or org…`}
+                              className="w-full px-3 py-1.5 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] text-xs text-[var(--text)] placeholder-[var(--text-faint)] outline-none focus:border-[var(--brand-teal)]"
+                            />
+                          </div>
+                          <div className="max-h-72 overflow-auto">
+                            {owners.map(owner => {
+                              const list = groups[owner]
+                              const busy = bulk?.owner === owner
+                              return (
+                                <div key={owner}>
+                                  <div className="flex items-center gap-2 px-4 py-2 bg-[var(--bg-surface2)]/70 border-b border-[var(--border)]">
+                                    <Building2 size={12} className="text-[var(--text-faint)] shrink-0" />
+                                    <span className="text-[11px] font-semibold text-[var(--text-muted)] truncate">{owner}</span>
+                                    <span className="text-[10px] font-mono text-[var(--text-faint)]">{list.length}</span>
+                                    <button
+                                      onClick={() => importGroup(s.platform, owner, list)}
+                                      disabled={!!bulk}
+                                      className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-[var(--radius-badge)] text-[var(--brand-teal)] hover:bg-[var(--brand-teal)]/[0.1] transition-colors disabled:opacity-60 shrink-0"
+                                    >
+                                      {busy
+                                        ? <><Loader2 size={12} className="animate-spin" /> {bulk.done}/{bulk.total}</>
+                                        : <><Plus size={12} strokeWidth={2.5} /> Import all</>}
+                                    </button>
+                                  </div>
+                                  {list.map(rp => (
+                                    <div key={rp.externalId || rp.fullName} className="flex items-center gap-3 px-4 py-2 pl-8 border-b border-[var(--border)] last:border-0">
+                                      <GitBranch size={13} className="text-[var(--text-faint)] shrink-0" />
+                                      <span className="flex-1 min-w-0 text-xs font-mono text-[var(--text-dim)] truncate">{rp.fullName}</span>
+                                      <button
+                                        onClick={() => importRepo(s.platform, rp.fullName)}
+                                        disabled={importing === rp.fullName || !!bulk}
+                                        className="flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-[var(--radius-badge)] text-[var(--brand-teal)] hover:bg-[var(--brand-teal)]/[0.1] transition-colors disabled:opacity-60 shrink-0"
+                                      >
+                                        {importing === rp.fullName ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} strokeWidth={2.5} />}
+                                        Import
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </>
+                      )
+                    })()}
                   </div>
                 )}
               </div>
