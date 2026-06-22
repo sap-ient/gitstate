@@ -6,11 +6,12 @@
  *   - KudosModal  : give kudos — pick teammate + optional dimension + message.
  *   - KudosFeed   : recent recognition messages.
  */
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Button, Badge } from '../ui/index.js'
 import { Avatar } from './parts.jsx'
 import { DIMENSIONS, giveKudos } from '../../lib/useContribution.js'
 import { relTime } from './helpers.js'
+import { useFocusTrap } from '../../lib/useFocusTrap.js'
 import { Heart, X, Sparkles } from 'lucide-react'
 
 // ── badge ──────────────────────────────────────────────────────────────────
@@ -41,6 +42,9 @@ export function KudosModal({ members = [], selfId, defaultToUser, onClose, onDon
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState(null)
+  const dialogRef = useRef(null)
+
+  useFocusTrap(dialogRef, true, onClose)
 
   async function submit(e) {
     e.preventDefault()
@@ -62,9 +66,13 @@ export function KudosModal({ members = [], selfId, defaultToUser, onClose, onDon
 
   return (
     <>
-      <div className="fixed inset-0 z-40 animate-[fadeIn_0.2s_ease]" style={{ background: 'rgba(11,17,32,0.6)', backdropFilter: 'blur(2px)' }} onClick={onClose} aria-hidden />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Give kudos">
+      <div className="fixed inset-0 z-40 animate-[fadeIn_0.2s_ease]" style={{ background: 'rgba(11,17,32,0.6)', backdropFilter: 'blur(2px)' }} onClick={onClose} aria-hidden="true" />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <form
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="kudos-title"
           onSubmit={submit}
           className="w-full max-w-md rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--bg)] shadow-[var(--shadow-float)] overflow-hidden"
           style={{ animation: 'kudosIn 0.24s cubic-bezier(0.22,1,0.36,1)' }}
@@ -73,11 +81,11 @@ export function KudosModal({ members = [], selfId, defaultToUser, onClose, onDon
 
           <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-[var(--border)]">
             <div className="flex items-center gap-2">
-              <Heart size={16} className="text-[var(--brand-indigo)]" />
-              <h3 className="text-base font-semibold text-[var(--text)]">Give kudos</h3>
+              <Heart size={16} className="text-[var(--brand-indigo)]" aria-hidden="true" />
+              <h3 id="kudos-title" className="text-base font-semibold text-[var(--text)]">Give kudos</h3>
             </div>
-            <button type="button" onClick={onClose} className="p-1.5 rounded-lg text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors cursor-pointer" aria-label="Close">
-              <X size={18} />
+            <button type="button" onClick={onClose} className="p-1.5 rounded-lg text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]" aria-label="Close dialog">
+              <X size={18} aria-hidden="true" />
             </button>
           </div>
 
@@ -109,6 +117,7 @@ export function KudosModal({ members = [], selfId, defaultToUser, onClose, onDon
                   return (
                     <button
                       key={d.key} type="button"
+                      aria-pressed={active}
                       onClick={() => setDimension(active ? '' : d.key)}
                       className={[
                         'px-2.5 py-1 rounded-full text-[11px] border transition-colors cursor-pointer',
@@ -135,7 +144,9 @@ export function KudosModal({ members = [], selfId, defaultToUser, onClose, onDon
               <span className="text-[10px] font-mono text-[var(--text-faint)]">{message.length}/500</span>
             </label>
 
-            {err && <p className="text-[12px] text-red-400">{err}</p>}
+            <div aria-live="polite">
+              {err && <p role="alert" className="text-[12px] text-red-400">{err}</p>}
+            </div>
           </div>
 
           <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-[var(--border)]">

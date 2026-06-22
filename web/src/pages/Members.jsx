@@ -251,6 +251,8 @@ export default function Members() {
               <input
                 type="email"
                 required
+                aria-required="true"
+                aria-label="Invitee email address"
                 value={inviteEmail}
                 onChange={e => inviteDispatch({ type: 'SET_EMAIL', value: e.target.value })}
                 placeholder="colleague@example.com"
@@ -258,6 +260,7 @@ export default function Members() {
               />
               <select
                 value={inviteRole}
+                aria-label="Invitee role"
                 onChange={e => inviteDispatch({ type: 'SET_ROLE', value: e.target.value })}
                 className="px-3 py-2 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] text-sm text-[var(--text)] outline-none focus:border-[var(--brand-teal)] transition-all cursor-pointer"
               >
@@ -275,16 +278,19 @@ export default function Members() {
                 {inviting ? 'Sending…' : 'Invite'}
               </Button>
             </form>
-            {inviteError && <p className="mt-2 text-xs text-[var(--bad)]">{inviteError}</p>}
-            {inviteSuccess && <p className="mt-2 text-xs text-[var(--ok)]">{inviteSuccess}</p>}
+            <div aria-live="polite">
+              {inviteError && <p role="alert" className="mt-2 text-xs text-[var(--bad)]">{inviteError}</p>}
+              {inviteSuccess && <p className="mt-2 text-xs text-[var(--ok)]">{inviteSuccess}</p>}
+            </div>
             {inviteLink && (
               <div className="mt-2 flex items-center gap-2 flex-wrap">
                 <span className="text-xs text-[var(--text-muted)]">No email configured — share this link:</span>
                 <code className="text-xs px-2 py-1 rounded bg-[var(--bg-surface)] border border-[var(--border)] text-[var(--text)] max-w-full truncate">{inviteLink}</code>
                 <button
                   type="button"
+                  aria-label="Copy invite link"
                   onClick={() => navigator.clipboard?.writeText(inviteLink)}
-                  className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:border-[var(--brand-teal)] text-[var(--text-muted)] hover:text-[var(--brand-teal)] transition-colors"
+                  className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:border-[var(--brand-teal)] text-[var(--text-muted)] hover:text-[var(--brand-teal)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
                 >
                   Copy
                 </button>
@@ -368,6 +374,7 @@ export default function Members() {
                 <select
                   value={member.role}
                   disabled={!!roleChanging[member.userId]}
+                  aria-label={`Role for ${member.name ?? member.email ?? 'member'}`}
                   onChange={e => handleRoleChange(member.userId, e.target.value)}
                   className="px-2.5 py-1.5 rounded-[var(--radius-badge)] bg-[var(--bg)] border border-[var(--border)] text-xs font-mono text-[var(--text-muted)] outline-none focus:border-[var(--brand-teal)] hover:border-[var(--border2)] transition-all cursor-pointer disabled:opacity-50"
                 >
@@ -384,12 +391,14 @@ export default function Members() {
               {/* Remove button */}
               {canManage && (
                 <button
+                  type="button"
                   onClick={() => handleRemove(member.userId, member.email)}
                   disabled={!!removing[member.userId]}
-                  className="ml-1 p-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-[var(--bad)] hover:bg-[color-mix(in_srgb,var(--bad)_10%,transparent)] transition-all disabled:opacity-40"
+                  className="ml-1 p-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-[var(--bad)] hover:bg-[color-mix(in_srgb,var(--bad)_10%,transparent)] transition-all disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
+                  aria-label={`Remove ${member.name ?? member.email ?? 'member'}`}
                   title="Remove member"
                 >
-                  {removing[member.userId] ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+                  {removing[member.userId] ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
                 </button>
               )}
             </div>

@@ -5,8 +5,9 @@
  * the raw numbers behind it, and the actual evidence list (merged PRs, reviews,
  * revert commits) so every figure is traceable back to git.
  */
-import { useEffect } from 'react'
+import { useRef } from 'react'
 import { useContributionMember, DIMENSIONS, dimColor } from '../../lib/useContribution.js'
+import { useFocusTrap } from '../../lib/useFocusTrap.js'
 import { Avatar, CompositeRing, Radar, AuthorshipBar } from './parts.jsx'
 import { fmtNum, relTime, clamp01to100 } from './helpers.js'
 import { Badge, Button } from '../ui/index.js'
@@ -241,12 +242,9 @@ function DimensionBlock({ dim, dimData, evidence }) {
 
 export function ContributorDrawer({ userId, range, onClose, kudosCount = 0, onGiveKudos }) {
   const { data, loading, error } = useContributionMember(userId, range)
+  const drawerRef = useRef(null)
 
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useFocusTrap(drawerRef, true, onClose)
 
   const member = data
   const isBot = member?.isAgentBot
@@ -260,6 +258,7 @@ export function ContributorDrawer({ userId, range, onClose, kudosCount = 0, onGi
         aria-hidden
       />
       <aside
+        ref={drawerRef}
         className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--bg)] border-l border-[var(--border)] w-full max-w-[560px] shadow-[var(--shadow-float)]"
         style={{ animation: 'slideInRight 0.28s cubic-bezier(0.22,1,0.36,1)' }}
         role="dialog"
@@ -294,11 +293,12 @@ export function ContributorDrawer({ userId, range, onClose, kudosCount = 0, onGi
             </Button>
           )}
           <button
+            type="button"
             onClick={onClose}
-            className="shrink-0 p-1.5 rounded-lg text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors cursor-pointer"
-            aria-label="Close"
+            className="shrink-0 p-1.5 rounded-lg text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
+            aria-label="Close contributor panel"
           >
-            <X size={18} />
+            <X size={18} aria-hidden="true" />
           </button>
           </div>
         </div>

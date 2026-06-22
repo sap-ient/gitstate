@@ -116,7 +116,7 @@ function AssistantBubble({ msg }) {
 
 function TypingIndicator() {
   return (
-    <div className="flex gap-2.5">
+    <div className="flex gap-2.5" role="status" aria-label="Assistant is typing">
       <div className="mt-0.5 shrink-0 w-6 h-6 rounded-full bg-gradient-to-br from-[var(--brand-teal)] to-[var(--brand-indigo)] flex items-center justify-center">
         <Sparkles size={12} strokeWidth={2.5} className="text-white" />
       </div>
@@ -186,21 +186,21 @@ export function ChatPanel({ onClose }) {
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
       <header className="h-12 shrink-0 flex items-center gap-2 px-4 border-b border-[var(--border)]">
-        <Sparkles size={15} strokeWidth={2} className="text-[var(--brand-teal)]" />
+        <Sparkles size={15} strokeWidth={2} className="text-[var(--brand-teal)]" aria-hidden="true" />
         <span className="text-[13px] font-semibold text-[var(--text)] tracking-tight">Ask AI</span>
         <button
           type="button"
           onClick={onClose}
           aria-label="Close chat"
           title="Close"
-          className="ml-auto flex items-center justify-center w-7 h-7 rounded-md text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors cursor-pointer"
+          className="ml-auto flex items-center justify-center w-7 h-7 rounded-md text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
         >
-          <X size={15} strokeWidth={2} />
+          <X size={15} strokeWidth={2} aria-hidden="true" />
         </button>
       </header>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" aria-live="polite" aria-busy={sending}>
         {isEmpty ? (
           <EmptyState onPick={pick} />
         ) : (
@@ -227,15 +227,16 @@ export function ChatPanel({ onClose }) {
               if (e.key === 'Enter' && !e.shiftKey) submit(e)
             }}
             placeholder="Ask about your repos…"
+            aria-label="Ask AI about your repos"
             className="flex-1 resize-none bg-transparent text-sm text-[var(--text)] outline-none placeholder-[var(--text-faint)] max-h-32 leading-relaxed"
           />
           <button
             type="submit"
             disabled={!input.trim() || sending}
-            aria-label="Send"
-            className="shrink-0 flex items-center justify-center w-7 h-7 rounded-full bg-gradient-to-br from-[var(--brand-teal)] to-[var(--brand-indigo)] text-white disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity cursor-pointer"
+            aria-label="Send message"
+            className="shrink-0 flex items-center justify-center w-7 h-7 rounded-full bg-gradient-to-br from-[var(--brand-teal)] to-[var(--brand-indigo)] text-white disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--bg)]"
           >
-            <ArrowUp size={15} strokeWidth={2.5} />
+            <ArrowUp size={15} strokeWidth={2.5} aria-hidden="true" />
           </button>
         </div>
       </form>

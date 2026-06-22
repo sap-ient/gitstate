@@ -72,7 +72,10 @@
   --text:        #e2e8f0;
   --text-dim:    #cbd5e1;
   --text-muted:  #94a3b8;
-  --text-faint:  #64748b;
+  /* Bumped from #64748b → ~4.5:1 (AA normal text) on bg/surface/surface2 and
+     clears the 3:1 UI/large-text floor on the deepest surface3. The old value
+     was ~3.0–4.0:1 and failed AA for the small meta text it's used for. */
+  --text-faint:  #8593a8;
 
   --brand-teal:   #2DD4BF;
   --brand-indigo: #6366F1;
@@ -132,7 +135,9 @@
   --chart-6: #0891B2; /* cyan, deepened */
 
   /* Semantic status — light (AA on paper: chips/text carry these as fg) */
-  --ok:   #059669;
+  /* --ok deepened #059669 → #047857 so it clears the 3:1 UI floor on every
+     surface (was 2.97:1 on the deepest surface3) and reaches AA for text. */
+  --ok:   #047857;
   --warn: #B45309;
   --bad:  #DC2626;
   --info: #0284C7;

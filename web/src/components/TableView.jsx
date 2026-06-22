@@ -40,9 +40,17 @@ export function TableView({ issues, onCardClick }) {
             return (
               <tr
                 key={issue.id}
+                tabIndex={0}
+                aria-label={`Open issue: ${issue.title}`}
                 onClick={() => onCardClick(issue)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onCardClick(issue)
+                  }
+                }}
                 className={[
-                  'cursor-pointer transition-colors duration-100 hover:bg-[var(--bg-surface2)]/70 group',
+                  'cursor-pointer transition-colors duration-100 hover:bg-[var(--bg-surface2)]/70 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand-teal)]',
                   idx === 0 ? '' : 'border-t border-[var(--border)]',
                   idx % 2 === 0 ? '' : 'bg-[var(--bg-surface2)]/20',
                 ].join(' ')}

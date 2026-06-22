@@ -304,6 +304,14 @@ export default function Docs() {
   const contentRef = useRef(null)
   const observerRef = useRef(null)
 
+  // Close the mobile nav drawer on Escape.
+  useEffect(() => {
+    if (!mobileOpen) return
+    const onKey = (e) => { if (e.key === 'Escape') setMobileOpen(false) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [mobileOpen])
+
   // ── Fetch doc list ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -464,17 +472,21 @@ export default function Docs() {
           mobileOpen ? 'translate-x-0' : '-translate-x-full',
         ].join(' ')}
         style={{ background: 'var(--bg-surface)', borderRight: '1px solid var(--border)' }}
+        role="dialog"
+        aria-modal={mobileOpen || undefined}
         aria-label="Docs navigation drawer"
+        aria-hidden={!mobileOpen}
       >
         {/* Close button */}
         <div className="flex items-center justify-between mb-6">
           <span className="text-xs font-mono uppercase tracking-widest text-[var(--text-faint)]">Menu</span>
           <button
+            type="button"
             onClick={() => setMobileOpen(false)}
-            className="w-7 h-7 flex items-center justify-center rounded-md text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors"
+            className="w-7 h-7 flex items-center justify-center rounded-md text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
             aria-label="Close navigation"
           >
-            <X size={15} />
+            <X size={15} aria-hidden="true" />
           </button>
         </div>
         <SidebarNav

@@ -2,13 +2,14 @@
  * Projects page — list projects, create new ones, link to filtered board.
  * Shows burndown chart when a project card is selected.
  */
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef, useId } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FolderGit2, Boxes, Activity, Archive } from 'lucide-react'
 import { useProjects } from '../lib/useProjects.js'
 import { BurndownChart } from '../components/BurndownChart.jsx'
 import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
+import { useFocusTrap } from '../lib/useFocusTrap.js'
 
 function Spinner() {
   return (
@@ -18,15 +19,17 @@ function Spinner() {
   )
 }
 
-function InputField({ label, required, ...props }) {
+function InputField({ label, required, id, ...props }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
-        {label} {required && <span className="text-red-400">*</span>}
+      <label htmlFor={id} className="block text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
+        {label} {required && <span className="text-red-400" aria-hidden="true">*</span>}
       </label>
       <input
+        id={id}
         {...props}
         required={required}
+        aria-required={required || undefined}
         className="w-full bg-[var(--bg)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50 placeholder-[var(--text-faint)] transition-colors"
       />
     </div>
@@ -38,6 +41,9 @@ function CreateProjectModal({ onClose, onCreate }) {
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const dialogRef = useRef(null)
+  const uid = useId().replace(/:/g, '')
+  useFocusTrap(dialogRef, true, onClose)
 
   const handleSubmit = useCallback(async (e) => {
     e.preventDefault()
@@ -60,12 +66,13 @@ function CreateProjectModal({ onClose, onCreate }) {
         className="fixed inset-0 z-40"
         style={{ background: 'rgba(11,17,32,0.7)', backdropFilter: 'blur(3px)' }}
         onClick={onClose}
+        aria-hidden="true"
       />
-      <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-card)] bg-[var(--bg-surface)] border border-[var(--border)] shadow-2xl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${uid}-title`} className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-card)] bg-[var(--bg-surface)] border border-[var(--border)] shadow-2xl">
         <div className="px-6 pt-6 pb-4 border-b border-[var(--border)] flex items-center justify-between">
-          <h2 className="text-base font-semibold text-[var(--text)] font-display">New project</h2>
-          <button onClick={onClose} className="text-[var(--text-faint)] hover:text-[var(--text)] transition-colors">
-            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+          <h2 id={`${uid}-title`} className="text-base font-semibold text-[var(--text)] font-display">New project</h2>
+          <button type="button" onClick={onClose} aria-label="Close dialog" className="rounded text-[var(--text-faint)] hover:text-[var(--text)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
             </svg>
           </button>
@@ -75,17 +82,19 @@ function CreateProjectModal({ onClose, onCreate }) {
           <InputField
             label="Name"
             required
-            autoFocus
+            id={`${uid}-name`}
+            data-autofocus
             type="text"
             placeholder="e.g. Q3 Launch, API v2, Mobile App"
             value={name}
             onChange={e => setName(e.target.value)}
           />
           <div>
-            <label className="block text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
+            <label htmlFor={`${uid}-desc`} className="block text-xs font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
               Description
             </label>
             <textarea
+              id={`${uid}-desc`}
               rows={2}
               placeholder="What is this project for?"
               className="w-full bg-[var(--bg)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50 placeholder-[var(--text-faint)] resize-none transition-colors"
@@ -93,9 +102,11 @@ function CreateProjectModal({ onClose, onCreate }) {
               onChange={e => setDescription(e.target.value)}
             />
           </div>
-          {error && (
-            <p className="text-xs text-red-400 bg-red-500/[0.08] rounded px-3 py-2">{error}</p>
-          )}
+          <div aria-live="polite">
+            {error && (
+              <p role="alert" className="text-xs text-red-400 bg-red-500/[0.08] rounded px-3 py-2">{error}</p>
+            )}
+          </div>
           <div className="flex items-center gap-3 pt-1">
             <Button type="submit" disabled={saving || !name.trim()} leftIcon={saving ? <Spinner /> : null}>
               Create project

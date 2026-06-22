@@ -113,6 +113,8 @@ function DualLineChart({ points, width = 600, height = 200 }) {
         width="100%"
         height={height}
         preserveAspectRatio="none"
+        role="img"
+        aria-label={`Burndown chart: remaining vs ideal work across ${points.length} days.`}
         data-point-count={points.length}
         data-inner-w={W}
         onMouseMove={handleMouseMove}

@@ -5,10 +5,11 @@
  * gitstate derives from merged-PR effort (with git evidence) → save as a draft.
  * This is the wedge: a defensible invoice straight from git.
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useId } from 'react'
 import { X, Sparkles, GitMerge, ChevronDown, FileText } from 'lucide-react'
 import { useCurrency } from '../../lib/currency.jsx'
 import { generateInvoice } from '../../lib/useInvoices.js'
+import { useFocusTrap } from '../../lib/useFocusTrap.js'
 import { EvidenceList, Spinner } from './shared.jsx'
 
 function isoDaysAgo(days) {
@@ -20,10 +21,10 @@ function isoToday() {
   return new Date().toISOString().slice(0, 10)
 }
 
-function Field({ label, children }) {
+function Field({ label, htmlFor, children }) {
   return (
     <div>
-      <label className="block text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
+      <label htmlFor={htmlFor} className="block text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1.5">
         {label}
       </label>
       {children}
@@ -36,6 +37,9 @@ const inputCls =
 
 export default function GenerateModal({ clients, projects, onClose, onCreated }) {
   const { format } = useCurrency()
+  const dialogRef = useRef(null)
+  const uid = useId().replace(/:/g, '')
+  useFocusTrap(dialogRef, true, onClose)
 
   const [clientId, setClientId] = useState(clients?.[0]?.id ?? '')
   const [projectId, setProjectId] = useState('')
@@ -112,6 +116,10 @@ export default function GenerateModal({ clients, projects, onClose, onCreated })
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`${uid}-title`}
         className="w-full max-w-2xl rounded-[var(--radius-card)] overflow-hidden"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border2)' }}
         onClick={(e) => e.stopPropagation()}
@@ -126,51 +134,52 @@ export default function GenerateModal({ clients, projects, onClose, onCreated })
               <Sparkles size={16} style={{ color: 'var(--brand-teal)' }} />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-[var(--text)] font-display">Generate from git</h2>
+              <h2 id={`${uid}-title`} className="text-sm font-semibold text-[var(--text)] font-display">Generate from git</h2>
               <p className="text-[11px] text-[var(--text-faint)]">Merged-PR effort → invoice line items with evidence</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-[var(--text-faint)] hover:text-[var(--text)] transition-colors">
-            <X size={18} />
+          <button type="button" onClick={onClose} aria-label="Close dialog" className="rounded text-[var(--text-faint)] hover:text-[var(--text)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]">
+            <X size={18} aria-hidden="true" />
           </button>
         </div>
 
         {/* Inputs */}
         <div className="px-6 py-5 space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Client">
+            <Field label="Client" htmlFor={`${uid}-client`}>
               <div className="relative">
-                <select value={clientId} onChange={(e) => onClientChange(e.target.value)} className={`${inputCls} appearance-none pr-8`}>
+                <select id={`${uid}-client`} value={clientId} onChange={(e) => onClientChange(e.target.value)} className={`${inputCls} appearance-none pr-8`}>
                   <option value="">— No client —</option>
                   {clients?.map((c) => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--text-faint)]" />
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--text-faint)]" aria-hidden="true" />
               </div>
             </Field>
-            <Field label="Project (optional)">
+            <Field label="Project (optional)" htmlFor={`${uid}-project`}>
               <div className="relative">
-                <select value={projectId} onChange={(e) => { setProjectId(e.target.value); setPreview(null) }} className={`${inputCls} appearance-none pr-8`}>
+                <select id={`${uid}-project`} value={projectId} onChange={(e) => { setProjectId(e.target.value); setPreview(null) }} className={`${inputCls} appearance-none pr-8`}>
                   <option value="">— All repositories —</option>
                   {projects?.map((p) => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--text-faint)]" />
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--text-faint)]" aria-hidden="true" />
               </div>
             </Field>
           </div>
 
           <div className="grid grid-cols-3 gap-4">
-            <Field label="From">
-              <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPreview(null) }} className={inputCls} />
+            <Field label="From" htmlFor={`${uid}-from`}>
+              <input id={`${uid}-from`} type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPreview(null) }} className={inputCls} />
             </Field>
-            <Field label="To">
-              <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setPreview(null) }} className={inputCls} />
+            <Field label="To" htmlFor={`${uid}-to`}>
+              <input id={`${uid}-to`} type="date" value={to} onChange={(e) => { setTo(e.target.value); setPreview(null) }} className={inputCls} />
             </Field>
-            <Field label="Rate / effort pt (USD)">
+            <Field label="Rate / effort pt (USD)" htmlFor={`${uid}-rate`}>
               <input
+                id={`${uid}-rate`}
                 type="number" min="0" step="1" value={rate}
                 onChange={(e) => { setRate(e.target.value); setRateTouched(true); setPreview(null) }}
                 className={inputCls}
@@ -178,11 +187,13 @@ export default function GenerateModal({ clients, projects, onClose, onCreated })
             </Field>
           </div>
 
-          {error && (
-            <div className="text-xs text-red-400 rounded-md px-3 py-2" style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}>
-              {error}
-            </div>
-          )}
+          <div aria-live="polite">
+            {error && (
+              <div role="alert" className="text-xs text-red-400 rounded-md px-3 py-2" style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                {error}
+              </div>
+            )}
+          </div>
 
           {/* Preview */}
           {preview && (

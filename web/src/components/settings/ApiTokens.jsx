@@ -221,6 +221,7 @@ function CreateForm({ onCreate }) {
                 type="button"
                 key={s.key}
                 onClick={() => toggleScope(s.key)}
+                aria-pressed={active}
                 className={[
                   'flex items-start gap-2 text-left rounded-[var(--radius-btn)] border p-2.5 transition-all duration-150 cursor-pointer',
                   active
@@ -228,7 +229,7 @@ function CreateForm({ onCreate }) {
                     : 'border-[var(--border)] hover:border-[var(--border2)]',
                 ].join(' ')}
               >
-                <span
+                <span aria-hidden="true"
                   className={[
                     'mt-0.5 grid place-items-center w-4 h-4 rounded-[4px] border shrink-0 transition-colors',
                     active ? 'border-[var(--brand-teal)] bg-[var(--brand-teal)] text-[#0B1120]' : 'border-[var(--border2)] text-transparent',

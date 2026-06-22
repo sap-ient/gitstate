@@ -38,12 +38,18 @@ export function AppShell() {
 
   return (
     <ChatCtx.Provider value={chat}>
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2 focus:rounded-[var(--radius-btn)] focus:bg-[var(--bg-surface)] focus:text-[var(--text)] focus:border focus:border-[var(--brand-teal)] focus:shadow-[var(--shadow-float)] focus:outline-none"
+      >
+        Skip to content
+      </a>
       <div className="flex min-h-screen bg-[var(--bg)]">
         <Sidebar />
         <div className="flex flex-col flex-1 min-w-0">
           <TopBar />
           <div className="flex flex-1 min-h-0">
-            <main className="flex-1 min-w-0 overflow-y-auto">
+            <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 overflow-y-auto">
               <div className="mx-auto w-full max-w-[1400px] px-8 py-8">
                 <Outlet />
               </div>

@@ -7,9 +7,10 @@
  *
  * LLM difficulty estimate shown with evidence-based framing (not story points).
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { GitBadge, NativeBadge, StateChip, LabelPills } from './IssueBadge.jsx'
 import { Badge, Button } from './ui/index.js'
+import { useFocusTrap } from '../lib/useFocusTrap.js'
 
 const STATES = ['open', 'in_progress', 'done', 'closed']
 
@@ -85,11 +86,14 @@ export function IssueDrawer({ issue, onClose, onSave }) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [overrideOpen, setOverrideOpen] = useState(false)
+  const drawerRef = useRef(null)
 
   const [title, setTitle] = useState(issue?.title ?? '')
   const [body, setBody] = useState(issue?.body ?? '')
   const [state, setState] = useState(issue?.state ?? 'open')
   const [overrideState, setOverrideState] = useState(issue?.manualStateOverride ?? '')
+
+  useFocusTrap(drawerRef, !!issue, onClose)
 
   const handleSave = useCallback(async () => {
     if (!issue) return
@@ -106,12 +110,6 @@ export function IssueDrawer({ issue, onClose, onSave }) {
     }
   }, [issue, isGit, title, body, state, overrideState, onSave])
 
-  useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
-
   if (!issue) return null
 
   const inputCls = "w-full bg-[var(--bg)] text-[var(--text)] text-sm rounded-[var(--radius-badge)] px-3 py-1.5 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/40 transition-colors"
@@ -123,10 +121,15 @@ export function IssueDrawer({ issue, onClose, onSave }) {
         className="fixed inset-0 z-40"
         style={{ background: 'rgba(11,17,32,0.6)', backdropFilter: 'blur(2px)' }}
         onClick={onClose}
+        aria-hidden="true"
       />
 
       {/* Drawer */}
       <div
+        ref={drawerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="issue-drawer-title"
         className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--bg-surface)] border-l border-[var(--border)]"
         style={{
           width: 'min(560px, 95vw)',
@@ -145,12 +148,14 @@ export function IssueDrawer({ issue, onClose, onSave }) {
             </div>
             {editing && !isGit ? (
               <input
+                id="issue-drawer-title"
+                aria-label="Issue title"
                 className={inputCls + ' text-base font-semibold border-[var(--brand-teal)]/40'}
                 value={title}
                 onChange={e => setTitle(e.target.value)}
               />
             ) : (
-              <h2 className="text-base font-semibold text-[var(--text)] leading-snug">{issue.title}</h2>
+              <h2 id="issue-drawer-title" className="text-base font-semibold text-[var(--text)] leading-snug">{issue.title}</h2>
             )}
             {issue.platform && (
               <p className="text-xs font-mono text-[var(--text-faint)] mt-1">
@@ -159,10 +164,12 @@ export function IssueDrawer({ issue, onClose, onSave }) {
             )}
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="shrink-0 text-[var(--text-faint)] hover:text-[var(--text)] transition-colors mt-0.5"
+            aria-label="Close issue panel"
+            className="shrink-0 rounded text-[var(--text-faint)] hover:text-[var(--text)] transition-colors mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
           >
-            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
             </svg>
           </button>

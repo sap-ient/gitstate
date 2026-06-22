@@ -197,7 +197,7 @@ export function Sidebar() {
       <OrgSwitcher />
 
       {/* Nav */}
-      <nav className="flex-1 py-3 px-2.5 overflow-y-auto">
+      <nav aria-label="Primary" className="flex-1 py-3 px-2.5 overflow-y-auto">
         <div className="space-y-px">
           {NAV.map((item, idx) => {
             if (item.group === 'end') {
@@ -221,13 +221,14 @@ export function Sidebar() {
                 className={({ isActive }) =>
                   [
                     'flex items-center gap-2.5 px-2.5 py-[7px] rounded-lg text-[13px] font-medium transition-all duration-150',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]',
                     isActive
                       ? 'bg-[#2DD4BF]/10 text-[#2DD4BF]'
                       : 'text-[var(--text-faint)] hover:bg-[var(--bg-surface2)] hover:text-[var(--text)]',
                   ].join(' ')
                 }
               >
-                <span className="shrink-0">{icon}</span>
+                <span className="shrink-0" aria-hidden="true">{icon}</span>
                 {label}
               </NavLink>
             )
@@ -247,10 +248,11 @@ export function Sidebar() {
           </div>
         </div>
         <button
+          type="button"
           onClick={handleLogout}
-          className="mt-1 w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 cursor-pointer"
+          className="mt-1 w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
         >
-          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round"
               d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" />
           </svg>

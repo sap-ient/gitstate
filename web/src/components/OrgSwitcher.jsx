@@ -33,16 +33,24 @@ export function OrgSwitcher() {
 
   useEffect(() => {
     if (!open) return
+    function close() {
+      setOpen(false)
+      setCreating(false)
+      setNewName('')
+      setCreateError(null)
+    }
     function handler(e) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setOpen(false)
-        setCreating(false)
-        setNewName('')
-        setCreateError(null)
-      }
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) close()
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') close()
     }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [open])
 
   async function handleCreate(e) {
@@ -67,9 +75,13 @@ export function OrgSwitcher() {
   return (
     <div className="relative px-3 py-2 border-b border-[var(--border)]" ref={dropdownRef}>
       <button
+        type="button"
         onClick={() => { setOpen(v => !v); setCreating(false); setNewName(''); setCreateError(null) }}
-        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-[var(--radius-btn)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 group"
+        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-[var(--radius-btn)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
+        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls="org-switcher-menu"
+        aria-label={`Current organization: ${displayName}. Switch organization`}
       >
         <OrgAvatar name={activeOrg?.name ?? '?'} />
         <div className="flex-1 min-w-0 text-left">
@@ -78,21 +90,23 @@ export function OrgSwitcher() {
             <p className="text-[10px] text-[var(--text-faint)] font-mono capitalize">{activeOrg.planKey}</p>
           )}
         </div>
-        <span className="text-[var(--text-faint)] group-hover:text-[var(--text-muted)] transition-colors">
+        <span className="text-[var(--text-faint)] group-hover:text-[var(--text-muted)] transition-colors" aria-hidden="true">
           <ChevronsUpDown size={13} />
         </span>
       </button>
 
       {open && (
-        <div className="absolute left-3 right-3 top-full mt-1 z-50 bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-card)] shadow-[var(--shadow-float)] overflow-hidden">
+        <div id="org-switcher-menu" role="menu" className="absolute left-3 right-3 top-full mt-1 z-50 bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-card)] shadow-[var(--shadow-float)] overflow-hidden">
           {/* Org list */}
           {orgs.length > 0 && (
             <div className="p-1.5 border-b border-[var(--border)]">
               {orgs.map(org => (
                 <button
                   key={org.id}
+                  type="button"
+                  role="menuitem"
                   onClick={() => { switchOrg(org.id); setOpen(false) }}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[var(--radius-btn)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 text-left"
+                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[var(--radius-btn)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
                 >
                   <OrgAvatar name={org.name} />
                   <div className="flex-1 min-w-0">
@@ -115,10 +129,12 @@ export function OrgSwitcher() {
           <div className="p-1.5">
             {!creating ? (
               <button
+                type="button"
+                role="menuitem"
                 onClick={() => { setCreating(true) }}
-                className="w-full flex items-center gap-2 px-2.5 py-2 rounded-[var(--radius-btn)] text-xs text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors duration-150"
+                className="w-full flex items-center gap-2 px-2.5 py-2 rounded-[var(--radius-btn)] text-xs text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-surface2)] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"
               >
-                <Plus size={14} strokeWidth={2.5} />
+                <Plus size={14} strokeWidth={2.5} aria-hidden="true" />
                 New organization
               </button>
             ) : (
@@ -130,11 +146,14 @@ export function OrgSwitcher() {
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
                   placeholder="Organization name"
+                  aria-label="New organization name"
                   className="w-full px-2.5 py-1.5 rounded-[var(--radius-btn)] bg-[var(--bg)] border border-[var(--border)] text-xs text-[var(--text)] placeholder-[var(--text-faint)] outline-none focus:border-[var(--brand-teal)] focus:ring-1 focus:ring-[var(--brand-teal)]/30 mb-1.5 transition-all"
                 />
-                {createError && (
-                  <p className="text-[10px] text-red-400 mb-1.5">{createError}</p>
-                )}
+                <div aria-live="polite">
+                  {createError && (
+                    <p role="alert" className="text-[10px] text-red-400 mb-1.5">{createError}</p>
+                  )}
+                </div>
                 <div className="flex gap-1.5">
                   <button
                     type="submit"

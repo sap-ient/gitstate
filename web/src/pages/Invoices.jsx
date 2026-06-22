@@ -8,7 +8,7 @@
  * This is the "…and the invoice" half of the wedge: a defensible invoice
  * straight from git. Currency-aware, both themes, lucide icons.
  */
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef } from 'react'
 import {
   Sparkles, Users, FileText, Plus, ChevronRight, ChevronDown, ArrowLeft,
   Link2, Check, Send, CircleDollarSign, Ban, Trash2, X, GitMerge, Receipt, Hourglass, Wallet,
@@ -28,6 +28,7 @@ import {
   InvoiceStatusBadge, LoadingCenter, ErrorBanner, EvidenceList, Spinner,
 } from '../components/invoices/shared.jsx'
 import { fmtDate, periodLabel } from '../components/invoices/format.js'
+import { useFocusTrap } from '../lib/useFocusTrap.js'
 
 // ── List row ────────────────────────────────────────────────────────────────────
 
@@ -362,6 +363,8 @@ function ClientsModal({ clients, onClose, createClient }) {
   const [rate, setRate] = useState(150)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const dialogRef = useRef(null)
+  useFocusTrap(dialogRef, true, onClose)
 
   async function add() {
     if (!name.trim()) return
@@ -378,25 +381,27 @@ function ClientsModal({ clients, onClose, createClient }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto py-10 px-4" style={{ background: 'rgba(2,6,16,0.72)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
-      <div className="w-full max-w-lg rounded-[var(--radius-card)] overflow-hidden" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border2)' }} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="clients-modal-title" className="w-full max-w-lg rounded-[var(--radius-card)] overflow-hidden" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border2)' }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div className="flex items-center gap-2.5">
-            <Users size={16} style={{ color: 'var(--brand-indigo)' }} />
-            <h2 className="text-sm font-semibold text-[var(--text)] font-display">Clients</h2>
+            <Users size={16} style={{ color: 'var(--brand-indigo)' }} aria-hidden="true" />
+            <h2 id="clients-modal-title" className="text-sm font-semibold text-[var(--text)] font-display">Clients</h2>
           </div>
-          <button onClick={onClose} className="text-[var(--text-faint)] hover:text-[var(--text)]"><X size={18} /></button>
+          <button type="button" onClick={onClose} aria-label="Close dialog" className="rounded text-[var(--text-faint)] hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-teal)]"><X size={18} aria-hidden="true" /></button>
         </div>
 
         <div className="px-6 py-5 space-y-4">
           {/* Add new */}
           <div className="rounded-[var(--radius-badge)] p-4 space-y-3" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
             <p className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest">Add a client</p>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Client name" className="w-full bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Client name" aria-label="Client name" className="w-full bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
             <div className="grid grid-cols-2 gap-3">
-              <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Billing email" className="bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
-              <input type="number" min="0" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="Rate / pt" className="bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
+              <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Billing email" aria-label="Billing email" className="bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
+              <input type="number" min="0" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="Rate / pt" aria-label="Rate per effort point" className="bg-[var(--bg-surface)] text-[var(--text)] text-sm rounded-[var(--radius-btn)] px-3 py-2 border border-[var(--border)] outline-none focus:border-[var(--brand-teal)]/50" />
             </div>
-            {error && <p className="text-xs" style={{ color: 'var(--bad)' }}>{error}</p>}
+            <div aria-live="polite">
+              {error && <p role="alert" className="text-xs" style={{ color: 'var(--bad)' }}>{error}</p>}
+            </div>
             <button onClick={add} disabled={busy || !name.trim()} className="w-full py-2 rounded-[var(--radius-btn)] text-xs font-bold text-[#04121a] disabled:opacity-40 flex items-center justify-center gap-1.5" style={{ background: 'linear-gradient(135deg, var(--brand-teal), var(--brand-indigo))' }}>
               {busy ? <Spinner size={13} /> : <Plus size={13} />} Add client
             </button>

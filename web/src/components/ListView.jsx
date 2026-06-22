@@ -9,8 +9,17 @@ function IssueRow({ issue, onClick }) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Open issue: ${issue.title}`}
       onClick={() => onClick(issue)}
-      className="flex items-center gap-4 px-5 py-3.5 border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-surface2)]/60 cursor-pointer transition-colors duration-100 group"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick(issue)
+        }
+      }}
+      className="flex items-center gap-4 px-5 py-3.5 border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-surface2)]/60 cursor-pointer transition-colors duration-100 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--brand-teal)]"
     >
       {/* Source badge */}
       <div className="shrink-0 w-[54px]">

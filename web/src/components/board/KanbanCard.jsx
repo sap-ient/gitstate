@@ -119,6 +119,16 @@ export function KanbanCard({ issue, onClick }) {
       style={style}
       {...attributes}
       {...listeners}
+      // dnd-kit's sortable attributes make this a focusable role="button" and
+      // bind Space to pick up / drop for keyboard reordering. Enter is free, so
+      // wire it to open the issue drawer — giving keyboard users both actions.
+      aria-label={`Open issue: ${issue.title}`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          if (!isDragging) onClick(issue)
+        }
+      }}
       onClick={() => {
         // Only fire click if not mid-drag
         if (!isDragging) onClick(issue)

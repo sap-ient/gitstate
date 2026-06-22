@@ -42,6 +42,7 @@ export function LineChart({
   legend,
   emptyText = 'No data yet.',
   emptyIcon = null,
+  ariaLabel,
 }) {
   const [hovered, setHovered] = useState(null)
   const gid = useId().replace(/:/g, '')
@@ -129,6 +130,17 @@ export function LineChart({
 
   const drawArea = fill && !isMulti
 
+  // Text alternative: caller-provided label, else an auto summary describing the
+  // series names and value range so the chart isn't an opaque image to AT.
+  const autoLabel = (() => {
+    const names = allSeries.map((s) => s.name).filter(Boolean)
+    const lo = Number.isFinite(yMin) ? Math.round(yMin) : 0
+    const hi = Number.isFinite(yMax) ? Math.round(yMax) : 0
+    const who = names.length ? names.join(', ') + ' — ' : ''
+    return `Line chart: ${who}${xCount} points, values from ${lo} to ${hi}.`
+  })()
+  const label = ariaLabel || autoLabel
+
   return (
     <div ref={wrapRef} style={{ position: 'relative', width: '100%', height }}>
       <svg
@@ -136,6 +148,8 @@ export function LineChart({
         width="100%"
         height={height}
         preserveAspectRatio="none"
+        role="img"
+        aria-label={label}
         data-point-count={xCount}
         data-inner-w={W}
         onMouseMove={handleMouseMove}
