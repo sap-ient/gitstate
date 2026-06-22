@@ -356,6 +356,14 @@ func (s *Service) upsertInvolvement(ctx context.Context, tx pgx.Tx, orgID string
 // persists the result via store.SaveEstimate (decisions P3). Returns the saved
 // EffortEstimate. Returns llm.ErrLLMNotConfigured when the LLM is not set up.
 func (s *Service) EstimateForPR(ctx context.Context, orgID, prID, diff string) (*store.EffortEstimate, error) {
+	// Cold-start guard: the service may have been built with a nil llm.Service
+	// (e.g. metrics.New(db, nil) in the post-sync path). Without this, the call
+	// to llmSvc.EstimateDifficulty below would dereference a nil *llm.Service and
+	// panic. Return the documented sentinel so callers (API handler → 503) treat
+	// it as "LLM not configured" rather than crashing.
+	if s.llm == nil {
+		return nil, llm.ErrLLMNotConfigured
+	}
 	// Fetch the PR for metadata context (title, repo) inside an org-scoped tx so
 	// RLS (FORCE RLS on the non-superuser role) permits the read — a bare-pool
 	// GetPR returns ErrNotFound here.
