@@ -220,13 +220,17 @@ type authorshipJSON struct {
 }
 
 type memberJSON struct {
-	UserID     string         `json:"userId"`
-	Name       string         `json:"name"`
-	Email      string         `json:"email"`
-	IsAgentBot bool           `json:"isAgentBot"`
-	Composite  float64        `json:"composite"`
-	Dimensions dimensionsJSON `json:"dimensions"`
-	Authorship authorshipJSON `json:"authorship"`
+	UserID string `json:"userId"`
+	// ContributorID is the STABLE per-person key the frontend groups on (a grouped
+	// person usually has no userId, so userId can't collapse them together). userId
+	// is still emitted for linked members (drill-down/invite).
+	ContributorID string         `json:"contributorId,omitempty"`
+	Name          string         `json:"name"`
+	Email         string         `json:"email"`
+	IsAgentBot    bool           `json:"isAgentBot"`
+	Composite     float64        `json:"composite"`
+	Dimensions    dimensionsJSON `json:"dimensions"`
+	Authorship    authorshipJSON `json:"authorship"`
 }
 
 type weightsJSON struct {
@@ -240,11 +244,12 @@ type weightsJSON struct {
 
 func toMemberJSON(m contribution.Member) memberJSON {
 	return memberJSON{
-		UserID:     m.UserID,
-		Name:       m.Name,
-		Email:      m.Email,
-		IsAgentBot: m.IsAgentBot,
-		Composite:  m.Composite,
+		UserID:        m.UserID,
+		ContributorID: m.ContributorID,
+		Name:          m.Name,
+		Email:         m.Email,
+		IsAgentBot:    m.IsAgentBot,
+		Composite:     m.Composite,
 		Dimensions: dimensionsJSON{
 			Shipped: dimDetailJSON{Score: m.Dimensions.Shipped, Raw: shippedRawJSON{
 				MergedPRs: m.Raw.MergedPRs, IssuesClosed: m.Raw.IssuesClosed, FeaturesShipped: m.Raw.FeaturesShipped,
@@ -317,8 +322,11 @@ func (h *contributionHandlers) member(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "X-Org-ID header required")
 		return
 	}
-	userID := r.PathValue("userId")
-	if userID == "" {
+	// The {userId} path value may be a contributor id (when a grouped person is
+	// clicked — they usually have no userId) OR a linked user id. ComputeMember
+	// accepts either; we just pass it through.
+	id := r.PathValue("userId")
+	if id == "" {
 		writeError(w, http.StatusBadRequest, "userId required")
 		return
 	}
@@ -328,7 +336,7 @@ func (h *contributionHandlers) member(w http.ResponseWriter, r *http.Request) {
 	}
 	// Same window-backfill as the roster so the member's dimensions/evidence are
 	// scored against fresh involvement (idempotent; non-fatal on failure).
-	detail, found, err := h.svc.ComputeMember(r.Context(), orgID, userID, p)
+	detail, found, err := h.svc.ComputeMember(r.Context(), orgID, id, p)
 	if err != nil {
 		slog.Error("contribution member", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not compute member contribution")
@@ -341,8 +349,9 @@ func (h *contributionHandlers) member(w http.ResponseWriter, r *http.Request) {
 
 	mj := toMemberJSON(detail.Member)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"userId":     mj.UserID,
-		"name":       mj.Name,
+		"userId":        mj.UserID,
+		"contributorId": mj.ContributorID,
+		"name":          mj.Name,
 		"email":      mj.Email,
 		"isAgentBot": mj.IsAgentBot,
 		"composite":  mj.Composite,
