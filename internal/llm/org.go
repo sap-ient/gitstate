@@ -74,7 +74,7 @@ func (s *Service) ForOrg(ctx context.Context, database *db.DB, orgID string) (sv
 		}
 		model := settings.Model
 		if model == "" {
-			model = "claude-sonnet-4-6"
+			model = "claude-haiku-4-5-20251001" // default: cheapest current model for bulk effort scoring; logged per estimate
 		}
 		byok := &Service{
 			provider: newAnthropicClient(string(plain), model),

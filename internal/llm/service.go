@@ -109,7 +109,7 @@ func New(cfg *config.Config) *Service {
 	}
 	model := cfg.LLM.Model
 	if model == "" {
-		model = "claude-sonnet-4-6"
+		model = "claude-haiku-4-5-20251001" // default: cheapest current model for bulk effort scoring; logged per estimate
 	}
 	return &Service{
 		provider: newAnthropicClient(cfg.LLM.AnthropicAPIKey, model),
