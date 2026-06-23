@@ -387,6 +387,9 @@ type connectStatus struct {
 	// configured, so "Connect" should hit the App install URL instead of the
 	// OAuth connect/start. False ⇒ fall back to OAuth connect.
 	AppEnabled bool `json:"appEnabled,omitempty"`
+	// AppSlug (github only) is the App's slug, exposed so the frontend can build a
+	// direct "manage installation" link (https://github.com/apps/<slug>/installations/new).
+	AppSlug string `json:"appSlug,omitempty"`
 }
 
 func (h *connectHandlers) status(w http.ResponseWriter, r *http.Request) {
@@ -404,6 +407,7 @@ func (h *connectHandlers) status(w http.ResponseWriter, r *http.Request) {
 	if h.cfg.Git.GitHub.AppEnabled {
 		byPlatform["github"].AppEnabled = true
 		byPlatform["github"].Configured = true
+		byPlatform["github"].AppSlug = h.cfg.Git.GitHub.AppSlug
 	}
 
 	var conns []store.PlatformConnection

@@ -6,7 +6,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react'
 import {
   GitBranch, Plus, RefreshCw, Loader2, X, Check,
   CircleDot, GitPullRequest, AlertCircle, Clock, ArrowRight,
-  Link2, Unlink, KeyRound, Download, Building2,
+  Link2, Unlink, KeyRound, Download, Building2, Settings, Info, ExternalLink,
 } from 'lucide-react'
 import { useRepos } from '../lib/useRepos.js'
 import {
@@ -248,7 +248,7 @@ function RepoRow({ repo, onSync }) {
  * Shows status, connect/disconnect buttons, an import picker for stored-token
  * repos, and a PAT-fallback escape hatch (the existing ConnectForm).
  */
-function ConnectSection({ onImport, onImportAll, onUsePat }) {
+function ConnectSection({ onImport, onImportAll, onUsePat, justConnected }) {
   const [status, setStatus] = useState(null) // [{platform, connected, login, configured}]
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -279,6 +279,30 @@ function ConnectSection({ onImport, onImportAll, onUsePat }) {
       .catch(e => { if (!cancelled) { setError(e.message ?? 'Failed to load connection status'); setLoading(false) } })
     return () => { cancelled = true }
   }, [])
+
+  // Just returned from a GitHub App install/callback (?connected=<platform>):
+  // refresh the connection status and auto-open the import picker so the newly
+  // granted repos are visible without a manual click. Self-contained (does not
+  // call the memoized openPicker) so it runs exactly once on return.
+  useEffect(() => {
+    if (!justConnected) return
+    let cancelled = false
+    Promise.resolve().then(() => {
+      if (cancelled) return
+      setPicker(justConnected)
+      setPickerLoading(true)
+      setPickerRepos([])
+    })
+    Promise.all([fetchConnectStatus(), fetchConnectRepos(justConnected)])
+      .then(([s, repos]) => {
+        if (cancelled) return
+        setStatus(Array.isArray(s) ? s : [])
+        setPickerRepos(Array.isArray(repos) ? repos : [])
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPickerLoading(false) })
+    return () => { cancelled = true }
+  }, [justConnected])
 
   const handleConnect = useCallback((s) => {
     const platform = typeof s === 'string' ? s : s.platform
@@ -414,6 +438,18 @@ function ConnectSection({ onImport, onImportAll, onUsePat }) {
                       >
                         <Download size={13} /> {isPicking ? 'Hide' : 'Import repos'}
                       </button>
+                      {/* GitHub App: always offer installing on ANOTHER org / changing the
+                          repo selection, even while connected — it links to the App install
+                          page (302 → github.com/apps/<slug>/installations/new). */}
+                      {s.appEnabled && (
+                        <button
+                          onClick={() => handleConnect(s)}
+                          className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] hover:text-[var(--brand-teal)] hover:bg-[var(--brand-teal)]/[0.08] transition-colors"
+                          title="Install on another org or change which repos gitstate can see"
+                        >
+                          <Settings size={13} /> Install on another org / manage
+                        </button>
+                      )}
                       <button
                         onClick={() => handleDisconnect(s.platform)}
                         className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-[var(--radius-badge)] text-[var(--text-faint)] hover:text-[var(--bad)] hover:bg-[color-mix(in_srgb,var(--bad)_8%,transparent)] transition-colors"
@@ -427,6 +463,34 @@ function ConnectSection({ onImport, onImportAll, onUsePat }) {
                     </Button>
                   )}
                 </div>
+
+                {/* Honest single-connection note: gitstate stores ONE connection per org,
+                    so installing the App on a second GitHub account/org REPLACES the
+                    current one. Surfaced only for a connected GitHub App. */}
+                {s.connected && s.appEnabled && (
+                  <div className="flex items-start gap-2 px-4 py-2.5 border-t border-[var(--border)] bg-[var(--bg-surface2)]/40 text-[11px] text-[var(--text-faint)]">
+                    <Info size={12} className="text-[var(--text-faint)] shrink-0 mt-0.5" />
+                    <span>
+                      gitstate stores one GitHub connection per org. Use{' '}
+                      <span className="text-[var(--text-dim)] font-medium">Install on another org / manage</span>{' '}
+                      to add repos or switch the App to a different account — connecting a
+                      new GitHub account <span className="text-[var(--text-dim)]">replaces</span> the current one.
+                      {s.appSlug && (
+                        <>
+                          {' '}
+                          <a
+                            href={`https://github.com/apps/${s.appSlug}/installations/new`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-[var(--brand-teal)] hover:underline"
+                          >
+                            Manage on GitHub <ExternalLink size={10} />
+                          </a>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                )}
 
                 {/* Import picker */}
                 {isPicking && (
@@ -543,10 +607,13 @@ export default function Repos() {
     const params = new URLSearchParams(window.location.search)
     const connected = params.get('connected')
     const err = params.get('error')
-    if (connected) return { kind: 'ok', text: `Connected ${connected}. Pick repos to import below.` }
+    if (connected) return { kind: 'ok', text: `Connected ${connected}. The newly-granted repos are listed below — pick repos to import.` }
     if (err) return { kind: 'err', text: `Connection failed: ${err}` }
     return null
   })
+  // The platform we just returned from connecting (drives a status refresh +
+  // auto-opening the import picker in ConnectSection). Read once from the URL.
+  const [justConnected] = useState(() => new URLSearchParams(window.location.search).get('connected'))
 
   // Clean the query string so a refresh doesn't re-show the banner (no setState).
   useEffect(() => {
@@ -572,6 +639,22 @@ export default function Repos() {
     await connectRepo({ platform, fullName }) // no token → server uses stored connection token
     refetch?.().catch(() => {})
   }, [connectRepo, refetch])
+
+  // Group the connected-repos list by owner (org/user) — same pattern as the
+  // import picker — so rows sit under a per-owner header with a count.
+  const repoGroups = useMemo(() => {
+    const groups = {}
+    for (const r of repos) {
+      const owner = r.fullName?.includes('/') ? r.fullName.split('/')[0] : '(personal)'
+      ;(groups[owner] ||= []).push(r)
+    }
+    for (const owner of Object.keys(groups)) {
+      groups[owner].sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''))
+    }
+    return Object.keys(groups)
+      .sort((a, b) => a.localeCompare(b))
+      .map(owner => ({ owner, list: groups[owner] }))
+  }, [repos])
 
   const stats = useMemo(() => {
     const total = repos.length
@@ -626,7 +709,7 @@ export default function Repos() {
       )}
 
       {/* Platform connections (OAuth-app) */}
-      <ConnectSection onImport={importRepo} onImportAll={importAll} onUsePat={() => setShowForm(true)} />
+      <ConnectSection onImport={importRepo} onImportAll={importAll} onUsePat={() => setShowForm(true)} justConnected={justConnected} />
 
       {/* Summary strip */}
       {!loading && repos.length > 0 && (
@@ -738,8 +821,17 @@ export default function Repos() {
 
           {!loading && !error && repos.length > 0 && (
             <RevealList staggerDelay={0.04}>
-              {repos.map(repo => (
-                <RepoRow key={repo.id} repo={repo} onSync={syncRepo} />
+              {repoGroups.map(({ owner, list }) => (
+                <div key={owner}>
+                  <div className="flex items-center gap-2 px-5 py-2 bg-[var(--bg-surface2)]/70 border-b border-[var(--border)]">
+                    <Building2 size={12} className="text-[var(--text-faint)] shrink-0" />
+                    <span className="text-[11px] font-semibold text-[var(--text-muted)] truncate">{owner}</span>
+                    <span className="text-[10px] font-mono text-[var(--text-faint)]">{list.length}</span>
+                  </div>
+                  {list.map(repo => (
+                    <RepoRow key={repo.id} repo={repo} onSync={syncRepo} />
+                  ))}
+                </div>
               ))}
             </RevealList>
           )}
