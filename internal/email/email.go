@@ -55,10 +55,12 @@ type Config struct {
 // Configured reports whether a real send can be attempted.
 func (c Config) Configured() bool { return c.Host != "" && c.From != "" }
 
-// Mailer sends mail via SMTP. The zero value is not useful; use New.
+// Mailer sends mail via the configured backend (Resend / SES / SMTP). The zero
+// value is not useful; use New.
 type Mailer struct {
 	cfg  Config
-	send sendFunc // injectable for tests; defaults to smtp.SendMail
+	prov providerConfig // resend / ses / smtp selection (resolved from env)
+	send sendFunc        // injectable for tests; defaults to smtp.SendMail
 	log  *log.Logger
 }
 
@@ -66,15 +68,17 @@ type Mailer struct {
 // without opening a socket.
 type sendFunc func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
 
-// New builds a Mailer from the ambient environment.
+// New builds a Mailer from the ambient environment, auto-selecting the backend
+// (Resend if RESEND_API_KEY, SES if AWS creds, else SMTP).
 func New() *Mailer {
-	return &Mailer{cfg: LoadConfig(), send: smtp.SendMail, log: log.Default()}
+	return &Mailer{cfg: LoadConfig(), prov: loadProviderConfig(), send: smtp.SendMail, log: log.Default()}
 }
 
 // NewWithSender builds a Mailer with an explicit config and send hook. Used by
-// tests to assert on the composed MIME without a real SMTP server.
+// tests to assert on the composed MIME without a real SMTP server. Forces the
+// SMTP path (prov defaults to smtp) so the injected sender is exercised.
 func NewWithSender(cfg Config, send sendFunc) *Mailer {
-	return &Mailer{cfg: cfg, send: send, log: log.Default()}
+	return &Mailer{cfg: cfg, prov: providerConfig{provider: "smtp"}, send: send, log: log.Default()}
 }
 
 // LoadConfig reads SMTP settings from the environment, applying sane defaults.
@@ -105,8 +109,16 @@ func (m *Mailer) Send(ctx context.Context, to []string, subject, htmlBody string
 		return errors.New("email: no recipients")
 	}
 
+	// Resend / SES backends (when configured) handle the send directly.
+	if handled, err := m.sendVia(ctx, recips, subject, htmlBody, attachments); handled {
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if !m.cfg.Configured() {
-		m.log.Printf("email: SMTP not configured (SMTP_HOST empty) — skipping send of %q to %d recipient(s)", subject, len(recips))
+		m.log.Printf("email: not configured (no SMTP_HOST / RESEND_API_KEY / SES creds) — skipping send of %q to %d recipient(s)", subject, len(recips))
 		return nil
 	}
 
