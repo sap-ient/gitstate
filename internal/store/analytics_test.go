@@ -498,3 +498,120 @@ func TestAnalyticsAggregates(t *testing.T) {
 		sum.TotalCommits, sum.Contributors, sum.Repos,
 		prs.Total, prs.Merged, share.AgentCommits, share.HumanCommits)
 }
+
+// TestUpsertPlatformDates verifies that UpsertPR and UpsertIssue persist the REAL
+// platform created_at / updated_at — NOT the sync time (DB default now()). This is
+// the regression for "pull requests date dont seem to be date of pull request":
+// the upserts previously omitted created_at, so every PR/issue was stamped at sync.
+func TestUpsertPlatformDates(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping platform-dates integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	defer pool.Close()
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	defer conn.Release()
+
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO organizations (slug, name) VALUES ($1, $2) RETURNING id`,
+		fmt.Sprintf("pdates-test-%d", time.Now().UnixNano()), "Platform Dates Test",
+	).Scan(&orgID); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_org', $1, true)", orgID); err != nil {
+		t.Fatalf("set org: %v", err)
+	}
+	var repoID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO repos (org_id, platform, external_id, full_name)
+		 VALUES ($1, 'github', $2, 'acme/dates') RETURNING id`,
+		orgID, fmt.Sprintf("pdates-repo-%d", time.Now().UnixNano()),
+	).Scan(&repoID); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	// A platform created_at well in the PAST (distinct from now()), so a regression
+	// (created_at = now()) is unambiguously caught.
+	platformCreated := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	platformMerged := time.Date(2024, 1, 16, 12, 0, 0, 0, time.UTC)
+
+	// ── PR: created_at must be the platform date, not the sync time ──────────────
+	if err := UpsertPR(ctx, tx, &PullRequest{
+		OrgID: orgID, RepoID: repoID, Platform: "github", ExternalID: "pr-dates-1",
+		Number: 7, Title: "old PR", AuthorLogin: "jane", State: "merged",
+		MergedAt: platformMerged, CreatedAt: platformCreated,
+	}); err != nil {
+		t.Fatalf("UpsertPR: %v", err)
+	}
+	var gotPRCreated time.Time
+	if err := tx.QueryRow(ctx,
+		`SELECT created_at FROM pull_requests WHERE org_id=$1 AND repo_id=$2 AND external_id=$3`,
+		orgID, repoID, "pr-dates-1").Scan(&gotPRCreated); err != nil {
+		t.Fatalf("read PR created_at: %v", err)
+	}
+	if !gotPRCreated.UTC().Equal(platformCreated) {
+		t.Errorf("PR created_at = %s, want platform date %s (regression: was sync time)",
+			gotPRCreated.UTC(), platformCreated)
+	}
+
+	// Re-upsert with the SAME created_at must keep it stable (idempotent).
+	if err := UpsertPR(ctx, tx, &PullRequest{
+		OrgID: orgID, RepoID: repoID, Platform: "github", ExternalID: "pr-dates-1",
+		Number: 7, Title: "old PR v2", AuthorLogin: "jane", State: "merged",
+		MergedAt: platformMerged, CreatedAt: platformCreated,
+	}); err != nil {
+		t.Fatalf("UpsertPR update: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT created_at FROM pull_requests WHERE org_id=$1 AND repo_id=$2 AND external_id=$3`,
+		orgID, repoID, "pr-dates-1").Scan(&gotPRCreated); err != nil {
+		t.Fatalf("re-read PR created_at: %v", err)
+	}
+	if !gotPRCreated.UTC().Equal(platformCreated) {
+		t.Errorf("PR created_at after re-upsert = %s, want %s", gotPRCreated.UTC(), platformCreated)
+	}
+
+	// ── Issue: created_at + updated_at must be the platform dates ────────────────
+	issueCreated := time.Date(2024, 2, 1, 8, 0, 0, 0, time.UTC)
+	issueUpdated := time.Date(2024, 2, 3, 9, 30, 0, 0, time.UTC)
+	const iq = `
+		INSERT INTO issues
+			(org_id, repo_id, source, platform, external_id, number, title, body, state, labels,
+			 created_at, updated_at)
+		VALUES ($1,$2,'git','github',$3,$4,$5,'',$6,'{}', COALESCE($7,now()), COALESCE($8,now()))`
+	if _, err := tx.Exec(ctx, iq,
+		orgID, repoID, "iss-dates-1", 3, "old issue", "open", issueCreated, issueUpdated,
+	); err != nil {
+		t.Fatalf("insert issue with platform dates: %v", err)
+	}
+	var gotIssCreated, gotIssUpdated time.Time
+	if err := tx.QueryRow(ctx,
+		`SELECT created_at, updated_at FROM issues WHERE org_id=$1 AND platform='github' AND external_id=$2`,
+		orgID, "iss-dates-1").Scan(&gotIssCreated, &gotIssUpdated); err != nil {
+		t.Fatalf("read issue dates: %v", err)
+	}
+	if !gotIssCreated.UTC().Equal(issueCreated) {
+		t.Errorf("issue created_at = %s, want platform date %s", gotIssCreated.UTC(), issueCreated)
+	}
+	if !gotIssUpdated.UTC().Equal(issueUpdated) {
+		t.Errorf("issue updated_at = %s, want platform date %s", gotIssUpdated.UTC(), issueUpdated)
+	}
+}

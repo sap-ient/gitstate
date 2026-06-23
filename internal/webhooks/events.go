@@ -124,6 +124,8 @@ type ghIssuePayload struct {
 		Labels []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
 		PullRequest *struct{} `json:"pull_request"` // present → it's actually a PR, skip
 	} `json:"issue"`
 }
@@ -269,6 +271,8 @@ func processGitHub(ctx context.Context, database *db.DB, orgID, event string, bo
 			Body:       p.Issue.Body,
 			State:      p.Issue.State,
 			Labels:     labels,
+			CreatedAt:  p.Issue.CreatedAt,
+			UpdatedAt:  p.Issue.UpdatedAt,
 		}
 		return ingestIssue(ctx, database, orgID, "github", p.Repository.FullName, iss, res)
 
@@ -434,6 +438,8 @@ type glIssuePayload struct {
 		Title       string `json:"title"`
 		Description string `json:"description"`
 		State       string `json:"state"` // opened | closed
+		CreatedAt   string `json:"created_at"`
+		UpdatedAt   string `json:"updated_at"`
 	} `json:"object_attributes"`
 	Labels []struct {
 		Title string `json:"title"`
@@ -572,6 +578,13 @@ func processGitLab(ctx context.Context, database *db.DB, orgID, event string, bo
 			Body:       p.ObjectAttributes.Description,
 			State:      state,
 			Labels:     labels,
+		}
+		// Real platform dates (not the webhook receive time), when present.
+		if p.ObjectAttributes.CreatedAt != "" {
+			iss.CreatedAt = parseGLTime(p.ObjectAttributes.CreatedAt)
+		}
+		if p.ObjectAttributes.UpdatedAt != "" {
+			iss.UpdatedAt = parseGLTime(p.ObjectAttributes.UpdatedAt)
 		}
 		return ingestIssue(ctx, database, orgID, "gitlab", p.Project.PathWithNamespace, iss, res)
 

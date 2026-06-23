@@ -32,6 +32,11 @@ type Issue struct {
 }
 
 // IssueUpsert is the input for UpsertIssue (source='git' path from sync).
+//
+// CreatedAt / UpdatedAt are the REAL platform timestamps (GitHub/GitLab
+// created_at / updated_at). They must be carried through from the provider so
+// the stored issue dates are the platform dates, NOT the sync time. A zero value
+// falls back to the DB default (created_at) / now() (updated_at).
 type IssueUpsert struct {
 	OrgID      string
 	RepoID     string
@@ -43,6 +48,8 @@ type IssueUpsert struct {
 	Body       string
 	State      string
 	Labels     []string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // IssueFilter holds optional filters for ListIssues.
@@ -78,27 +85,44 @@ func UpsertIssue(ctx context.Context, pool *pgxpool.Pool, orgID string, u IssueU
 		return fmt.Errorf("store: upsert issue: set org: %w", err)
 	}
 
+	// created_at / updated_at are the REAL platform timestamps. Both columns have a
+	// DEFAULT now(), so they must be written explicitly; the previous code omitted
+	// created_at (→ sync time) and forced updated_at = now() (→ sync time), so issue
+	// dates and the opened/closed-over-time series were all stamped at sync. COALESCE
+	// guards a genuinely-missing platform date (e.g. native/older clients).
 	const q = `
 		INSERT INTO issues
-			(org_id, repo_id, source, platform, external_id, number, title, body, state, labels)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			(org_id, repo_id, source, platform, external_id, number, title, body, state, labels,
+			 created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		        COALESCE($11, now()), COALESCE($12, now()))
 		ON CONFLICT (org_id, platform, external_id)
 		DO UPDATE SET
 			title      = EXCLUDED.title,
 			body       = EXCLUDED.body,
 			state      = EXCLUDED.state,
 			labels     = EXCLUDED.labels,
-			updated_at = now()
+			updated_at = COALESCE(EXCLUDED.updated_at, now())
 		WHERE issues.source = 'git'`
 
 	var repoID *string
 	if u.RepoID != "" {
 		repoID = &u.RepoID
 	}
+	var createdAt, updatedAt *time.Time
+	if !u.CreatedAt.IsZero() {
+		t := u.CreatedAt.UTC()
+		createdAt = &t
+	}
+	if !u.UpdatedAt.IsZero() {
+		t := u.UpdatedAt.UTC()
+		updatedAt = &t
+	}
 
 	_, err = tx.Exec(ctx, q,
 		orgID, repoID, u.Source, u.Platform, u.ExternalID,
 		u.Number, u.Title, u.Body, u.State, labels,
+		createdAt, updatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert issue %s/%s: %w", u.Platform, u.ExternalID, err)

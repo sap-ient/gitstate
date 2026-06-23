@@ -64,11 +64,25 @@ function relTime(s) {
   return `${Math.floor(days / 365)}y ago`
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10)
+// localISO formats a Date as YYYY-MM-DD in LOCAL time. The heatmap buckets come
+// from Postgres `committed_at::date`, which is the commit's calendar date in the
+// DB session timezone and serialises as a midnight-UTC instant ("2026-05-22T..").
+// Slicing that gives the local calendar date. The grid must therefore key cells by
+// LOCAL date too — using toISOString() (UTC) shifts every cell by a day for any
+// non-UTC user (e.g. UTC+2: local-midnight → previous-day UTC), so the coloured
+// cells never line up with the data and the heatmap renders blank. localISO keeps
+// both sides on the same local calendar date.
+function localISO(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+const todayISO = () => localISO(new Date())
 function isoDaysAgo(days) {
   const d = new Date()
   d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
+  return localISO(d)
 }
 
 // Avatar hue derived deterministically from a string.
@@ -269,7 +283,7 @@ function buildGrid(heatmap, endISO) {
   for (let w = 0; w < WEEKS; w++) {
     const col = []
     for (let dow = 0; dow < 7; dow++) {
-      const iso = cur.toISOString().slice(0, 10)
+      const iso = localISO(cur) // LOCAL date key — matches the data buckets (see localISO)
       const isFuture = cur > end
       col.push({ iso, count: map.get(iso) || 0, future: isFuture, date: new Date(cur) })
       cur.setDate(cur.getDate() + 1)

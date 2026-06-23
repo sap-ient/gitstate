@@ -198,6 +198,17 @@ function NLQueryBox() {
 // ── Analytics preview widgets (link through to /analytics) ────────────────────
 
 const MINI_WEEKS = 26
+
+// localISO formats a Date as YYYY-MM-DD in LOCAL time. The heatmap buckets come
+// from Postgres `committed_at::date` (a local calendar date), so the grid must key
+// cells by the LOCAL date too — toISOString() (UTC) shifts every cell by a day for
+// non-UTC users, leaving the mini-heatmap blank. (Mirrors Analytics.jsx's localISO.)
+function localISO(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 const MINI_COLORS = ['#14b8a6', '#22b8bf', '#3aa6d4', '#5a8ee6', '#6366F1']
 
 function miniColor(count, max) {
@@ -223,7 +234,7 @@ function MiniHeatmap() {
     for (let w = 0; w < MINI_WEEKS; w++) {
       const col = []
       for (let dow = 0; dow < 7; dow++) {
-        const iso = cur.toISOString().slice(0, 10)
+        const iso = localISO(cur) // LOCAL date key — matches the data buckets (see localISO)
         col.push({ iso, count: map.get(iso) || 0, future: cur > today })
         cur.setDate(cur.getDate() + 1)
       }

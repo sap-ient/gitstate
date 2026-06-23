@@ -36,13 +36,18 @@ type PullRequest struct {
 // The caller must supply an already-opened org-scoped transaction (from db.WithOrg).
 // On conflict, all mutable fields are updated so a re-sync is safe.
 func UpsertPR(ctx context.Context, tx pgx.Tx, pr *PullRequest) error {
+	// created_at is the PR's REAL platform createdAt — NOT the sync time. The column
+	// has a DEFAULT now(), so it MUST be written explicitly here; omitting it (the
+	// previous bug) made every PR's created_at the moment of sync, breaking the PR
+	// list dates and the opened-over-time throughput series. We COALESCE to now() in
+	// SQL only as a last-resort guard for a genuinely-missing platform date.
 	const q = `
 		INSERT INTO pull_requests
 			(org_id, repo_id, platform, external_id, number, title, author_login,
 			 state, additions, deletions, changed_files,
-			 first_commit_at, merged_at)
+			 first_commit_at, merged_at, created_at)
 		VALUES
-			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, now()))
 		ON CONFLICT (org_id, repo_id, external_id) DO UPDATE SET
 			number         = EXCLUDED.number,
 			title          = EXCLUDED.title,
@@ -52,10 +57,11 @@ func UpsertPR(ctx context.Context, tx pgx.Tx, pr *PullRequest) error {
 			deletions      = EXCLUDED.deletions,
 			changed_files  = EXCLUDED.changed_files,
 			first_commit_at = EXCLUDED.first_commit_at,
-			merged_at      = EXCLUDED.merged_at`
+			merged_at      = EXCLUDED.merged_at,
+			created_at     = COALESCE(EXCLUDED.created_at, pull_requests.created_at)`
 
-	// Use nullable time for first_commit_at and merged_at (may be zero).
-	var firstAt, mergedAt *time.Time
+	// Use nullable time for first_commit_at, merged_at and created_at (may be zero).
+	var firstAt, mergedAt, createdAt *time.Time
 	if !pr.FirstCommitAt.IsZero() {
 		t := pr.FirstCommitAt.UTC()
 		firstAt = &t
@@ -63,6 +69,10 @@ func UpsertPR(ctx context.Context, tx pgx.Tx, pr *PullRequest) error {
 	if !pr.MergedAt.IsZero() {
 		t := pr.MergedAt.UTC()
 		mergedAt = &t
+	}
+	if !pr.CreatedAt.IsZero() {
+		t := pr.CreatedAt.UTC()
+		createdAt = &t
 	}
 
 	_, err := tx.Exec(ctx, q,
@@ -79,6 +89,7 @@ func UpsertPR(ctx context.Context, tx pgx.Tx, pr *PullRequest) error {
 		pr.ChangedFiles,
 		firstAt,
 		mergedAt,
+		createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert PR %s: %w", pr.ExternalID, err)

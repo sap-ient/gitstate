@@ -125,6 +125,12 @@ func ingestCommitsFromClone(ctx context.Context, database *db.DB, orgID string, 
 			if c.SHA == "" {
 				continue
 			}
+			// Skip commits with no parseable committer date: a zero CommittedAt would
+			// store as year-0001 and corrupt the heatmap (a stray cell in year 1) and
+			// the summary active-days count. A real commit always has a valid date.
+			if c.CommittedAt.IsZero() {
+				continue
+			}
 			if err := store.UpsertCommit(ctx, tx, &store.Commit{
 				OrgID:       orgID,
 				RepoID:      repo.ID,
@@ -213,6 +219,10 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 			Body:       ri.Body,
 			State:      ri.State,
 			Labels:     ri.Labels,
+			// Carry the REAL platform timestamps so issue dates (and the
+			// opened/closed-over-time series) reflect the platform, not the sync time.
+			CreatedAt: ri.CreatedAt,
+			UpdatedAt: ri.UpdatedAt,
 		}
 		if err := store.UpsertIssue(ctx, database.Pool(), orgID, issue); err != nil {
 			log.Error("sync: upsert issue", "external_id", ri.ExternalID, "err", err)
