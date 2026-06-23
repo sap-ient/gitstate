@@ -52,6 +52,7 @@ func RegisterSyncRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Config)
 	mux.Handle("POST /api/repos", auth(http.HandlerFunc(h.connectRepo)))
 	mux.Handle("POST /api/repos/{id}/sync", auth(http.HandlerFunc(h.triggerSync)))
 	mux.Handle("POST /api/repos/sync-all", auth(http.HandlerFunc(h.syncAll)))
+	mux.Handle("POST /api/repos/import", auth(http.HandlerFunc(h.importRepos)))
 
 	mux.Handle("GET /api/issues", readIssues(http.HandlerFunc(h.listIssues)))
 	mux.Handle("POST /api/issues", auth(http.HandlerFunc(h.createIssue)))
@@ -380,6 +381,105 @@ func (h *syncHandlers) syncAll(w http.ResponseWriter, r *http.Request) {
 			ok++
 		}
 		slog.Info("sync-all: complete", "org", orgID, "synced", ok, "failed", failed, "total", len(repos))
+	}()
+}
+
+// ── POST /api/repos/import ────────────────────────────────────────────────────
+
+// importReposRequest is the body for the bulk background import (e.g. "Import all"
+// for a whole org). fullNames are "owner/repo" strings from the connect picker.
+type importReposRequest struct {
+	Platform  string   `json:"platform"`
+	FullNames []string `json:"fullNames"`
+}
+
+// importRepos imports + syncs a batch of repos in ONE detached background goroutine,
+// so a bulk "Import all" survives the browser closing or navigating away — the
+// import no longer runs client-side. Responds 202 immediately; the frontend polls
+// GET /api/repos to watch rows appear and sync. Sequential (one repo at a time) so
+// it never hammers the platform API or exhausts the DB pool. Idempotent: re-importing
+// an existing repo just re-syncs it.
+func (h *syncHandlers) importRepos(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+
+	var req importReposRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeSyncError(w, "invalid request body", err)
+		return
+	}
+	req.Platform = strings.ToLower(strings.TrimSpace(req.Platform))
+	if req.Platform != "github" && req.Platform != "gitlab" {
+		http.Error(w, `{"error":"platform must be github or gitlab"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.FullNames) == 0 {
+		http.Error(w, `{"error":"fullNames is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Need a stored connection token (the picker only works once connected).
+	token, baseURL, err := resolveStoredToken(r.Context(), h.db, orgID, req.Platform)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, `{"error":"connect this platform first"}`, http.StatusBadRequest)
+			return
+		}
+		writeSyncError(w, "resolve stored token", err)
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status": "import queued",
+		"count":  len(req.FullNames),
+	})
+
+	// One detached goroutine does the whole batch — survives the request/browser.
+	platform, fullNames := req.Platform, req.FullNames
+	bgCtx := context.Background()
+	go func() {
+		provider, err := gitSync.NewProvider(bgCtx, platform, token, baseURL)
+		if err != nil {
+			slog.Error("import: build provider", "platform", platform, "err", err)
+			return
+		}
+		// Resolve repo metadata (externalId/cloneURL/defaultBranch) once for the batch.
+		remote, err := provider.ListRepos(bgCtx)
+		if err != nil {
+			slog.Error("import: list repos", "platform", platform, "err", err)
+			return
+		}
+		byName := make(map[string]gitSync.RemoteRepo, len(remote))
+		for _, rr := range remote {
+			byName[strings.ToLower(rr.FullName)] = rr
+		}
+
+		imported, failed := 0, 0
+		for _, fn := range fullNames {
+			rr, ok := byName[strings.ToLower(strings.TrimSpace(fn))]
+			if !ok {
+				slog.Warn("import: repo not accessible to token", "full_name", fn)
+				failed++
+				continue
+			}
+			var repo *store.Repo
+			if e := h.db.WithOrg(bgCtx, orgID, func(tx pgx.Tx) error {
+				rp, ce := store.ConnectRepo(bgCtx, tx, orgID, platform, rr.ExternalID, rr.FullName, rr.DefaultBranch, rr.CloneURL)
+				repo = rp
+				return ce
+			}); e != nil {
+				slog.Error("import: connect repo", "full_name", fn, "err", e)
+				failed++
+				continue
+			}
+			imported++
+			// Sync inline (sequential within this batch goroutine) so we don't spawn
+			// one goroutine per repo for a 100-repo import.
+			if e := gitSync.SyncRepo(bgCtx, h.db, provider, orgID, *repo, token); e != nil {
+				slog.Error("import: sync repo", "full_name", fn, "err", e)
+			}
+		}
+		slog.Info("import: batch complete", "org", orgID, "platform", platform,
+			"imported", imported, "failed", failed, "total", len(fullNames))
 	}()
 }
 

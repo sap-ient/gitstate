@@ -315,6 +315,15 @@ export function syncAllRepos() {
   return post('/api/repos/sync-all', {})
 }
 
+/**
+ * Bulk-import a batch of repos as a BACKEND background job (survives the browser
+ * closing). Returns 202 immediately; the server imports + syncs each sequentially.
+ * Poll GET /api/repos to watch them appear.
+ */
+export function importRepos(platform, fullNames) {
+  return post('/api/repos/import', { platform, fullNames })
+}
+
 /** Disconnect a platform (deletes the stored encrypted token). */
 export function disconnectPlatform(platform) {
   return del(`/api/connect/${platform}`)

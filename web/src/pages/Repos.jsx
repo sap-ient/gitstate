@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { useRepos } from '../lib/useRepos.js'
 import {
-  connectStartUrl, fetchConnectStatus, fetchConnectRepos, disconnectPlatform, syncAllRepos,
+  connectStartUrl, fetchConnectStatus, fetchConnectRepos, disconnectPlatform, syncAllRepos, importRepos,
 } from '../lib/api.js'
 import { Card, Badge, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
@@ -248,7 +248,7 @@ function RepoRow({ repo, onSync }) {
  * Shows status, connect/disconnect buttons, an import picker for stored-token
  * repos, and a PAT-fallback escape hatch (the existing ConnectForm).
  */
-function ConnectSection({ onImport, onUsePat }) {
+function ConnectSection({ onImport, onImportAll, onUsePat }) {
   const [status, setStatus] = useState(null) // [{platform, connected, login, configured}]
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -326,22 +326,20 @@ function ConnectSection({ onImport, onUsePat }) {
     }
   }, [onImport])
 
-  // Import every repo under one owner (org or user) sequentially, with progress.
+  // Import a whole owner (org/user) as ONE backend job — it imports + syncs every
+  // repo server-side, so it keeps running even if you close the tab. We just queue
+  // it and let the parent poll the repo list; rows appear as they import.
   const importGroup = useCallback(async (platform, owner, repos) => {
-    setBulk({ owner, done: 0, total: repos.length })
-    let done = 0, failed = 0
-    for (const rp of repos) {
-      try {
-        await onImport({ platform, fullName: rp.fullName })
-      } catch {
-        failed += 1
-      }
-      done += 1
-      setBulk({ owner, done, total: repos.length })
+    setBulk({ owner, queued: false, total: repos.length })
+    try {
+      await onImportAll(platform, repos.map((r) => r.fullName))
+      setBulk({ owner, queued: true, total: repos.length })
+      setTimeout(() => setBulk(null), 6000)
+    } catch (e) {
+      setError(e.message ?? 'Import failed')
+      setBulk(null)
     }
-    setBulk(null)
-    if (failed) setError(`${failed} of ${repos.length} repos in ${owner} failed to import.`)
-  }, [onImport])
+  }, [onImportAll])
 
   return (
     <Reveal delay={0.04}>
@@ -474,7 +472,9 @@ function ConnectSection({ onImport, onUsePat }) {
                                       className="ml-auto flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-[var(--radius-badge)] text-[var(--brand-teal)] hover:bg-[var(--brand-teal)]/[0.1] transition-colors disabled:opacity-60 shrink-0"
                                     >
                                       {busy
-                                        ? <><Loader2 size={12} className="animate-spin" /> {bulk.done}/{bulk.total}</>
+                                        ? (bulk.queued
+                                            ? <><Check size={12} strokeWidth={2.5} /> Queued — importing</>
+                                            : <><Loader2 size={12} className="animate-spin" /> Queuing…</>)
                                         : <><Plus size={12} strokeWidth={2.5} /> Import all</>}
                                     </button>
                                   </div>
@@ -551,6 +551,18 @@ export default function Repos() {
     }
   }, [])
 
+  // Bulk "Import all" → a single backend job (survives the browser closing).
+  // Returns immediately; we poll the repo list so rows appear as they import+sync.
+  const importAll = useCallback(async (platform, fullNames) => {
+    await importRepos(platform, fullNames)
+    let ticks = 0
+    const id = setInterval(async () => {
+      ticks += 1
+      await refetch()
+      if (ticks >= 40) clearInterval(id) // ~4 min of polling, then stop
+    }, 6000)
+  }, [refetch])
+
   const importRepo = useCallback(async ({ platform, fullName }) => {
     await connectRepo({ platform, fullName }) // no token → server uses stored connection token
     refetch?.().catch(() => {})
@@ -609,7 +621,7 @@ export default function Repos() {
       )}
 
       {/* Platform connections (OAuth-app) */}
-      <ConnectSection onImport={importRepo} onUsePat={() => setShowForm(true)} />
+      <ConnectSection onImport={importRepo} onImportAll={importAll} onUsePat={() => setShowForm(true)} />
 
       {/* Summary strip */}
       {!loading && repos.length > 0 && (
