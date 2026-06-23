@@ -11,7 +11,7 @@
  *
  * All charts hand-rolled SVG (no chart dependency). Both themes, loading skeletons, empty states.
  */
-import { useState, useMemo, useRef, useLayoutEffect } from 'react'
+import { useState, useMemo, useRef, useLayoutEffect, Fragment } from 'react'
 import {
   useSummary, useHeatmap, useCommitsOverTime, useCommitsByContributor,
   useContributors, useRepoStats, useDayCommits,
@@ -722,21 +722,53 @@ function CommitsOverTime({ filters }) {
 
 // ── contributor leaderboard ──────────────────────────────────────────────────
 
-function ContributorLeaderboard({ contributors, loading }) {
-  const sorted = useMemo(
-    () => [...(contributors || [])].sort((a, b) => (b.commits || 0) - (a.commits || 0)),
-    [contributors]
+// Sort keys for the leaderboard. `tenure` sorts by first commit (earliest = longest).
+const LB_SORTS = {
+  commits: (c) => c.commits || 0,
+  lines: (c) => (Number(c.additions) || 0) + (Number(c.deletions) || 0),
+  net: (c) => (Number(c.additions) || 0) - (Number(c.deletions) || 0),
+  active: (c) => c.activeDays || 0,
+  repos: (c) => c.projects || 0,
+  tenure: (c) => (c.firstAt ? -new Date(c.firstAt).getTime() : 0), // earlier first commit ranks higher
+}
+
+function SortHeader({ label, k, sortKey, sortDir, onSort, className = '' }) {
+  const active = sortKey === k
+  return (
+    <th className={`font-mono uppercase tracking-wider font-medium px-2 py-2 ${className}`}>
+      <button onClick={() => onSort(k)} className={`inline-flex items-center gap-1 transition-colors ${active ? 'text-[var(--brand-teal)]' : 'text-[var(--text-faint)] hover:text-[var(--text-dim)]'}`}>
+        {label}
+        <span className="text-[8px]">{active ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      </button>
+    </th>
   )
+}
+
+function ContributorLeaderboard({ contributors, loading }) {
+  const [sortKey, setSortKey] = useState('commits')
+  const [sortDir, setSortDir] = useState('desc')
+  const [openId, setOpenId] = useState(null)
+
+  function onSort(k) {
+    if (k === sortKey) setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))
+    else { setSortKey(k); setSortDir('desc') }
+  }
+
+  const sorted = useMemo(() => {
+    const fn = LB_SORTS[sortKey] || LB_SORTS.commits
+    const arr = [...(contributors || [])].sort((a, b) => fn(b) - fn(a))
+    return sortDir === 'asc' ? arr.reverse() : arr
+  }, [contributors, sortKey, sortDir])
   const maxCommits = sorted.reduce((m, c) => Math.max(m, c.commits || 0), 0) || 1
 
   return (
     <Card padding="lg">
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-sm font-semibold text-[var(--text)]">Contributor leaderboard</h2>
-        {!loading && <span className="text-xs font-mono text-[var(--text-faint)]">{sorted.length} people</span>}
+        {!loading && <span className="text-xs font-mono text-[var(--text-faint)]">{sorted.length} people · click a row for details</span>}
       </div>
       <p className="text-[11px] text-[var(--text-faint)] mb-4">
-        Involvement texture from git history — not a productivity score.
+        Involvement texture from git history — not a productivity score. Click a column to sort.
       </p>
 
       {loading ? (
@@ -749,59 +781,94 @@ function ContributorLeaderboard({ contributors, loading }) {
         <div className="overflow-x-auto -mx-1">
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-[var(--border)] text-[var(--text-faint)]">
-                <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2 w-8">#</th>
-                <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2">Contributor</th>
-                <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2 min-w-[160px]">Commits</th>
-                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2">Lines</th>
-                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2 hidden sm:table-cell">Active</th>
-                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2 hidden md:table-cell">Repos</th>
-                <th className="text-right font-mono uppercase tracking-wider font-medium px-2 py-2 hidden lg:table-cell">First → Last</th>
+              <tr className="border-b border-[var(--border)]">
+                <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2 w-8 text-[var(--text-faint)]">#</th>
+                <th className="text-left font-mono uppercase tracking-wider font-medium px-2 py-2 text-[var(--text-faint)]">Contributor</th>
+                <SortHeader label="Commits" k="commits" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="text-left min-w-[160px]" />
+                <SortHeader label="Lines" k="lines" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="text-right" />
+                <SortHeader label="Active" k="active" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="text-right hidden sm:table-cell" />
+                <SortHeader label="Repos" k="repos" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="text-right hidden md:table-cell" />
+                <SortHeader label="First → Last" k="tenure" sortKey={sortKey} sortDir={sortDir} onSort={onSort} className="text-right hidden lg:table-cell" />
               </tr>
             </thead>
             <tbody>
               {sorted.map((c, i) => {
                 const name = c.name || c.login || c.email || 'unknown'
                 const pct = ((c.commits || 0) / maxCommits) * 100
+                const id = c.login || c.email || i
+                const open = openId === id
+                const net = (Number(c.additions) || 0) - (Number(c.deletions) || 0)
                 return (
-                  <tr key={c.login || c.email || i} className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors">
-                    <td className="px-2 py-2.5 font-mono text-[var(--text-faint)] tabular-nums">{i + 1}</td>
-                    <td className="px-2 py-2.5">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <Avatar name={name} size={26} />
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[var(--text-dim)] font-medium truncate">{name}</span>
-                            {c.isAgent && (
-                              <span className="inline-flex items-center gap-0.5 px-1 py-px rounded-[4px] text-[9px] font-mono bg-[#6366F1]/12 text-[#818cf8] border border-[#6366F1]/25">
-                                <Bot size={9} /> agent
-                              </span>
+                  <Fragment key={id}>
+                    <tr onClick={() => setOpenId(open ? null : id)} className="border-b border-[var(--border)] hover:bg-[var(--bg-surface2)] transition-colors cursor-pointer">
+                      <td className="px-2 py-2.5 font-mono text-[var(--text-faint)] tabular-nums">
+                        <span className="inline-flex items-center gap-1">
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform ${open ? 'rotate-90' : ''}`}><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
+                          {i + 1}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Avatar name={name} size={26} />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[var(--text-dim)] font-medium truncate">{name}</span>
+                              {c.isAgent && (
+                                <span className="inline-flex items-center gap-0.5 px-1 py-px rounded-[4px] text-[9px] font-mono bg-[#6366F1]/12 text-[#818cf8] border border-[#6366F1]/25">
+                                  <Bot size={9} /> agent
+                                </span>
+                              )}
+                            </div>
+                            {c.login && c.login !== name && (
+                              <span className="text-[10px] font-mono text-[var(--text-faint)] truncate block">@{c.login}</span>
                             )}
                           </div>
-                          {c.login && c.login !== name && (
-                            <span className="text-[10px] font-mono text-[var(--text-faint)] truncate block">@{c.login}</span>
-                          )}
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-2 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-surface3)] overflow-hidden min-w-[60px]">
-                          <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,var(--chart-1),var(--chart-2))' }} />
+                      </td>
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 rounded-full bg-[var(--bg-surface3)] overflow-hidden min-w-[60px]">
+                            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,var(--chart-1),var(--chart-2))' }} />
+                          </div>
+                          <span className="font-mono tabular-nums text-[var(--text-dim)] w-9 text-right">{fmtNum(c.commits)}</span>
                         </div>
-                        <span className="font-mono tabular-nums text-[var(--text-dim)] w-9 text-right">{fmtNum(c.commits)}</span>
-                      </div>
-                    </td>
-                    <td className="px-2 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
-                      <span className="text-green-400">+{fmtNum(c.additions)}</span>{' '}
-                      <span className="text-red-400">−{fmtNum(c.deletions)}</span>
-                    </td>
-                    <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--text-muted)] hidden sm:table-cell">{fmtNum(c.activeDays)}d</td>
-                    <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--text-muted)] hidden md:table-cell">{fmtNum(c.projects)}</td>
-                    <td className="px-2 py-2.5 text-right font-mono text-[var(--text-faint)] whitespace-nowrap hidden lg:table-cell">
-                      {fmtDate(c.firstAt, { month: 'short', year: '2-digit' })} → {relTime(c.lastAt)}
-                    </td>
-                  </tr>
+                      </td>
+                      <td className="px-2 py-2.5 text-right font-mono tabular-nums whitespace-nowrap">
+                        <span className="text-green-400">+{fmtNum(c.additions)}</span>{' '}
+                        <span className="text-red-400">−{fmtNum(c.deletions)}</span>
+                      </td>
+                      <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--text-muted)] hidden sm:table-cell">{fmtNum(c.activeDays)}d</td>
+                      <td className="px-2 py-2.5 text-right font-mono tabular-nums text-[var(--text-muted)] hidden md:table-cell">{fmtNum(c.projects)}</td>
+                      <td className="px-2 py-2.5 text-right font-mono text-[var(--text-faint)] whitespace-nowrap hidden lg:table-cell">
+                        {fmtDate(c.firstAt, { month: 'short', year: '2-digit' })} → {relTime(c.lastAt)}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr key={`${id}-d`} className="border-b border-[var(--border)] bg-[var(--bg-surface2)]/40">
+                        <td colSpan={7} className="px-4 py-3">
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-[11px]">
+                            {[
+                              ['Commits', fmtNum(c.commits)],
+                              ['Additions', <span className="text-green-400">+{fmtNum(c.additions)}</span>],
+                              ['Deletions', <span className="text-red-400">−{fmtNum(c.deletions)}</span>],
+                              ['Net lines', <span className={net >= 0 ? 'text-green-400' : 'text-red-400'}>{net >= 0 ? '+' : ''}{fmtNum(net)}</span>],
+                              ['Active days', `${fmtNum(c.activeDays)}d`],
+                              ['Repos', fmtNum(c.projects)],
+                              ['First commit', fmtDate(c.firstAt)],
+                              ['Last commit', fmtDate(c.lastAt)],
+                              ['Lines / commit', c.commits ? fmtNum(Math.round(((Number(c.additions)||0)+(Number(c.deletions)||0)) / c.commits)) : '—'],
+                              ['Identity', c.email || c.login || '—'],
+                            ].map(([k, v]) => (
+                              <div key={k}>
+                                <div className="text-[var(--text-faint)] uppercase tracking-wider font-mono text-[9px]">{k}</div>
+                                <div className="text-[var(--text-dim)] font-mono tabular-nums mt-0.5 truncate">{v}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>
