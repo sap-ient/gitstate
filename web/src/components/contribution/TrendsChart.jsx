@@ -5,11 +5,16 @@
  *   - TrendsChart : a multi-line chart of composite per member across periods,
  *     with a legend + hover-free, reduced-motion-safe rendering.
  *
- * Series shape (from useContributionTrends): { userId, name, isAgentBot,
- *   points:[{ periodStart, composite }] } (oldest→newest).
+ * Series shape (from useContributionTrends): { contributorId, userId, name,
+ *   isAgentBot, points:[{ periodStart, composite }] } (oldest→newest). Lines are
+ *   keyed by the canonical contributor (falling back to userId) so a grouped,
+ *   unlinked person still plots their real series.
  */
 import { useState } from 'react'
 import { hueFromStr } from './helpers.js'
+
+// Stable per-series id: contributor id when present, else linked userId.
+const seriesKey = (s, i) => s.contributorId || s.userId || String(i)
 
 // ── Sparkline ──────────────────────────────────────────────────────────────
 
@@ -51,7 +56,7 @@ function fmtMonth(s) {
 }
 
 const lineColor = (s, i) =>
-  s.isAgentBot ? 'var(--brand-indigo)' : `hsl(${hueFromStr(s.name || s.userId || String(i))} 70% 58%)`
+  s.isAgentBot ? 'var(--brand-indigo)' : `hsl(${hueFromStr(s.name || seriesKey(s, i))} 70% 58%)`
 
 /**
  * Multi-line chart of composite (0–100) per member over the period series.
@@ -106,16 +111,17 @@ export function TrendsChart({ series = [], height = 240 }) {
         ))}
         {/* lines */}
         {withPoints.map((s, si) => {
-          const dimmed = activeId && activeId !== s.userId
+          const key = seriesKey(s, si)
+          const dimmed = activeId && activeId !== key
           const col = lineColor(s, si)
           const d = s.points
             .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p.composite).toFixed(1)}`)
             .join(' ')
           return (
-            <g key={s.userId || si} opacity={dimmed ? 0.12 : 1} style={{ transition: 'opacity 0.25s ease' }}>
-              <path d={d} fill="none" stroke={col} strokeWidth={activeId === s.userId ? 2.6 : 1.8} strokeLinejoin="round" strokeLinecap="round" />
+            <g key={key} opacity={dimmed ? 0.12 : 1} style={{ transition: 'opacity 0.25s ease' }}>
+              <path d={d} fill="none" stroke={col} strokeWidth={activeId === key ? 2.6 : 1.8} strokeLinejoin="round" strokeLinecap="round" />
               {s.points.map((p, i) => (
-                <circle key={i} cx={x(i)} cy={y(p.composite)} r={activeId === s.userId ? 2.8 : 1.8} fill={col} />
+                <circle key={i} cx={x(i)} cy={y(p.composite)} r={activeId === key ? 2.8 : 1.8} fill={col} />
               ))}
             </g>
           )
@@ -125,11 +131,12 @@ export function TrendsChart({ series = [], height = 240 }) {
       {/* legend */}
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
         {withPoints.map((s, si) => {
-          const active = activeId === s.userId
+          const key = seriesKey(s, si)
+          const active = activeId === key
           return (
             <button
-              key={s.userId || si}
-              onClick={() => setActiveId(active ? null : s.userId)}
+              key={key}
+              onClick={() => setActiveId(active ? null : key)}
               className={[
                 'inline-flex items-center gap-1.5 text-[11px] cursor-pointer transition-opacity',
                 activeId && !active ? 'opacity-40 hover:opacity-70' : 'opacity-100',

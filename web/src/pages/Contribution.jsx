@@ -54,6 +54,12 @@ const PRESETS = [
 
 const DEFAULT_WEIGHTS = { shipped: 5, review: 4, effort: 3, quality: 4, ownership: 3, durability: 3 }
 
+// Stable per-person identifier: the canonical contributor id when present (most
+// people are NOT linked to a user, so userId would collapse them all together),
+// falling back to the linked userId, then email. Used to key rows, rank deltas,
+// the drawer, and the trend lookup so each grouped person is addressed uniquely.
+const personKey = (m) => m?.contributorId || m?.userId || m?.email || ''
+
 function weightsEqual(a, b) {
   return DIMENSION_KEYS.every((k) => Number(a?.[k] ?? 0) === Number(b?.[k] ?? 0))
 }
@@ -207,7 +213,7 @@ function rankMembers(members, weights, serverOrderById) {
   const scored = members.map((m) => ({ m, live: computeComposite(m.dimensions, weights) }))
   scored.sort((a, b) => b.live - a.live)
   return scored.map((s, i) => {
-    const serverRank = serverOrderById.get(s.m.userId)
+    const serverRank = serverOrderById.get(personKey(s.m))
     const liveRank = i + 1
     return { member: s.m, live: s.live, rank: liveRank, delta: serverRank != null ? serverRank - liveRank : 0 }
   })
@@ -238,11 +244,14 @@ export default function Contribution() {
   const kudos = useKudos({})
 
   const kudosCounts = useMemo(() => kudos.data?.counts ?? {}, [kudos.data])
-  // userId → array of composites (oldest→newest) for per-member sparklines.
-  const trendByUser = useMemo(() => {
+  // person-key (contributorId, falling back to userId) → array of composites
+  // (oldest→newest) for per-member sparklines. Keyed by the STABLE contributor so a
+  // grouped, unlinked person resolves their REAL trend (not just the 1 linked user).
+  const trendByPerson = useMemo(() => {
     const map = new Map()
     for (const s of trends.data?.series ?? []) {
-      map.set(s.userId, (s.points ?? []).map((p) => p.composite))
+      const key = s.contributorId || s.userId
+      if (key) map.set(key, (s.points ?? []).map((p) => p.composite))
     }
     return map
   }, [trends.data])
@@ -302,7 +311,7 @@ export default function Contribution() {
   // Server order (by composite desc, as delivered) for rank-delta tracking.
   const serverOrderById = useMemo(() => {
     const map = new Map()
-    people.forEach((m, i) => map.set(m.userId, i + 1))
+    people.forEach((m, i) => map.set(personKey(m), i + 1))
     return map
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
@@ -491,14 +500,14 @@ export default function Contribution() {
               <RevealList className="space-y-3" staggerDelay={0.05} inView>
                 {rankedPeople.map(({ member, live, rank, delta }) => (
                   <ContributorCard
-                    key={member.userId}
+                    key={personKey(member)}
                     member={member}
                     rank={rank}
                     liveComposite={live}
                     delta={delta}
                     onOpen={setOpenId}
                     kudosCount={kudosCounts[member.userId] ?? 0}
-                    trend={trendByUser.get(member.userId)}
+                    trend={trendByPerson.get(personKey(member))}
                   />
                 ))}
               </RevealList>
@@ -518,7 +527,7 @@ export default function Contribution() {
               <RevealList className="space-y-3" staggerDelay={0.05} inView>
                 {rankedAgents.map(({ member, live, rank, delta }) => (
                   <ContributorCard
-                    key={member.userId}
+                    key={personKey(member)}
                     member={member}
                     rank={rank}
                     liveComposite={live}
@@ -558,13 +567,15 @@ export default function Contribution() {
       </div>
       )}
 
-      {/* Drill-down drawer */}
+      {/* Drill-down drawer. openId is the stable per-person key (contributorId, or
+          userId for linked members); the API accepts either. Kudos are keyed by the
+          linked userId, so resolve it from the roster row. */}
       {openId && (
         <ContributorDrawer
           userId={openId}
           range={range}
           onClose={() => setOpenId(null)}
-          kudosCount={kudosCounts[openId] ?? 0}
+          kudosCount={kudosCounts[openId] ?? kudosCounts[members.find((m) => personKey(m) === openId)?.userId] ?? 0}
           onGiveKudos={(uid) => openKudos(uid)}
         />
       )}

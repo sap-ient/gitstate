@@ -44,15 +44,18 @@ function QualitySignals({ dimensions }) {
 
 export function ContributorCard({ member, rank, liveComposite, delta, onOpen, kudosCount = 0, trend }) {
   const isBot = member.isAgentBot
+  // Stable per-person id: contributor id when present (grouped people usually have
+  // no userId), else the linked userId. The drawer drill-down accepts either.
+  const openKey = member.contributorId || member.userId
   return (
     <Card
       padding="none"
       hoverable
       className="group cursor-pointer"
-      onClick={() => onOpen(member.userId)}
+      onClick={() => onOpen(openKey)}
       role="button"
       tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(member.userId) } }}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(openKey) } }}
     >
       <div className="flex flex-col sm:flex-row sm:items-center gap-5 p-5">
         {/* rank + identity */}
