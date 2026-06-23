@@ -230,6 +230,84 @@ func TestResolveStoredToken_GitHubAppCachedToken(t *testing.T) {
 	}
 }
 
+// TestOwnerTokenCache_OAuthSharesTokenAcrossOwners seeds an OAuth github connection and
+// asserts the ownerTokenCache returns the SAME stored token for repos owned by different
+// owners (OAuth's single user token covers everything) and caches per owner. DB-backed.
+func TestOwnerTokenCache_OAuthSharesTokenAcrossOwners(t *testing.T) {
+	database := apiTestDB(t)
+	defer database.Close()
+
+	t.Setenv("TOKEN_ENC_KEY", "test-token-enc-key-owner-cache")
+	key, err := crypto.KeyFromEnv()
+	if err != nil {
+		t.Fatalf("key from env: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ns := time.Now().UnixNano()
+	var orgID string
+	if err := database.Pool().QueryRow(ctx,
+		`INSERT INTO organizations (slug, name) VALUES ($1,$2) RETURNING id`,
+		fmt.Sprintf("owner-cache-%d", ns), "Owner Cache Org").Scan(&orgID); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	defer func() {
+		_, _ = database.Pool().Exec(context.Background(), `DELETE FROM organizations WHERE id=$1`, orgID)
+	}()
+
+	const userToken = "gho_user_oauth_token"
+	enc, err := crypto.Encrypt([]byte(userToken), key)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		_, e := store.UpsertConnection(ctx, tx, store.UpsertConnectionInput{
+			OrgID:          orgID,
+			Platform:       "github",
+			ExternalLogin:  "acme",
+			TokenEncrypted: enc,
+			ConnectionType: "oauth",
+		})
+		return e
+	}); err != nil {
+		t.Fatalf("seed oauth connection: %v", err)
+	}
+
+	// App NOT enabled here → OAuth path: owner is ignored, every repo gets userToken.
+	cfg := &config.Config{}
+	cache := newOwnerTokenCache(database, cfg, orgID, "github")
+
+	tok1, _, err := cache.tokenFor(ctx, "cognizance-processing/repo-a")
+	if err != nil {
+		t.Fatalf("tokenFor owner-a: %v", err)
+	}
+	tok2, _, err := cache.tokenFor(ctx, "nu-bi/repo-b")
+	if err != nil {
+		t.Fatalf("tokenFor owner-b: %v", err)
+	}
+	if tok1 != userToken || tok2 != userToken {
+		t.Fatalf("OAuth token = %q/%q, want %q for both owners", tok1, tok2, userToken)
+	}
+
+	// Both owners are now cached (mutex-guarded map). A repeat for the same owner must
+	// hit the cache and return the same token.
+	tok1again, _, err := cache.tokenFor(ctx, "cognizance-processing/repo-c")
+	if err != nil {
+		t.Fatalf("tokenFor owner-a repeat: %v", err)
+	}
+	if tok1again != userToken {
+		t.Fatalf("cached token = %q, want %q", tok1again, userToken)
+	}
+	if _, ok := cache.byOwner["cognizance-processing"]; !ok {
+		t.Fatal("expected cognizance-processing owner to be cached")
+	}
+	if _, ok := cache.byOwner["nu-bi"]; !ok {
+		t.Fatal("expected nu-bi owner to be cached")
+	}
+}
+
 // encodeConnectState mirrors the base64(JSON) encoding the install handler uses for
 // the state cookie.
 func encodeConnectState(t *testing.T, cs connectState) string {

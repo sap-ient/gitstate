@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	gogithub "github.com/google/go-github/v66/github"
@@ -443,7 +444,28 @@ func (h *connectHandlers) listRepos(w http.ResponseWriter, r *http.Request) {
 	platform := strings.ToLower(r.PathValue("platform"))
 	orgID := middleware.OrgFromContext(r.Context())
 
-	token, baseURL, err := h.resolveConnectionToken(r.Context(), orgID, platform)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	// github_app connections span EVERY org the App is installed on (cognizance,
+	// nu-bi, …), each a separate installation. Enumerate them all and aggregate
+	// their repos so the picker shows repos across ALL installed orgs — not just the
+	// last installation_id stored on this connection.
+	if platform == "github" && h.isGitHubApp(ctx, orgID) {
+		repos, err := h.listAppReposAllInstallations(ctx)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "no connection for platform")
+				return
+			}
+			writeSyncError(w, "list app repos across installations", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, repos)
+		return
+	}
+
+	token, baseURL, err := h.resolveConnectionToken(ctx, orgID, platform)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "no connection for platform")
@@ -452,9 +474,6 @@ func (h *connectHandlers) listRepos(w http.ResponseWriter, r *http.Request) {
 		writeSyncError(w, "resolve connection token", err)
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
 
 	provider, err := gitSync.NewProvider(ctx, platform, token, baseURL)
 	if err != nil {
@@ -477,6 +496,70 @@ func (h *connectHandlers) listRepos(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// isGitHubApp reports whether the org's github connection is a github_app connection
+// (so listing/sync should span all installations rather than the single stored one).
+// Best-effort: a lookup failure (or no connection) returns false → the OAuth path.
+func (h *connectHandlers) isGitHubApp(ctx context.Context, orgID string) bool {
+	if h.cfg == nil || !h.cfg.Git.GitHub.AppEnabled {
+		return false
+	}
+	var conn *store.PlatformConnection
+	if e := h.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		c, ge := store.GetConnection(ctx, tx, orgID, "github")
+		conn = c
+		return ge
+	}); e != nil || conn == nil {
+		return false
+	}
+	return conn.ConnectionType == "github_app"
+}
+
+// listAppReposAllInstallations enumerates EVERY installation of the App and aggregates
+// the repos visible to each — so the import picker spans all installed orgs. It is
+// best-effort per installation: one failing installation logs + is skipped, the rest
+// still list. Repos are deduped by external id.
+func (h *connectHandlers) listAppReposAllInstallations(ctx context.Context) ([]connectRepoOption, error) {
+	insts, err := githubapp.ListInstallations(ctx,
+		h.cfg.Git.GitHub.AppID, h.cfg.Git.GitHub.AppPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]struct{}{}
+	out := []connectRepoOption{}
+	for _, inst := range insts {
+		tok, _, terr := githubapp.InstallationToken(ctx,
+			h.cfg.Git.GitHub.AppID, h.cfg.Git.GitHub.AppPrivateKey, fmt.Sprint(inst.ID))
+		if terr != nil {
+			slog.Warn("listRepos: mint installation token", "login", inst.Login, "err", terr)
+			continue
+		}
+		provider, perr := gitSync.NewProvider(ctx, "github", tok, "")
+		if perr != nil {
+			slog.Warn("listRepos: build provider", "login", inst.Login, "err", perr)
+			continue
+		}
+		repos, lerr := provider.ListRepos(ctx)
+		if lerr != nil {
+			slog.Warn("listRepos: list repos for installation", "login", inst.Login, "err", lerr)
+			continue
+		}
+		for _, rr := range repos {
+			if _, dup := seen[rr.ExternalID]; dup {
+				continue
+			}
+			seen[rr.ExternalID] = struct{}{}
+			out = append(out, connectRepoOption{
+				ExternalID:    rr.ExternalID,
+				FullName:      rr.FullName,
+				DefaultBranch: rr.DefaultBranch,
+				CloneURL:      rr.CloneURL,
+			})
+		}
+	}
+	return out, nil
 }
 
 // ── DELETE /api/connect/{platform} ─────────────────────────────────────────────
@@ -543,6 +626,87 @@ func resolveStoredToken(ctx context.Context, database *db.DB, cfg *config.Config
 		return "", "", fmt.Errorf("decrypt connection token: %w", e)
 	}
 	return string(pt), conn.BaseURL, nil
+}
+
+// resolveStoredTokenForOwner is the owner-aware variant of resolveStoredToken used
+// when syncing/importing a SPECIFIC repo "owner/name". For a github_app connection the
+// repo's owning org may differ from the connection's stored installation (the App is
+// installed on many orgs), so the token must come from the installation that OWNS the
+// repo — minted via TokenForOwner(owner). For OAuth connections behavior is unchanged
+// (the single user token covers everything), so owner is ignored.
+//
+// owner is the part before "/" in the repo full name. An empty owner falls back to
+// resolveStoredToken (the stored installation), preserving old behavior.
+func resolveStoredTokenForOwner(ctx context.Context, database *db.DB, cfg *config.Config, orgID, platform, owner string) (token string, baseURL string, err error) {
+	if platform != "github" || owner == "" || cfg == nil || !cfg.Git.GitHub.AppEnabled {
+		return resolveStoredToken(ctx, database, cfg, orgID, platform)
+	}
+
+	var conn *store.PlatformConnection
+	if e := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		c, ge := store.GetConnection(ctx, tx, orgID, platform)
+		conn = c
+		return ge
+	}); e != nil {
+		return "", "", e
+	}
+	if conn.ConnectionType != "github_app" {
+		return resolveStoredToken(ctx, database, cfg, orgID, platform)
+	}
+
+	// github_app: mint the token of the installation that OWNS this repo.
+	tok, terr := githubapp.TokenForOwner(ctx,
+		cfg.Git.GitHub.AppID, cfg.Git.GitHub.AppPrivateKey, owner)
+	if terr != nil {
+		return "", "", terr
+	}
+	return tok, "", nil // App connections are github.com (empty base).
+}
+
+// ownerTokenCache mints + caches one github_app installation token per repo OWNER
+// within a single import/sync batch, so a batch touching N repos across M orgs mints
+// at most M tokens instead of re-minting per repo. For OAuth connections it just
+// returns the single stored token regardless of owner. Not safe for concurrent use;
+// callers using a worker pool must guard it (or resolve tokens before fan-out).
+type ownerTokenCache struct {
+	database *db.DB
+	cfg      *config.Config
+	orgID    string
+	platform string
+
+	mu      sync.Mutex
+	byOwner map[string][2]string // ownerLower → {token, baseURL}
+}
+
+func newOwnerTokenCache(database *db.DB, cfg *config.Config, orgID, platform string) *ownerTokenCache {
+	return &ownerTokenCache{
+		database: database, cfg: cfg, orgID: orgID, platform: platform,
+		byOwner: map[string][2]string{},
+	}
+}
+
+// tokenFor returns the token+baseURL for a repo full name "owner/name", caching per
+// owner. The empty-key ("") slot holds the OAuth / fallback single token.
+func (c *ownerTokenCache) tokenFor(ctx context.Context, fullName string) (string, string, error) {
+	owner, _, _ := splitOwnerName(fullName)
+	key := strings.ToLower(owner)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if tb, ok := c.byOwner[key]; ok {
+		if tb[0] == "" {
+			return "", "", store.ErrNotFound
+		}
+		return tb[0], tb[1], nil
+	}
+	tok, base, err := resolveStoredTokenForOwner(ctx, c.database, c.cfg, c.orgID, c.platform, owner)
+	if err != nil {
+		// Cache the miss so a whole batch of one org's repos doesn't re-probe.
+		c.byOwner[key] = [2]string{}
+		return "", "", err
+	}
+	c.byOwner[key] = [2]string{tok, base}
+	return tok, base, nil
 }
 
 // appTokenRefreshSkew is how close to expiry a cached installation token may be

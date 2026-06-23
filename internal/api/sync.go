@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
+	"github.com/exo/gitstate/internal/githubapp"
 	"github.com/exo/gitstate/internal/metrics"
 	"github.com/exo/gitstate/internal/middleware"
 	"github.com/exo/gitstate/internal/store"
@@ -198,7 +200,8 @@ func (h *syncHandlers) connectRepo(w http.ResponseWriter, r *http.Request) {
 	token := req.Token
 	baseURL := req.BaseURL
 	if token == "" {
-		stored, storedBase, err := resolveStoredToken(r.Context(), h.db, h.cfg, orgID, req.Platform)
+		owner, _, _ := splitOwnerName(req.FullName)
+		stored, storedBase, err := resolveStoredTokenForOwner(r.Context(), h.db, h.cfg, orgID, req.Platform, owner)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				http.Error(w, `{"error":"no token: connect this platform first or supply a token"}`, http.StatusBadRequest)
@@ -309,7 +312,8 @@ func (h *syncHandlers) triggerSync(w http.ResponseWriter, r *http.Request) {
 	token := body.Token
 	baseURL := body.BaseURL
 	if token == "" {
-		stored, storedBase, err := resolveStoredToken(r.Context(), h.db, h.cfg, orgID, repo.Platform)
+		owner, _, _ := splitOwnerName(repo.FullName)
+		stored, storedBase, err := resolveStoredTokenForOwner(r.Context(), h.db, h.cfg, orgID, repo.Platform, owner)
 		if err != nil {
 			slog.Warn("sync trigger: no token in body and no stored connection; sync may fail",
 				"org_id", orgID, "repo_id", repoID, "platform", repo.Platform)
@@ -357,56 +361,54 @@ func (h *syncHandlers) syncAll(w http.ResponseWriter, r *http.Request) {
 
 	bgCtx := context.Background()
 	go func() {
-		tokenCache := map[string][2]string{} // platform → {token, baseURL}, resolved once
-		ok, failed := 0, 0
-		// Track (repo, token) pairs that fast-synced OK so a SEPARATE deep-analysis
-		// pass can backfill Contribution depth after the fast pass, grouped by token.
-		type analyzeJob struct {
-			repo  store.Repo
-			token string
-		}
-		var toAnalyze []analyzeJob
-		for _, repo := range repos {
-			tb, cached := tokenCache[repo.Platform]
-			if !cached {
-				tok, base, err := resolveStoredToken(bgCtx, h.db, h.cfg, orgID, repo.Platform)
-				if err != nil {
-					slog.Warn("sync-all: no stored token", "platform", repo.Platform, "err", err)
-					tokenCache[repo.Platform] = [2]string{} // cache the miss so we don't retry per repo
-					continue
-				}
-				tb = [2]string{tok, base}
-				tokenCache[repo.Platform] = tb
+		// One owner-token cache per platform: for a github_app connection each repo is
+		// fetched/cloned with the token of the installation that OWNS it (the App spans
+		// many orgs); OAuth uses its single token. Tokens are minted at most once per
+		// (platform, owner) across the whole pass.
+		caches := map[string]*ownerTokenCache{}
+		cacheFor := func(platform string) *ownerTokenCache {
+			c, ok := caches[platform]
+			if !ok {
+				c = newOwnerTokenCache(h.db, h.cfg, orgID, platform)
+				caches[platform] = c
 			}
-			if tb[0] == "" {
+			return c
+		}
+
+		ok, failed := 0, 0
+		var toAnalyze []store.Repo
+		for _, repo := range repos {
+			tok, base, terr := cacheFor(repo.Platform).tokenFor(bgCtx, repo.FullName)
+			if terr != nil {
+				slog.Warn("sync-all: no token for repo owner", "repo", repo.FullName, "err", terr)
 				continue
 			}
-			provider, err := gitSync.NewProvider(bgCtx, repo.Platform, tb[0], tb[1])
+			provider, err := gitSync.NewProvider(bgCtx, repo.Platform, tok, base)
 			if err != nil {
 				slog.Error("sync-all: build provider", "repo", repo.FullName, "err", err)
 				failed++
 				continue
 			}
-			if err := gitSync.SyncRepo(bgCtx, h.db, provider, orgID, repo, tb[0]); err != nil {
+			if err := gitSync.SyncRepo(bgCtx, h.db, provider, orgID, repo, tok); err != nil {
 				slog.Error("sync-all: sync repo", "repo", repo.FullName, "err", err)
 				failed++
 				continue
 			}
 			ok++
-			toAnalyze = append(toAnalyze, analyzeJob{repo: repo, token: tb[0]})
+			toAnalyze = append(toAnalyze, repo)
 		}
 		slog.Info("sync-all: fast sync complete", "org", orgID, "synced", ok, "failed", failed, "total", len(repos))
 
-		// DEEP analysis pass over the fast-synced repos, low concurrency (split from
-		// the fast sync; skips repos whose HEAD is unchanged). Group by token (one per
-		// platform) so each repo clones with the right credential.
-		byToken := map[string][]store.Repo{}
-		for _, j := range toAnalyze {
-			byToken[j.token] = append(byToken[j.token], j.repo)
+		// DEEP analysis pass over the fast-synced repos, low concurrency (split from the
+		// fast sync; skips repos whose HEAD is unchanged). Group by platform; each repo
+		// resolves its OWNER's token from the cache so it clones with the right credential.
+		byPlatform := map[string][]store.Repo{}
+		for _, repo := range toAnalyze {
+			byPlatform[repo.Platform] = append(byPlatform[repo.Platform], repo)
 		}
 		analyzed := 0
-		for tok, rs := range byToken {
-			analyzeReposConcurrently(bgCtx, h.db, orgID, tok, rs, deepAnalysisWorkers)
+		for platform, rs := range byPlatform {
+			analyzeReposConcurrently(bgCtx, h.db, orgID, platform, cacheFor(platform), rs, deepAnalysisWorkers)
 			analyzed += len(rs)
 		}
 		if analyzed > 0 {
@@ -468,20 +470,20 @@ func (h *syncHandlers) importRepos(w http.ResponseWriter, r *http.Request) {
 	platform, fullNames := req.Platform, req.FullNames
 	bgCtx := context.Background()
 	go func() {
-		provider, err := gitSync.NewProvider(bgCtx, platform, token, baseURL)
-		if err != nil {
-			slog.Error("import: build provider", "platform", platform, "err", err)
-			return
-		}
-		// Resolve repo metadata (externalId/cloneURL/defaultBranch) once for the batch.
-		remote, err := provider.ListRepos(bgCtx)
+		// Per-owner token cache: for a github_app connection each repo is fetched/cloned
+		// with the token of the installation that OWNS it (the App spans many orgs), so
+		// a cognizance repo uses cognizance's token and a nu-bi repo uses nu-bi's. For
+		// OAuth the single user token serves every owner. Tokens are minted at most once
+		// per owner across the whole batch.
+		tokens := newOwnerTokenCache(h.db, h.cfg, orgID, platform)
+
+		// Resolve repo metadata (externalId/cloneURL/defaultBranch) for the batch. For a
+		// github_app connection ListRepos must span ALL installations (the requested repos
+		// may live in different orgs); the OAuth path lists with its single token.
+		byName, err := h.discoverImportRepos(bgCtx, orgID, platform, token, baseURL)
 		if err != nil {
 			slog.Error("import: list repos", "platform", platform, "err", err)
 			return
-		}
-		byName := make(map[string]gitSync.RemoteRepo, len(remote))
-		for _, rr := range remote {
-			byName[strings.ToLower(rr.FullName)] = rr
 		}
 
 		// PHASE 1 — connect ALL repos first (fast: just DB rows, no sync). This makes
@@ -509,16 +511,22 @@ func (h *syncHandlers) importRepos(w http.ResponseWriter, r *http.Request) {
 			if repo.LastSyncedAt == nil {
 				repos = append(repos, *repo)
 			}
-			// Real-time webhook (best-effort; skipped on localhost).
-			_ = autoRegisterRepoWebhook(bgCtx, h.db, h.cfg, orgID, platform, rr.FullName, rr.ExternalID, token, baseURL)
+			// Real-time webhook (best-effort; skipped on localhost). Use this repo
+			// owner's token so the hook is created against the right installation.
+			hookTok, hookBase := token, baseURL
+			if t, b, e := tokens.tokenFor(bgCtx, rr.FullName); e == nil {
+				hookTok, hookBase = t, b
+			}
+			_ = autoRegisterRepoWebhook(bgCtx, h.db, h.cfg, orgID, platform, rr.FullName, rr.ExternalID, hookTok, hookBase)
 		}
 		slog.Info("import: connected, starting parallel sync", "org", orgID, "platform", platform,
 			"to_sync", len(repos), "requested", len(fullNames))
 
 		// PHASE 2 — sync them with a bounded worker pool (parallel, not one-at-a-time).
 		// The App installation token has its own rate budget and GraphQL batches PRs,
-		// so several repos at once is safe and far faster than sequential.
-		syncReposConcurrently(bgCtx, h.db, provider, orgID, token, repos, importSyncWorkers)
+		// so several repos at once is safe and far faster than sequential. Each repo
+		// resolves its OWNER's token from the cache.
+		syncReposConcurrently(bgCtx, h.db, orgID, platform, baseURL, tokens, repos, importSyncWorkers)
 		slog.Info("import: fast sync complete", "org", orgID, "platform", platform, "synced", len(repos))
 
 		// PHASE 3 — DEEP analysis pass (blame-survival / SZZ / coupling) over the same
@@ -527,9 +535,74 @@ func (h *syncHandlers) importRepos(w http.ResponseWriter, r *http.Request) {
 		// behind them. Concurrency is low (deepAnalysisWorkers) because each clone+blame
 		// is CPU+memory heavy — running 8 at once gets git OOM-killed. The pass skips
 		// repos whose HEAD is unchanged since the last deep run (cheap ls-remote check).
-		analyzeReposConcurrently(bgCtx, h.db, orgID, token, repos, deepAnalysisWorkers)
+		analyzeReposConcurrently(bgCtx, h.db, orgID, platform, tokens, repos, deepAnalysisWorkers)
 		slog.Info("import: deep analysis complete", "org", orgID, "platform", platform, "analyzed", len(repos))
 	}()
+}
+
+// discoverImportRepos resolves repo metadata (externalId/cloneURL/defaultBranch) for
+// the import batch, keyed by lower-cased full name. For a github_app connection it
+// spans EVERY installation of the App (the requested repos may live in different orgs),
+// minting each installation's token and aggregating; otherwise it lists with the single
+// stored token. Repos are deduped by external id.
+func (h *syncHandlers) discoverImportRepos(ctx context.Context, orgID, platform, token, baseURL string) (map[string]gitSync.RemoteRepo, error) {
+	byName := map[string]gitSync.RemoteRepo{}
+
+	// github_app: aggregate repos across all installations.
+	if platform == "github" && h.cfg != nil && h.cfg.Git.GitHub.AppEnabled && h.isGitHubAppConn(ctx, orgID) {
+		insts, err := githubapp.ListInstallations(ctx, h.cfg.Git.GitHub.AppID, h.cfg.Git.GitHub.AppPrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		for _, inst := range insts {
+			tok, _, terr := githubapp.InstallationToken(ctx, h.cfg.Git.GitHub.AppID, h.cfg.Git.GitHub.AppPrivateKey, fmt.Sprint(inst.ID))
+			if terr != nil {
+				slog.Warn("import discover: mint installation token", "login", inst.Login, "err", terr)
+				continue
+			}
+			provider, perr := gitSync.NewProvider(ctx, "github", tok, "")
+			if perr != nil {
+				slog.Warn("import discover: build provider", "login", inst.Login, "err", perr)
+				continue
+			}
+			repos, lerr := provider.ListRepos(ctx)
+			if lerr != nil {
+				slog.Warn("import discover: list repos", "login", inst.Login, "err", lerr)
+				continue
+			}
+			for _, rr := range repos {
+				byName[strings.ToLower(rr.FullName)] = rr
+			}
+		}
+		return byName, nil
+	}
+
+	provider, err := gitSync.NewProvider(ctx, platform, token, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	remote, err := provider.ListRepos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, rr := range remote {
+		byName[strings.ToLower(rr.FullName)] = rr
+	}
+	return byName, nil
+}
+
+// isGitHubAppConn reports whether the org's github connection is a github_app
+// connection. Best-effort: a lookup failure returns false (→ OAuth path).
+func (h *syncHandlers) isGitHubAppConn(ctx context.Context, orgID string) bool {
+	var conn *store.PlatformConnection
+	if e := h.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		c, ge := store.GetConnection(ctx, tx, orgID, "github")
+		conn = c
+		return ge
+	}); e != nil || conn == nil {
+		return false
+	}
+	return conn.ConnectionType == "github_app"
 }
 
 // importSyncWorkers bounds how many repos run the FAST sync concurrently during a
@@ -544,9 +617,11 @@ const deepAnalysisWorkers = 2
 
 // syncReposConcurrently runs SyncRepo over repos with a fixed worker pool, so a
 // large import finishes in roughly total/workers time instead of the sum of every
-// repo's sync. Each SyncRepo is independent (its own temp clone), and the provider
-// (go-github / gitlab client) is safe for concurrent use.
-func syncReposConcurrently(ctx context.Context, database *db.DB, provider gitSync.Provider, orgID, token string, repos []store.Repo, workers int) {
+// repo's sync. Each SyncRepo is independent (its own temp clone). The token+provider
+// are resolved PER REPO from the owner token cache, so a github_app import spanning
+// several orgs fetches each repo with its owning installation's credential. The cache
+// is concurrency-safe (mutex-guarded), minting at most one token per owner.
+func syncReposConcurrently(ctx context.Context, database *db.DB, orgID, platform, baseURL string, tokens *ownerTokenCache, repos []store.Repo, workers int) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -557,7 +632,20 @@ func syncReposConcurrently(ctx context.Context, database *db.DB, provider gitSyn
 		go func() {
 			defer wg.Done()
 			for repo := range jobs {
-				if e := gitSync.SyncRepo(ctx, database, provider, orgID, repo, token); e != nil {
+				tok, base, terr := tokens.tokenFor(ctx, repo.FullName)
+				if terr != nil {
+					slog.Error("import: resolve owner token", "full_name", repo.FullName, "err", terr)
+					continue
+				}
+				if base == "" {
+					base = baseURL
+				}
+				provider, perr := gitSync.NewProvider(ctx, platform, tok, base)
+				if perr != nil {
+					slog.Error("import: build provider", "full_name", repo.FullName, "err", perr)
+					continue
+				}
+				if e := gitSync.SyncRepo(ctx, database, provider, orgID, repo, tok); e != nil {
 					slog.Error("import: sync repo", "full_name", repo.FullName, "err", e)
 				}
 			}
@@ -576,7 +664,7 @@ func syncReposConcurrently(ctx context.Context, database *db.DB, provider gitSyn
 // populated dashboards. Each AnalyzeRepoDeep is best-effort (it logs, never returns a
 // fatal error) and skips repos whose HEAD is unchanged since the last deep run, so a
 // re-import that touched nothing is near-instant.
-func analyzeReposConcurrently(ctx context.Context, database *db.DB, orgID, token string, repos []store.Repo, workers int) {
+func analyzeReposConcurrently(ctx context.Context, database *db.DB, orgID, platform string, tokens *ownerTokenCache, repos []store.Repo, workers int) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -587,7 +675,14 @@ func analyzeReposConcurrently(ctx context.Context, database *db.DB, orgID, token
 		go func() {
 			defer wg.Done()
 			for repo := range jobs {
-				if e := gitSync.AnalyzeRepoDeep(ctx, database, orgID, repo, token, slog.Default()); e != nil {
+				// Clone with the token of the installation that OWNS this repo (a
+				// github_app spans many orgs); OAuth returns its single token.
+				tok, _, terr := tokens.tokenFor(ctx, repo.FullName)
+				if terr != nil {
+					slog.Error("import: resolve owner token for analyze", "full_name", repo.FullName, "err", terr)
+					continue
+				}
+				if e := gitSync.AnalyzeRepoDeep(ctx, database, orgID, repo, tok, slog.Default()); e != nil {
 					slog.Error("import: deep analyze repo", "full_name", repo.FullName, "err", e)
 				}
 			}
@@ -767,7 +862,8 @@ func (h *syncHandlers) patchIssue(w http.ResponseWriter, r *http.Request) {
 		writeBackToken := req.Token
 		writeBackBase := req.BaseURL
 		if err == nil && writeBackToken == "" {
-			if stored, storedBase, terr := resolveStoredToken(r.Context(), h.db, h.cfg, orgID, repo.Platform); terr == nil {
+			owner, _, _ := splitOwnerName(repo.FullName)
+			if stored, storedBase, terr := resolveStoredTokenForOwner(r.Context(), h.db, h.cfg, orgID, repo.Platform, owner); terr == nil {
 				writeBackToken = stored
 				if writeBackBase == "" {
 					writeBackBase = storedBase
