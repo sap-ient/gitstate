@@ -404,6 +404,51 @@ func (s *Service) CommitsByContributor(ctx context.Context, orgID string, f Filt
 	return out, nil
 }
 
+// ChurnOverTime returns per-bucket additions/deletions over the window, bucketed
+// by day/week/month. Mirrors CommitsOverTime (same expandAuthor + bucket norm) so
+// the People filter + grouping apply identically.
+func (s *Service) ChurnOverTime(ctx context.Context, orgID string, f Filter, bucket string) ([]store.ChurnDay, error) {
+	sf := f.toStoreFilter()
+	b := NormalizeBucket(bucket)
+	var out []store.ChurnDay
+	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
+		var err error
+		out, err = sf.ChurnOverTime(ctx, tx, b)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("analytics.ChurnOverTime: %w", err)
+	}
+	return out, nil
+}
+
+// ChurnByContributor returns a per-contributor additions/deletions timeline for
+// the top-N contributors over the window, bucketed by day/week/month. Mirrors
+// CommitsByContributor: identities collapse onto their canonical contributor,
+// each series is 0-filled across the shared bucket axis, topN defaults to 5 when
+// non-positive, and includeOther appends an "Everyone else" aggregate line.
+func (s *Service) ChurnByContributor(ctx context.Context, orgID string, f Filter, bucket string, topN int, includeOther bool) ([]store.ChurnContributorSeries, error) {
+	sf := f.toStoreFilter()
+	b := NormalizeBucket(bucket)
+	if topN <= 0 {
+		topN = 5
+	}
+	var out []store.ChurnContributorSeries
+	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
+		var err error
+		out, err = sf.ChurnByContributor(ctx, tx, orgID, b, topN, includeOther)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("analytics.ChurnByContributor: %w", err)
+	}
+	return out, nil
+}
+
 // Contributors returns the leaderboard for the window.
 func (s *Service) Contributors(ctx context.Context, orgID string, f Filter) ([]store.Contributor, error) {
 	sf := f.toStoreFilter()

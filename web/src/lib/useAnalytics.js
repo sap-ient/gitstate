@@ -9,6 +9,8 @@
  *   useHeatmap(filters)          → { data, loading, error, refetch }   data: [{date,count}]
  *   useCommitsOverTime(filters, bucket) → { data, loading, error, refetch }  data: [{date,count}]
  *   useCommitsByContributor(filters, bucket, top, other) → { ... }  data: [{login,...,points:[{date,count}]}]
+ *   useChurnOverTime(filters, bucket) → { ... }  data: [{date,additions,deletions}]
+ *   useChurnByContributor(filters, bucket, top, other) → { ... }  data: [{login,...,points:[{date,additions,deletions}]}]
  *   useContributors(filters)     → { data, loading, error, refetch }   data: [{login,...}]
  *   useRepoStats(filters)        → { data, loading, error, refetch }   data: [{repoId,...}]
  *   usePullRequests(filters)     → { data, loading, error, refetch }   data: {total,merged,...,throughput:[]}
@@ -118,6 +120,30 @@ export function useContributors(filters = {}) {
  */
 export function useCommitsByContributor(filters = {}, bucket = 'day', top = 5, other = false) {
   return useAnalyticsResource('commits-by-contributor', filters, [], asArray, {
+    bucket, top, other: other ? 1 : undefined,
+  })
+}
+
+/**
+ * Lines-of-code churn over time: per-bucket summed additions/deletions over the
+ * filtered commit set. data: [{date, additions, deletions}]
+ * @param {object} filters shared filter object
+ * @param {string} bucket  day|week|month (same auto-bucket as commits-over-time)
+ */
+export function useChurnOverTime(filters = {}, bucket = 'day') {
+  return useAnalyticsResource('churn-over-time', filters, [], asArray, { bucket })
+}
+
+/**
+ * Per-contributor churn timeline: the top-N contributors as separate 0-filled
+ * series sharing a bucket axis. data: [{login,email,name,isAgent,contributorId,points:[{date,additions,deletions}]}]
+ * @param {object} filters shared filter object
+ * @param {string} bucket  day|week|month
+ * @param {number} top     top-N contributors (default 5)
+ * @param {boolean} other  append an "Everyone else" aggregate line
+ */
+export function useChurnByContributor(filters = {}, bucket = 'day', top = 5, other = false) {
+  return useAnalyticsResource('churn-by-contributor', filters, [], asArray, {
     bucket, top, other: other ? 1 : undefined,
   })
 }

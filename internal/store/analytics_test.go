@@ -668,6 +668,296 @@ func TestCommitsByContributor(t *testing.T) {
 		}(), len(series[0].Points))
 }
 
+// TestChurnOverTime verifies that ChurnOverTime sums additions/deletions per
+// bucket over the filtered commit set, respecting the date/repo/author filters.
+func TestChurnOverTime(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping churn-over-time integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	defer pool.Close()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO organizations (slug, name) VALUES ($1, $2) RETURNING id`,
+		fmt.Sprintf("churn-test-%d", time.Now().UnixNano()), "Churn Test Org",
+	).Scan(&orgID); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_org', $1, true)", orgID); err != nil {
+		t.Fatalf("set org: %v", err)
+	}
+	var repoA, repoB string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO repos (org_id, platform, external_id, full_name)
+		 VALUES ($1, 'github', $2, 'acme/churn-a') RETURNING id`,
+		orgID, fmt.Sprintf("churn-a-%d", time.Now().UnixNano()),
+	).Scan(&repoA); err != nil {
+		t.Fatalf("create repo A: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO repos (org_id, platform, external_id, full_name)
+		 VALUES ($1, 'github', $2, 'acme/churn-b') RETURNING id`,
+		orgID, fmt.Sprintf("churn-b-%d", time.Now().UnixNano()),
+	).Scan(&repoB); err != nil {
+		t.Fatalf("create repo B: %v", err)
+	}
+
+	// Two days, two repos. day1: 100/10 (A), 200/100 (B); day2: 20/5 (A).
+	day1 := time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 3, 11, 14, 0, 0, 0, time.UTC)
+	type fix struct {
+		repo, sha  string
+		adds, dels int
+		at         time.Time
+	}
+	fixtures := []fix{
+		{repoA, "ch1", 100, 10, day1},
+		{repoB, "ch2", 200, 100, day1},
+		{repoA, "ch3", 20, 5, day2},
+	}
+	for _, f := range fixtures {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO commits (org_id, repo_id, sha, author_login, author_email,
+			 is_agent, message, additions, deletions, committed_at)
+			 VALUES ($1,$2,$3,'dev','dev@work',false,$4,$5,$6,$7)`,
+			orgID, f.repo, f.sha, "msg "+f.sha, f.adds, f.dels, f.at,
+		); err != nil {
+			t.Fatalf("insert commit %s: %v", f.sha, err)
+		}
+	}
+
+	filter := AnalyticsFilter{
+		From: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	// Daily buckets: 2 days, sums match the totals per day.
+	churn, err := filter.ChurnOverTime(ctx, tx, "day")
+	if err != nil {
+		t.Fatalf("ChurnOverTime: %v", err)
+	}
+	if len(churn) != 2 {
+		t.Fatalf("churn days = %d, want 2", len(churn))
+	}
+	byDay := map[string]ChurnDay{}
+	for _, c := range churn {
+		byDay[c.Date.Format("2006-01-02")] = c
+	}
+	if d := byDay["2026-03-10"]; d.Additions != 300 || d.Deletions != 110 {
+		t.Errorf("2026-03-10 churn = (+%d −%d), want (+300 −110)", d.Additions, d.Deletions)
+	}
+	if d := byDay["2026-03-11"]; d.Additions != 20 || d.Deletions != 5 {
+		t.Errorf("2026-03-11 churn = (+%d −%d), want (+20 −5)", d.Additions, d.Deletions)
+	}
+
+	// Total sums across all buckets match the grand totals.
+	var sumA, sumD int64
+	for _, c := range churn {
+		sumA += c.Additions
+		sumD += c.Deletions
+	}
+	if sumA != 320 || sumD != 115 {
+		t.Errorf("churn totals = (+%d −%d), want (+320 −115)", sumA, sumD)
+	}
+
+	// Repo filter narrows to repo A only (100/10 + 20/5 = 120/15).
+	repoAOnly := filter
+	repoAOnly.RepoID = repoA
+	ca, err := repoAOnly.ChurnOverTime(ctx, tx, "week")
+	if err != nil {
+		t.Fatalf("ChurnOverTime(repo=A): %v", err)
+	}
+	var aAdds, aDels int64
+	for _, c := range ca {
+		aAdds += c.Additions
+		aDels += c.Deletions
+	}
+	if aAdds != 120 || aDels != 15 {
+		t.Errorf("repo-A churn = (+%d −%d), want (+120 −15)", aAdds, aDels)
+	}
+
+	// Cross-check: sums equal the Summary additions/deletions over the same filter.
+	sum, err := filter.Summary(ctx, tx)
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if sumA != sum.Additions || sumD != sum.Deletions {
+		t.Errorf("churn totals (+%d −%d) != summary (+%d −%d)", sumA, sumD, sum.Additions, sum.Deletions)
+	}
+}
+
+// TestChurnByContributor verifies the per-contributor churn series: top-N
+// ranking by total churn, identity-merge by email, 0-filled shared bucket axis,
+// per-point additions/deletions, and the optional "Everyone else" line.
+func TestChurnByContributor(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping churn-by-contributor integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	defer pool.Close()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO organizations (slug, name) VALUES ($1, $2) RETURNING id`,
+		fmt.Sprintf("chbc-test-%d", time.Now().UnixNano()), "ChBC Test Org",
+	).Scan(&orgID); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_org', $1, true)", orgID); err != nil {
+		t.Fatalf("set org: %v", err)
+	}
+	var repoID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO repos (org_id, platform, external_id, full_name)
+		 VALUES ($1, 'github', $2, 'acme/chbc') RETURNING id`,
+		orgID, fmt.Sprintf("chbc-repo-%d", time.Now().UnixNano()),
+	).Scan(&repoID); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	// Three authors across three weeks (one "hole" each for the 0-fill check).
+	//   wk0: jane +100/-10, bob +5/-1
+	//   wk1: jane +50/-5,  carol +3/-0
+	//   wk2: bob  +20/-2
+	// total churn: jane=165, bob=28, carol=3 → ranking jane, bob, carol.
+	wk0 := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	wk1 := wk0.AddDate(0, 0, 7)
+	wk2 := wk0.AddDate(0, 0, 14)
+	type fix struct {
+		sha, login, email string
+		adds, dels        int
+		at                time.Time
+	}
+	fixtures := []fix{
+		{"q1", "jane", "jane@work", 100, 10, wk0},
+		{"q2", "bob", "bob@work", 5, 1, wk0},
+		{"q3", "jane", "jane@work", 50, 5, wk1},
+		{"q4", "carol", "carol@work", 3, 0, wk1},
+		{"q5", "bob", "bob@work", 20, 2, wk2},
+	}
+	for _, f := range fixtures {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO commits (org_id, repo_id, sha, author_login, author_email,
+			 is_agent, message, additions, deletions, committed_at)
+			 VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9)`,
+			orgID, repoID, f.sha, f.login, f.email, "msg "+f.sha, f.adds, f.dels, f.at,
+		); err != nil {
+			t.Fatalf("insert commit %s: %v", f.sha, err)
+		}
+	}
+
+	filter := AnalyticsFilter{
+		From: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	// top-2, no "other": jane then bob, each 0-filled to the 3-week axis.
+	series, err := filter.ChurnByContributor(ctx, tx, orgID, "week", 2, false)
+	if err != nil {
+		t.Fatalf("ChurnByContributor: %v", err)
+	}
+	if len(series) != 2 {
+		t.Fatalf("series = %d, want 2 (top-2)", len(series))
+	}
+	if series[0].Email != "jane@work" {
+		t.Errorf("series[0].Email = %q, want jane@work (top churn)", series[0].Email)
+	}
+	if series[1].Email != "bob@work" {
+		t.Errorf("series[1].Email = %q, want bob@work (2nd)", series[1].Email)
+	}
+	if len(series[0].Points) != 3 || len(series[1].Points) != 3 {
+		t.Fatalf("points = (%d,%d), want both 3 (shared axis)", len(series[0].Points), len(series[1].Points))
+	}
+	for i := range series[0].Points {
+		if !series[0].Points[i].Date.Equal(series[1].Points[i].Date) {
+			t.Errorf("axis mismatch at %d: %v vs %v", i, series[0].Points[i].Date, series[1].Points[i].Date)
+		}
+	}
+	// jane: wk0 +100/-10, wk1 +50/-5, wk2 0/0 (the 0-fill).
+	wantJane := []ChurnPoint{{Additions: 100, Deletions: 10}, {Additions: 50, Deletions: 5}, {Additions: 0, Deletions: 0}}
+	for i, w := range wantJane {
+		if series[0].Points[i].Additions != w.Additions || series[0].Points[i].Deletions != w.Deletions {
+			t.Errorf("jane point[%d] = (+%d −%d), want (+%d −%d)", i,
+				series[0].Points[i].Additions, series[0].Points[i].Deletions, w.Additions, w.Deletions)
+		}
+	}
+	// bob: wk0 +5/-1, wk1 0/0 (hole), wk2 +20/-2.
+	wantBob := []ChurnPoint{{Additions: 5, Deletions: 1}, {Additions: 0, Deletions: 0}, {Additions: 20, Deletions: 2}}
+	for i, w := range wantBob {
+		if series[1].Points[i].Additions != w.Additions || series[1].Points[i].Deletions != w.Deletions {
+			t.Errorf("bob point[%d] = (+%d −%d), want (+%d −%d)", i,
+				series[1].Points[i].Additions, series[1].Points[i].Deletions, w.Additions, w.Deletions)
+		}
+	}
+
+	// top-2 WITH "other": carol collapses into "Everyone else" (+3/-0).
+	withOther, err := filter.ChurnByContributor(ctx, tx, orgID, "week", 2, true)
+	if err != nil {
+		t.Fatalf("ChurnByContributor(other): %v", err)
+	}
+	if len(withOther) != 3 {
+		t.Fatalf("series with other = %d, want 3", len(withOther))
+	}
+	other := withOther[2]
+	if other.Name != "Everyone else" {
+		t.Errorf("other.Name = %q, want \"Everyone else\"", other.Name)
+	}
+	var oAdds, oDels int64
+	for _, p := range other.Points {
+		oAdds += p.Additions
+		oDels += p.Deletions
+	}
+	if oAdds != 3 || oDels != 0 {
+		t.Errorf("everyone-else churn = (+%d −%d), want (+3 −0)", oAdds, oDels)
+	}
+
+	// top-5 over 3 authors → exactly 3 series, no "other".
+	all, err := filter.ChurnByContributor(ctx, tx, orgID, "week", 5, true)
+	if err != nil {
+		t.Fatalf("ChurnByContributor(top5): %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("top-5 over 3 authors = %d series, want 3", len(all))
+	}
+
+	t.Logf("churn-by-contributor OK: jane/bob/carol ranked by churn, 3 buckets, 0-fill verified")
+}
+
 // TestUpsertPlatformDates verifies that UpsertPR and UpsertIssue persist the REAL
 // platform created_at / updated_at — NOT the sync time (DB default now()). This is
 // the regression for "pull requests date dont seem to be date of pull request":

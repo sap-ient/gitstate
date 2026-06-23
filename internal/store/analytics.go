@@ -176,6 +176,62 @@ func (f AnalyticsFilter) CommitsOverTime(ctx context.Context, tx pgx.Tx, bucket 
 	return scanDayCounts(ctx, tx, "analytics commits-over-time", q, args)
 }
 
+// ── ChurnOverTime ─────────────────────────────────────────────────────────────
+
+// ChurnDay is one bucket with its summed additions and deletions over the
+// filtered commit set. Mirrors DayCount but carries the +/− churn pair so the
+// "Lines of code over time" chart can plot additions and deletions separately.
+type ChurnDay struct {
+	Date      time.Time `json:"date"`
+	Additions int64     `json:"additions"`
+	Deletions int64     `json:"deletions"`
+}
+
+// ChurnOverTime returns per-bucket SUM(additions) and SUM(deletions) bucketed by
+// day, week, or month over the filtered commit set, ordered ascending. The bucket
+// is the start of the period (date_trunc). It honours the shared whereClause so
+// the date/repo/AuthorIdentities filters (and the People grouping) apply exactly
+// like CommitsOverTime. bucket must be "day", "week", or "month"; any other value
+// defaults to "day".
+func (f AnalyticsFilter) ChurnOverTime(ctx context.Context, tx pgx.Tx, bucket string) ([]ChurnDay, error) {
+	trunc := "day"
+	switch bucket {
+	case "week":
+		trunc = "week"
+	case "month":
+		trunc = "month"
+	}
+	where, args, _ := f.whereClause(1)
+	q := fmt.Sprintf(`
+		SELECT
+			date_trunc('%s', c.committed_at)::date AS bucket,
+			COALESCE(SUM(c.additions), 0)          AS additions,
+			COALESCE(SUM(c.deletions), 0)          AS deletions
+		FROM commits c
+		WHERE true%s
+		GROUP BY 1
+		ORDER BY 1`, trunc, where)
+
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: analytics churn-over-time: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ChurnDay
+	for rows.Next() {
+		var d ChurnDay
+		if err := rows.Scan(&d.Date, &d.Additions, &d.Deletions); err != nil {
+			return nil, fmt.Errorf("store: scan churn-over-time row: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: analytics churn-over-time rows: %w", err)
+	}
+	return out, nil
+}
+
 func scanDayCounts(ctx context.Context, tx pgx.Tx, label, q string, args []any) ([]DayCount, error) {
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -425,6 +481,261 @@ func (f AnalyticsFilter) CommitsByContributor(ctx context.Context, tx pgx.Tx, or
 	}
 
 	out := make([]ContributorSeries, 0, len(top)+1)
+	for _, r := range top {
+		out = append(out, fill(r.a))
+	}
+	if other != nil {
+		out = append(out, fill(other))
+	}
+	return out, nil
+}
+
+// ── Churn-by-contributor (per-contributor additions/deletions over time) ───────
+
+// ChurnPoint is one bucket of a contributor's churn timeline: summed additions
+// and deletions in that bucket. 0-filled across the shared axis like DayCount.
+type ChurnPoint struct {
+	Date      time.Time `json:"date"`
+	Additions int64     `json:"additions"`
+	Deletions int64     `json:"deletions"`
+}
+
+// ChurnContributorSeries is one contributor's additions/deletions timeline over
+// the bucketed range. Mirrors ContributorSeries but each point carries the +/−
+// churn pair (so the UI can show additions and deletions per person).
+type ChurnContributorSeries struct {
+	Login   string       `json:"login"`
+	Name    string       `json:"name"`
+	Email   string       `json:"email"`
+	IsAgent bool         `json:"isAgent"`
+	Points  []ChurnPoint `json:"points"`
+
+	// ContributorID is the canonical contributor id when this series was collapsed
+	// onto a grouped person, else empty. Carried so the UI can key/colour series by
+	// the canonical person, consistent with the leaderboard + commits-by-contributor.
+	ContributorID string `json:"contributorId,omitempty"`
+}
+
+// ChurnByContributor returns a per-contributor additions/deletions timeline for
+// the top-N contributors (by total churn = additions+deletions in the window),
+// bucketed the same way as ChurnOverTime (day/week/month). It EXACTLY mirrors
+// CommitsByContributor: identities collapse onto their canonical contributor
+// (reusing the same resolver/collapse), excluded/bot contributors are dropped,
+// the top-N are ranked, every series is 0-filled across the shared bucket axis,
+// and each series carries the canonical name/contributorId/isAgent.
+//
+// When includeOther is true an extra "Everyone else" series (the aggregate of all
+// non-top-N contributors) is appended after the top-N, also 0-filled; it is
+// omitted entirely when there are no other contributors.
+//
+// bucket must be "day", "week", or "month"; any other value defaults to "day".
+func (f AnalyticsFilter) ChurnByContributor(ctx context.Context, tx pgx.Tx, orgID, bucket string, topN int, includeOther bool) ([]ChurnContributorSeries, error) {
+	if topN <= 0 {
+		topN = 5
+	}
+	resolver, err := IdentityToContributor(ctx, tx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	var excluded, bots map[string]bool
+	if len(resolver) > 0 {
+		excluded, bots, err = ExcludedContributors(ctx, tx, orgID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	trunc := "day"
+	switch bucket {
+	case "week":
+		trunc = "week"
+	case "month":
+		trunc = "month"
+	}
+	where, args, _ := f.whereClause(1)
+
+	// Per identity per bucket churn for ALL identities (no SQL LIMIT): collapse
+	// identities onto their canonical contributor in Go FIRST, THEN rank top-N by
+	// total churn, so a person's many emails/logins count as one before ranking.
+	q := fmt.Sprintf(`
+		WITH scoped AS (
+			SELECT
+				COALESCE(NULLIF(lower(c.author_email::text),''),
+				         NULLIF(lower(c.author_login),'')) AS identity,
+				lower(COALESCE(c.author_email::text,'')) AS lemail,
+				lower(COALESCE(c.author_login,''))       AS llogin,
+				c.author_login,
+				c.author_email,
+				c.is_agent,
+				c.additions,
+				c.deletions,
+				c.committed_at,
+				date_trunc('%s', c.committed_at)::date AS bucket
+			FROM commits c
+			WHERE true%s
+		),
+		latest AS (
+			SELECT DISTINCT ON (identity)
+				identity,
+				COALESCE(author_login,'')        AS login,
+				COALESCE(author_email::text,'')  AS email,
+				is_agent
+			FROM scoped
+			WHERE identity IS NOT NULL
+			ORDER BY identity, committed_at DESC
+		),
+		per_bucket AS (
+			SELECT identity, MAX(lemail) AS lemail, MAX(llogin) AS llogin, bucket,
+			       COALESCE(SUM(additions),0) AS adds, COALESCE(SUM(deletions),0) AS dels
+			FROM scoped
+			WHERE identity IS NOT NULL
+			GROUP BY identity, bucket
+		)
+		SELECT
+			pb.identity, l.login, l.email, pb.lemail, pb.llogin, l.is_agent, pb.bucket, pb.adds, pb.dels
+		FROM per_bucket pb
+		JOIN latest l USING (identity)
+		ORDER BY pb.identity ASC, pb.bucket ASC`, trunc, where)
+
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: analytics churn-by-contributor: %w", err)
+	}
+	defer rows.Close()
+
+	type churn struct {
+		adds, dels int64
+	}
+	type acc struct {
+		series ChurnContributorSeries
+		total  int64 // total churn (adds+dels) for ranking
+		counts map[time.Time]churn
+	}
+	byKey := make(map[string]*acc)
+	order := make([]string, 0)
+	bucketSet := make(map[time.Time]struct{})
+
+	resolve := func(lemail, llogin string) string {
+		if lemail != "" {
+			if cid, ok := resolver[lemail]; ok {
+				return cid
+			}
+		}
+		if llogin != "" {
+			if cid, ok := resolver[llogin]; ok {
+				return cid
+			}
+		}
+		return ""
+	}
+
+	for rows.Next() {
+		var (
+			identity, login, email, lemail, llogin string
+			isAgent                                bool
+			bkt                                    time.Time
+			adds, dels                             int64
+		)
+		if err := rows.Scan(&identity, &login, &email, &lemail, &llogin, &isAgent, &bkt, &adds, &dels); err != nil {
+			return nil, fmt.Errorf("store: scan churn-by-contributor row: %w", err)
+		}
+		cid := resolve(lemail, llogin)
+		if cid != "" && (excluded[cid] || bots[cid]) {
+			continue
+		}
+		key := cid
+		if key == "" {
+			key = identity
+		}
+		a := byKey[key]
+		if a == nil {
+			name := login
+			if cid != "" {
+				if d, ok := contribDisplayName(ctx, tx, orgID, cid); ok && d != "" {
+					name = d
+				}
+			}
+			a = &acc{
+				series: ChurnContributorSeries{Login: login, Email: email, Name: name, IsAgent: isAgent, ContributorID: cid},
+				counts: map[time.Time]churn{},
+			}
+			byKey[key] = a
+			order = append(order, key)
+		}
+		c := a.counts[bkt]
+		c.adds += adds
+		c.dels += dels
+		a.counts[bkt] = c
+		a.total += adds + dels
+		bucketSet[bkt] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: analytics churn-by-contributor rows: %w", err)
+	}
+
+	// Rank the canonical accumulators by total churn and keep the top-N; the rest
+	// optionally collapse into "Everyone else".
+	type ranked struct {
+		key string
+		a   *acc
+	}
+	all := make([]ranked, 0, len(order))
+	for _, k := range order {
+		all = append(all, ranked{k, byKey[k]})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].a.total != all[j].a.total {
+			return all[i].a.total > all[j].a.total
+		}
+		return all[i].key < all[j].key
+	})
+
+	var top []ranked
+	var rest []ranked
+	if len(all) > topN {
+		top = all[:topN]
+		rest = all[topN:]
+	} else {
+		top = all
+	}
+
+	var other *acc
+	if includeOther && len(rest) > 0 {
+		o := &acc{
+			series: ChurnContributorSeries{Login: "Everyone else", Name: "Everyone else"},
+			counts: map[time.Time]churn{},
+		}
+		for _, r := range rest {
+			for b, c := range r.a.counts {
+				oc := o.counts[b]
+				oc.adds += c.adds
+				oc.dels += c.dels
+				o.counts[b] = oc
+				o.total += c.adds + c.dels
+			}
+		}
+		if o.total > 0 {
+			other = o
+		}
+	}
+
+	// Sorted, deduplicated bucket axis shared by every series.
+	buckets := make([]time.Time, 0, len(bucketSet))
+	for b := range bucketSet {
+		buckets = append(buckets, b)
+	}
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Before(buckets[j]) })
+
+	fill := func(a *acc) ChurnContributorSeries {
+		s := a.series
+		s.Points = make([]ChurnPoint, len(buckets))
+		for i, b := range buckets {
+			c := a.counts[b]
+			s.Points[i] = ChurnPoint{Date: b, Additions: c.adds, Deletions: c.dels}
+		}
+		return s
+	}
+
+	out := make([]ChurnContributorSeries, 0, len(top)+1)
 	for _, r := range top {
 		out = append(out, fill(r.a))
 	}

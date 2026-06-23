@@ -11,9 +11,10 @@
  *
  * All charts hand-rolled SVG (no chart dependency). Both themes, loading skeletons, empty states.
  */
-import { useState, useMemo, useRef, useLayoutEffect, Fragment } from 'react'
+import { useState, useMemo, useCallback, useRef, useLayoutEffect, Fragment } from 'react'
 import {
   useSummary, useHeatmap, useCommitsOverTime, useCommitsByContributor,
+  useChurnOverTime, useChurnByContributor,
   useContributors, useRepoStats, useDayCommits,
   usePullRequests, useIssueFlow, useAgentShare, useProjects,
 } from '../lib/useAnalytics.js'
@@ -24,7 +25,7 @@ import {
   GitCommitHorizontal, GitBranch, Users, CalendarDays, Plus, Minus,
   Sigma, TrendingUp, Activity, X, Bot, ArrowUpRight, Folder, Hash, ChevronDown,
   GitPullRequest, GitMerge, Timer, CircleDot, CircleCheck, ListChecks, Cpu, User,
-  BarChart3, AlertTriangle,
+  BarChart3, AlertTriangle, Code2,
 } from 'lucide-react'
 
 // ── small helpers ───────────────────────────────────────────────────────────
@@ -597,11 +598,46 @@ function seriesLabel(s) {
   return 'unknown'
 }
 
-const xLabelFor = (bucket) => (p) => bucket === 'month'
-  ? fmtDate(p.x, { month: 'short', year: '2-digit' })
-  : bucket === 'week'
-    ? fmtDate(p.x, { month: 'short', day: 'numeric', year: '2-digit' })
-    : fmtDate(p.x, { month: 'short', day: 'numeric' })
+// Stable per-contributor colour derived from a key (contributorId/login/email),
+// so the SAME person keeps the SAME colour across the commits + churn charts and
+// across renders. Picks from the categorical --chart-* palette by hashed hue.
+const SERIES_PALETTE = [
+  'var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)',
+  'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)',
+]
+function seriesColor(key, idx = 0) {
+  const k = key || `idx-${idx}`
+  if (k === 'Everyone else') return 'var(--text-faint)'
+  let h = 0
+  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0
+  return SERIES_PALETTE[h % SERIES_PALETTE.length]
+}
+
+// Adaptive, human x-axis date formatter. For month buckets it shows a bare month
+// ("Jan") and appends the year only at a year boundary / the first tick
+// ("Apr '24"); week/day show "Mar 3". `seen` tracks the last year emitted so the
+// year is shown sensibly rather than on every tick. Returns a fresh formatter per
+// render (stateful across ticks within one chart).
+function xLabelFor(bucket) {
+  let lastYear = null
+  return (p) => {
+    const d = new Date(p.x)
+    if (Number.isNaN(d.getTime())) return p.x
+    const year = d.getFullYear()
+    const boundary = lastYear == null || year !== lastYear
+    lastYear = year
+    if (bucket === 'month') {
+      return boundary
+        ? fmtDate(p.x, { month: 'short', year: '2-digit' })
+        : fmtDate(p.x, { month: 'short' })
+    }
+    // day / week: "Mar 3", with the year only at a boundary so multi-year ranges
+    // stay anchored without repeating the year on every tick.
+    return boundary
+      ? fmtDate(p.x, { month: 'short', day: 'numeric', year: '2-digit' })
+      : fmtDate(p.x, { month: 'short', day: 'numeric' })
+  }
+}
 
 function CommitsOverTime({ filters }) {
   // 'auto' follows the range width (day/week/month); the explicit toggles let the
@@ -628,10 +664,13 @@ function CommitsOverTime({ filters }) {
   )
 
   // Build multi-series for the LineChart: one series per top contributor, each
-  // already 0-filled to a shared bucket axis by the backend.
+  // already 0-filled to a shared bucket axis by the backend. Colour each person
+  // by a STABLE key (contributorId → login → email) so the same person keeps the
+  // same colour across renders and across the commits/churn charts.
   const contribSeries = useMemo(
-    () => (contribData || []).map(s => ({
+    () => (contribData || []).map((s, i) => ({
       name: seriesLabel(s),
+      color: seriesColor(s.contributorId || s.login || s.email || seriesLabel(s), i),
       points: (s.points || []).map(p => ({ x: p.date, y: p.count || 0, raw: p })),
     })),
     [contribData],
@@ -639,6 +678,17 @@ function CommitsOverTime({ filters }) {
 
   const showContrib = mode === 'contributor'
   const busy = showContrib ? contribLoading : loading
+
+  // Shared multi-series tooltip: the bucket date + each contributor's count.
+  const contribTooltipRows = useCallback((idx) => {
+    const date = contribSeries[0]?.points[idx]?.x
+    return contribSeries.map(s => ({
+      header: date ? fmtDate(date) : '',
+      name: s.name,
+      color: s.color,
+      value: fmtNum(s.points[idx]?.y ?? 0),
+    }))
+  }, [contribSeries])
 
   return (
     <Card padding="lg">
@@ -702,6 +752,10 @@ function CommitsOverTime({ filters }) {
             width={760}
             height={240}
             fill={false}
+            curve="monotone"
+            areaFill
+            legendBelow
+            tooltipRows={contribTooltipRows}
             xLabel={xLabelFor(bucket)}
             yLabel={v => fmtNum(Math.round(v))}
             emptyIcon={<Users size={22} className="text-[var(--text-faint)]" />}
@@ -715,11 +769,183 @@ function CommitsOverTime({ filters }) {
             width={760}
             height={220}
             color="var(--chart-1)"
+            curve="monotone"
             xLabel={xLabelFor(bucket)}
             yLabel={v => fmtNum(Math.round(v))}
             tooltip={p => `${fmtDate(p.x)} · ${p.y} commit${p.y === 1 ? '' : 's'}`}
             emptyIcon={<Activity size={22} className="text-[var(--text-faint)]" />}
             emptyText="No commits in this range."
+          />
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ── lines of code over time (churn: +adds / −dels) ───────────────────────────
+
+// In Total mode we plot additions as a POSITIVE series and deletions MIRRORED
+// (negative), so the chart reads as a diverging +/− band around zero. In
+// By-contributor mode each person is a single NET-lines line (additions −
+// deletions), coloured by their stable key; the tooltip breaks the net down into
+// +adds / −dels.
+function LinesOverTime({ filters }) {
+  const [bucketMode, setBucketMode] = useState('auto')
+  const [mode, setMode] = useState('total')
+  const resolvedBucket = bucketMode === 'auto' ? autoBucket(filters) : bucketMode
+  const bucket = resolvedBucket
+
+  const { data, loading } = useChurnOverTime(filters, resolvedBucket)
+  const { data: contribData, loading: contribLoading } = useChurnByContributor(
+    filters, resolvedBucket, 5, false,
+  )
+
+  const points = useMemo(() => (data || []).filter(d => d?.date), [data])
+  const totalAdds = useMemo(() => points.reduce((a, p) => a + (Number(p.additions) || 0), 0), [points])
+  const totalDels = useMemo(() => points.reduce((a, p) => a + (Number(p.deletions) || 0), 0), [points])
+
+  // Total mode: additions positive, deletions mirrored negative, around a zero baseline.
+  const totalSeries = useMemo(() => ([
+    {
+      name: 'Additions',
+      color: 'var(--ok)',
+      points: points.map(p => ({ x: p.date, y: Number(p.additions) || 0, raw: p })),
+    },
+    {
+      name: 'Deletions',
+      color: 'var(--bad)',
+      points: points.map(p => ({ x: p.date, y: -(Number(p.deletions) || 0), raw: p })),
+    },
+  ]), [points])
+
+  const totalTooltipRows = useCallback((idx) => {
+    const p = points[idx]
+    if (!p) return []
+    return [
+      { header: fmtDate(p.date), name: 'Additions', color: 'var(--ok)', value: `+${fmtNum(p.additions)}` },
+      { name: 'Deletions', color: 'var(--bad)', value: `−${fmtNum(p.deletions)}` },
+    ]
+  }, [points])
+
+  // By-contributor: one NET-lines line per person (adds − dels), stable colour.
+  const contribSeries = useMemo(
+    () => (contribData || []).map((s, i) => ({
+      name: seriesLabel(s),
+      color: seriesColor(s.contributorId || s.login || s.email || seriesLabel(s), i),
+      points: (s.points || []).map(p => ({
+        x: p.date,
+        y: (Number(p.additions) || 0) - (Number(p.deletions) || 0),
+        raw: p,
+      })),
+    })),
+    [contribData],
+  )
+
+  const contribTooltipRows = useCallback((idx) => {
+    const date = contribSeries[0]?.points[idx]?.x
+    return contribSeries.map(s => {
+      const r = s.points[idx]?.raw || {}
+      const net = (Number(r.additions) || 0) - (Number(r.deletions) || 0)
+      return {
+        header: date ? fmtDate(date) : '',
+        name: s.name,
+        color: s.color,
+        value: `${net >= 0 ? '+' : ''}${fmtNum(net)}`,
+      }
+    })
+  }, [contribSeries])
+
+  const showContrib = mode === 'contributor'
+  const busy = showContrib ? contribLoading : loading
+
+  return (
+    <Card padding="lg">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="flex items-center gap-2.5">
+          <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-3)', background: 'color-mix(in srgb, var(--chart-3) 14%, transparent)' }}>
+            <Code2 size={15} />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold text-[var(--text)]">Lines of code over time</h2>
+            <p className="text-xs text-[var(--text-faint)] mt-0.5">
+              {showContrib
+                ? `Net lines per top ${contribSeries.length} contributors, bucketed by ${bucket}${bucketMode === 'auto' ? ' (auto)' : ''}`
+                : <>
+                    <span className="text-[var(--ok)]">+{fmtNum(totalAdds)}</span>
+                    {' '}<span className="text-[var(--bad)]">−{fmtNum(totalDels)}</span>
+                    {` lines, bucketed by ${bucket}${bucketMode === 'auto' ? ' (auto)' : ''}`}
+                  </>}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex items-center rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-0.5">
+            {[['total', 'Total'], ['contributor', 'By contributor']].map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setMode(k)}
+                className={[
+                  'px-3 py-1 text-[11px] font-mono font-medium rounded-[6px] transition-colors',
+                  mode === k ? 'bg-[#2DD4BF]/15 text-[#2DD4BF]' : 'text-[var(--text-faint)] hover:text-[var(--text-dim)]',
+                ].join(' ')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="inline-flex items-center rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-0.5">
+            {['auto', 'day', 'week', 'month'].map(b => {
+              const active = bucketMode === b
+              return (
+                <button
+                  key={b}
+                  onClick={() => setBucketMode(b)}
+                  className={[
+                    'px-3 py-1 text-[11px] font-mono font-medium rounded-[6px] transition-colors capitalize',
+                    active ? 'bg-[#2DD4BF]/15 text-[#2DD4BF]' : 'text-[var(--text-faint)] hover:text-[var(--text-dim)]',
+                  ].join(' ')}
+                >
+                  {b}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {busy ? (
+        <div className="h-[240px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
+      ) : showContrib ? (
+        <div className="overflow-x-auto">
+          <LineChart
+            series={contribSeries}
+            width={760}
+            height={240}
+            fill={false}
+            curve="monotone"
+            areaFill
+            legendBelow
+            tooltipRows={contribTooltipRows}
+            xLabel={xLabelFor(bucket)}
+            yLabel={v => fmtSigned(Math.round(v))}
+            emptyIcon={<Users size={22} className="text-[var(--text-faint)]" />}
+            emptyText="No contributor churn in this range."
+          />
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <LineChart
+            series={totalSeries}
+            width={760}
+            height={240}
+            curve="monotone"
+            areaFill
+            legendBelow
+            tooltipRows={totalTooltipRows}
+            xLabel={xLabelFor(bucket)}
+            yLabel={v => fmtSigned(Math.round(v))}
+            emptyIcon={<Code2 size={22} className="text-[var(--text-faint)]" />}
+            emptyText="No line changes in this range."
           />
         </div>
       )}
@@ -968,6 +1194,7 @@ function TwoSeriesChart({ series, labelA, labelB, colorA, colorB, height = 200 }
         series={chartSeries}
         width={760}
         height={Math.max(height, 190)}
+        curve="monotone"
         xLabel={p => fmtDate(p.x, { month: 'short', day: 'numeric' })}
         yLabel={v => fmtNum(Math.round(v))}
         tooltip={p => `${fmtDate(p.x)} · ${p.y}`}
@@ -1384,6 +1611,9 @@ export default function Analytics() {
 
       {/* Commits over time */}
       <Reveal delay={0.05} inView><CommitsOverTime filters={filters} /></Reveal>
+
+      {/* Lines of code over time (+adds / −dels) */}
+      <Reveal delay={0.05} inView><LinesOverTime filters={filters} /></Reveal>
 
       {/* ── Delivery: PRs + issues ─────────────────────────────────────────── */}
       <Reveal inView><SectionHeading icon={<GitPullRequest size={13} className="text-[var(--chart-1)]" />}>Delivery</SectionHeading></Reveal>

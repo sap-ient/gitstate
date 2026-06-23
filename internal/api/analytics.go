@@ -12,6 +12,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ import (
 //	GET /api/analytics/heatmap             → []{date, count} per calendar day
 //	GET /api/analytics/commits-over-time   → []{date, count} (?bucket=day|week)
 //	GET /api/analytics/commits-by-contributor → []{login,email,name,isAgent,points:[{date,count}]} top-N series (?bucket&top&other)
+//	GET /api/analytics/churn-over-time     → []{date, additions, deletions} (?bucket=day|week|month)
+//	GET /api/analytics/churn-by-contributor → []{login,email,name,isAgent,contributorId,points:[{date,additions,deletions}]} top-N series (?bucket&top&other)
 //	GET /api/analytics/contributors        → leaderboard
 //	GET /api/analytics/repos               → per-repo table
 //	GET /api/analytics/pull-requests       → PR totals, merge-rate, lead-time, throughput
@@ -51,6 +54,8 @@ func RegisterAnalyticsRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Co
 	mux.Handle("GET /api/analytics/heatmap", auth(http.HandlerFunc(h.heatmap)))
 	mux.Handle("GET /api/analytics/commits-over-time", auth(http.HandlerFunc(h.commitsOverTime)))
 	mux.Handle("GET /api/analytics/commits-by-contributor", auth(http.HandlerFunc(h.commitsByContributor)))
+	mux.Handle("GET /api/analytics/churn-over-time", auth(http.HandlerFunc(h.churnOverTime)))
+	mux.Handle("GET /api/analytics/churn-by-contributor", auth(http.HandlerFunc(h.churnByContributor)))
 	mux.Handle("GET /api/analytics/contributors", auth(http.HandlerFunc(h.contributors)))
 	mux.Handle("GET /api/analytics/repos", auth(http.HandlerFunc(h.repos)))
 	mux.Handle("GET /api/analytics/pull-requests", auth(http.HandlerFunc(h.pullRequests)))
@@ -151,19 +156,63 @@ func (h *analyticsHandlers) commitsByContributor(w http.ResponseWriter, r *http.
 		return
 	}
 	q := r.URL.Query()
+	topN, includeOther := parseTopOther(q)
+	res, err := h.svc.CommitsByContributor(r.Context(), orgID, f, q.Get("bucket"), topN, includeOther)
+	if err != nil {
+		writeAnalyticsError(w, "compute commits-by-contributor", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, emptySlice(res))
+}
+
+// parseTopOther reads the shared ?top=&other= params: top-N (default 5, capped at
+// 20 so the palette + payload stay sane) and the "Everyone else" aggregate toggle.
+func parseTopOther(q url.Values) (int, bool) {
 	topN := 5
 	if v := strings.TrimSpace(q.Get("top")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			if n > 20 {
-				n = 20 // cap so the palette + payload stay sane
+				n = 20
 			}
 			topN = n
 		}
 	}
 	includeOther := q.Get("other") == "1" || strings.EqualFold(q.Get("other"), "true")
-	res, err := h.svc.CommitsByContributor(r.Context(), orgID, f, q.Get("bucket"), topN, includeOther)
+	return topN, includeOther
+}
+
+// GET /api/analytics/churn-over-time?bucket=day|week|month
+// Returns per-bucket summed additions/deletions over the filtered commit set,
+// for the "Lines of code over time" chart.
+func (h *analyticsHandlers) churnOverTime(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	f, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.svc.ChurnOverTime(r.Context(), orgID, f, r.URL.Query().Get("bucket"))
 	if err != nil {
-		writeAnalyticsError(w, "compute commits-by-contributor", err)
+		writeAnalyticsError(w, "compute churn-over-time", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, emptySlice(res))
+}
+
+// GET /api/analytics/churn-by-contributor?bucket=day|week|month&top=5&other=1
+// Returns one additions/deletions series per top-N contributor (0-filled to a
+// shared bucket axis), ranked by total churn descending. `other=1` appends an
+// aggregate "Everyone else" series.
+func (h *analyticsHandlers) churnByContributor(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	f, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	topN, includeOther := parseTopOther(q)
+	res, err := h.svc.ChurnByContributor(r.Context(), orgID, f, q.Get("bucket"), topN, includeOther)
+	if err != nil {
+		writeAnalyticsError(w, "compute churn-by-contributor", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, emptySlice(res))
