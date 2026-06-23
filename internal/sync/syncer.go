@@ -471,6 +471,15 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 		if !syncCommitsFromAPI(ctx, database, provider, orgID, repo, log) {
 			fetchComplete = false
 		}
+	} else {
+		// ── 4c. Churn backfill from GraphQL ──────────────────────────────────────
+		// A blobless clone's `git log --numstat` lazily fetches blobs, which is slow
+		// and unreliable on large repos (truncates under the walk timeout → 0 churn).
+		// So even when the clone supplied the commit SET, we pull accurate per-commit
+		// additions/deletions from the GraphQL history and UPDATE churn BY SHA only
+		// (never touching authorship, so it can't flip git-identity ↔ login). Cheap
+		// (~1 call/100 commits, default branch). Best-effort.
+		backfillChurnFromAPI(ctx, database, provider, orgID, repo, log)
 	}
 
 	// ── 4. Update last_synced_at on the repo — ONLY on a COMPLETE sync ─────────
@@ -734,6 +743,42 @@ func syncCommitsFromAPI(ctx context.Context, database *db.DB, provider Provider,
 	}
 	log.Info("sync: commits stored (api)", "count", len(commits), "incremental", !since.IsZero())
 	return true
+}
+
+// backfillChurnFromAPI fills per-commit additions/deletions from the GraphQL
+// history (reliable, unlike blobless-clone numstat) and writes them BY SHA only —
+// it never rewrites authorship, so the clone-derived git identities are preserved.
+// INCREMENTAL: since = repo.LastSyncedAt (a NULLed last_synced_at → full backfill).
+// Best-effort: a failure here must not fail the sync.
+func backfillChurnFromAPI(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, log *slog.Logger) {
+	var since time.Time
+	if repo.LastSyncedAt != nil {
+		since = *repo.LastSyncedAt
+	}
+	commits, err := provider.ListCommits(ctx, repo.FullName, since)
+	if err != nil {
+		log.Warn("sync: churn backfill list commits", "err", err)
+		return
+	}
+	updated := 0
+	_ = database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		for _, c := range commits {
+			if c.Additions == 0 && c.Deletions == 0 {
+				continue
+			}
+			ok, e := store.SetCommitChurn(ctx, tx, orgID, repo.ID, c.SHA, c.Additions, c.Deletions)
+			if e != nil {
+				return e
+			}
+			if ok {
+				updated++
+			}
+		}
+		return nil
+	})
+	if updated > 0 {
+		log.Info("sync: churn backfilled from graphql", "commits", updated)
+	}
 }
 
 // incidentLabelRe / incidentSeverity classify an issue's labels as an incident.

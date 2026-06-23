@@ -69,6 +69,22 @@ func UpsertCommit(ctx context.Context, tx pgx.Tx, c *Commit) error {
 	return nil
 }
 
+// SetCommitChurn updates ONLY the additions/deletions of an existing commit (by
+// SHA), leaving authorship/message/dates untouched. Used by the GraphQL churn
+// backfill so reliable per-commit churn fills the gaps a blobless clone's numstat
+// left at zero, without ever rewriting the clone-derived git identity. Returns
+// whether a row was updated (false when the SHA isn't present yet).
+func SetCommitChurn(ctx context.Context, tx pgx.Tx, orgID, repoID, sha string, additions, deletions int) (bool, error) {
+	const q = `
+		UPDATE commits SET additions = $4, deletions = $5
+		WHERE org_id = $1 AND repo_id = $2 AND sha = $3`
+	tag, err := tx.Exec(ctx, q, orgID, repoID, sha, additions, deletions)
+	if err != nil {
+		return false, fmt.Errorf("store: set commit churn %s: %w", sha, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // ListCommits returns all commits for a repo ordered newest-first.
 // Uses the raw pool (RLS is already set for the session by db.WithOrg when this
 // is called inside the same transaction; callers outside a tx must ensure the
