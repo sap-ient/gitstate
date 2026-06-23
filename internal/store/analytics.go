@@ -27,11 +27,18 @@ import (
 //   - RepoID filters on commits.repo_id (a UUID string) when non-empty.
 //   - Author matches EITHER author_login OR author_email (case-insensitive),
 //     so a caller can pass a login or an email transparently.
+//   - AuthorIdentities, when non-empty, expands a single chosen contributor into
+//     the FULL set of their lowercased git identities (emails + logins). It takes
+//     precedence over Author: every analytics query then matches if author_login
+//     OR author_email is ANY of the identities, so picking a grouped person filters
+//     ALL their identities at once. The service layer populates this by resolving a
+//     `contributor:<uuid>` author token via store.ContributorIdentityValues.
 type AnalyticsFilter struct {
-	From   time.Time
-	To     time.Time
-	RepoID string
-	Author string
+	From             time.Time
+	To               time.Time
+	RepoID           string
+	Author           string
+	AuthorIdentities []string
 }
 
 // whereClause builds the parameterised WHERE fragment shared by every analytics
@@ -60,9 +67,16 @@ func (f AnalyticsFilter) whereClause(startIdx int) (string, []any, int) {
 		args = append(args, f.RepoID)
 		idx++
 	}
-	if f.Author != "" {
-		// Match login or email, case-insensitive. author_email is citext so the
-		// equality is already case-insensitive there; lower() handles author_login.
+	if len(f.AuthorIdentities) > 0 {
+		// A whole contributor: match if login OR email is ANY of the group's
+		// lowercased identities (emails + logins) — one bind param, a slice.
+		clause += fmt.Sprintf(" AND (lower(COALESCE(c.author_login,'')) = ANY($%d) OR lower(c.author_email::text) = ANY($%d))", idx, idx)
+		args = append(args, f.AuthorIdentities)
+		idx++
+	} else if f.Author != "" {
+		// Single identity (back-compat). Match login or email, case-insensitive.
+		// author_email is citext so the equality is already case-insensitive there;
+		// lower() handles author_login.
 		clause += fmt.Sprintf(" AND (lower(COALESCE(c.author_login,'')) = lower($%d) OR c.author_email = $%d)", idx, idx)
 		args = append(args, f.Author)
 		idx++
@@ -449,6 +463,16 @@ type Contributor struct {
 	FirstAt    time.Time `json:"firstAt"`
 	LastAt     time.Time `json:"lastAt"`
 	IsAgent    bool      `json:"isAgent"`
+
+	// ContributorID is the canonical contributor id when this row was collapsed
+	// onto a grouped person, else empty (ungrouped identity). The frontend sends
+	// `contributor:<ContributorID>` as the author filter so picking this person
+	// filters ALL their identities at once.
+	ContributorID string `json:"contributorId,omitempty"`
+	// Identities lists the grouped person's lowercased git identities (emails +
+	// logins). Empty for ungrouped rows. Carried so the dropdown can show/expand
+	// the whole group.
+	Identities []string `json:"identities,omitempty"`
 }
 
 // Contributors returns the leaderboard for the filtered commit set, ranked by
@@ -573,6 +597,13 @@ func (f AnalyticsFilter) Contributors(ctx context.Context, tx pgx.Tx, orgID stri
 	out := make([]Contributor, 0, len(raw))
 	byContrib := map[string]int{} // contributor_id -> index in out
 	contribDisplay, _ := contributorDisplay(ctx, tx, orgID) // id -> (name,email)
+	// Identities per contributor so each leaderboard row carries the whole group
+	// (the frontend builds a `contributor:<id>` author option from it). Loaded once
+	// when any collapse may happen.
+	var contribIdents map[string][]string
+	if len(resolver) > 0 {
+		contribIdents = contributorIdentitySets(ctx, tx, orgID)
+	}
 	for _, r := range raw {
 		cid := resolve(r)
 		if cid != "" && (excluded[cid] || bots[cid]) {
@@ -609,6 +640,8 @@ func (f AnalyticsFilter) Contributors(ctx context.Context, tx pgx.Tx, orgID stri
 				c.Email = d[1]
 			}
 		}
+		c.ContributorID = cid
+		c.Identities = contribIdents[cid]
 		byContrib[cid] = len(out)
 		out = append(out, c)
 	}
@@ -646,6 +679,27 @@ func contributorDisplay(ctx context.Context, tx pgx.Tx, orgID string) (map[strin
 		m[id] = [2]string{name, email}
 	}
 	return m, rows.Err()
+}
+
+// contributorIdentitySets returns contributor_id -> sorted lowercased identity
+// values (emails + logins) for the whole org, so the leaderboard can attach each
+// grouped person's full identity set. Best-effort: returns an empty map on error.
+func contributorIdentitySets(ctx context.Context, tx pgx.Tx, orgID string) map[string][]string {
+	const q = `SELECT contributor_id::text, lower(value) FROM contributor_identities WHERE org_id = $1 ORDER BY value`
+	rows, err := tx.Query(ctx, q, orgID)
+	if err != nil {
+		return map[string][]string{}
+	}
+	defer rows.Close()
+	m := map[string][]string{}
+	for rows.Next() {
+		var cid, value string
+		if err := rows.Scan(&cid, &value); err != nil {
+			return m
+		}
+		m[cid] = append(m[cid], value)
+	}
+	return m
 }
 
 // ── Per-repo table ────────────────────────────────────────────────────────────
@@ -732,7 +786,13 @@ func (f AnalyticsFilter) prWhere(startIdx int) (string, []any, int) {
 		args = append(args, f.RepoID)
 		idx++
 	}
-	if f.Author != "" {
+	if len(f.AuthorIdentities) > 0 {
+		// PRs carry only a login, so match it against the group's identities (the
+		// email identities simply never match a login — harmless).
+		clause += fmt.Sprintf(" AND lower(COALESCE(p.author_login,'')) = ANY($%d)", idx)
+		args = append(args, f.AuthorIdentities)
+		idx++
+	} else if f.Author != "" {
 		clause += fmt.Sprintf(" AND lower(COALESCE(p.author_login,'')) = lower($%d)", idx)
 		args = append(args, f.Author)
 		idx++
@@ -1176,7 +1236,7 @@ func (f AnalyticsFilter) CommitsOnDay(ctx context.Context, tx pgx.Tx, day time.T
 	next := d.Add(24 * time.Hour)
 
 	// Build filter args but ignore the From/To window — the day bounds replace it.
-	dayFilter := AnalyticsFilter{RepoID: f.RepoID, Author: f.Author}
+	dayFilter := AnalyticsFilter{RepoID: f.RepoID, Author: f.Author, AuthorIdentities: f.AuthorIdentities}
 	where, args, _ := dayFilter.whereClause(3) // $1, $2 reserved for the day bounds
 	q := `
 		SELECT

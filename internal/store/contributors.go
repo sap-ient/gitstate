@@ -403,6 +403,53 @@ func IdentityToContributor(ctx context.Context, tx pgx.Tx, orgID string) (map[st
 	return m, rows.Err()
 }
 
+// ContributorIdentityValues returns every lowercased identity `value` (emails +
+// logins) that maps to the given contributor in the org. Used by the analytics /
+// metrics service layer to expand a chosen contributor into the full set of git
+// identities to filter by, so picking a grouped person filters ALL their
+// identities (not just one email). Returns an empty slice when the contributor
+// has no identities (or does not exist). Org-scoped via RLS + the explicit org_id.
+func ContributorIdentityValues(ctx context.Context, tx pgx.Tx, orgID, contributorID string) ([]string, error) {
+	const q = `
+		SELECT lower(value) FROM contributor_identities
+		WHERE org_id = $1 AND contributor_id = $2
+		ORDER BY value`
+	rows, err := tx.Query(ctx, q, orgID, contributorID)
+	if err != nil {
+		return nil, fmt.Errorf("store: contributor identity values: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("store: scan contributor identity value: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ContributorIDForIdentity resolves a single lowercased identity value (email or
+// login) to its canonical contributor_id, or ("", nil) when the identity is not
+// mapped to any contributor. Org-scoped.
+func ContributorIDForIdentity(ctx context.Context, tx pgx.Tx, orgID, value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "", nil
+	}
+	const q = `SELECT contributor_id::text FROM contributor_identities WHERE org_id = $1 AND value = $2 LIMIT 1`
+	var id string
+	err := tx.QueryRow(ctx, q, orgID, value).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: contributor id for identity: %w", err)
+	}
+	return id, nil
+}
+
 // ExcludedContributors returns the set of contributor_ids flagged excluded, and
 // (separately) those flagged is_bot, so the aggregation layer can drop them.
 func ExcludedContributors(ctx context.Context, tx pgx.Tx, orgID string) (excluded map[string]bool, bots map[string]bool, err error) {

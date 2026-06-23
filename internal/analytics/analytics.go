@@ -42,6 +42,10 @@ type Filter struct {
 	To     time.Time
 	RepoID string
 	Author string
+	// AuthorIdentities is populated lazily (inside WithOrg) when Author is a
+	// `contributor:<uuid>` token: the contributor's full set of git identities
+	// (emails + logins) to filter by. Empty for a plain identity author.
+	AuthorIdentities []string
 }
 
 // FilterInput is the raw, untrusted filter as received from query parameters.
@@ -141,11 +145,52 @@ func NormalizeBucket(bucket string) string {
 // toStoreFilter projects a service Filter onto the store's AnalyticsFilter.
 func (f Filter) toStoreFilter() store.AnalyticsFilter {
 	return store.AnalyticsFilter{
-		From:   f.From,
-		To:     f.To,
-		RepoID: f.RepoID,
-		Author: f.Author,
+		From:             f.From,
+		To:               f.To,
+		RepoID:           f.RepoID,
+		Author:           f.Author,
+		AuthorIdentities: f.AuthorIdentities,
 	}
+}
+
+// ContributorAuthorPrefix marks an author filter value as a canonical contributor
+// id (vs a plain login/email). The frontend sends `contributor:<uuid>` so the
+// service can expand it into the contributor's full identity set. Exported so the
+// metrics/cycle-time + involvement services share the exact same convention.
+const ContributorAuthorPrefix = "contributor:"
+
+// expandAuthor resolves an author filter into the full identity set when it is a
+// `contributor:<uuid>` token, populating f.AuthorIdentities (and clearing the
+// prefixed Author so the store's single-identity path is never taken). A plain
+// identity author (no prefix) is left untouched. Must run inside the caller's
+// org-scoped tx. Shared by analytics, cycle time, and involvement so the grouping
+// behaviour is identical everywhere.
+func expandAuthor(ctx context.Context, tx pgx.Tx, orgID string, f *store.AnalyticsFilter) error {
+	cid, ok := ContributorIDFromAuthor(f.Author)
+	if !ok {
+		return nil
+	}
+	idents, err := store.ContributorIdentityValues(ctx, tx, orgID, cid)
+	if err != nil {
+		return err
+	}
+	f.Author = ""
+	f.AuthorIdentities = idents
+	return nil
+}
+
+// ContributorIDFromAuthor returns (contributorID, true) when author carries the
+// `contributor:` prefix, else ("", false). Pure — usable without a DB.
+func ContributorIDFromAuthor(author string) (string, bool) {
+	author = strings.TrimSpace(author)
+	if !strings.HasPrefix(author, ContributorAuthorPrefix) {
+		return "", false
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(author, ContributorAuthorPrefix))
+	if id == "" {
+		return "", false
+	}
+	return id, true
 }
 
 // ── Derived averages (pure) ───────────────────────────────────────────────────
@@ -282,6 +327,9 @@ func (s *Service) Summary(ctx context.Context, orgID string, f Filter) (*Summary
 	sf := f.toStoreFilter()
 	var sum store.AnalyticsSummary
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		sum, err = sf.Summary(ctx, tx)
 		return err
@@ -302,6 +350,9 @@ func (s *Service) Heatmap(ctx context.Context, orgID string, f Filter) ([]store.
 	sf := f.toStoreFilter()
 	var out []store.DayCount
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		out, err = sf.Heatmap(ctx, tx)
 		return err
@@ -317,6 +368,9 @@ func (s *Service) CommitsOverTime(ctx context.Context, orgID string, f Filter, b
 	b := NormalizeBucket(bucket)
 	var out []store.DayCount
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		out, err = sf.CommitsOverTime(ctx, tx, b)
 		return err
@@ -338,6 +392,9 @@ func (s *Service) CommitsByContributor(ctx context.Context, orgID string, f Filt
 	}
 	var out []store.ContributorSeries
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		out, err = sf.CommitsByContributor(ctx, tx, orgID, b, topN, includeOther)
 		return err
@@ -352,6 +409,9 @@ func (s *Service) Contributors(ctx context.Context, orgID string, f Filter) ([]s
 	sf := f.toStoreFilter()
 	var out []store.Contributor
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		out, err = sf.Contributors(ctx, tx, orgID)
 		return err
@@ -366,6 +426,9 @@ func (s *Service) RepoStats(ctx context.Context, orgID string, f Filter) ([]stor
 	sf := f.toStoreFilter()
 	var out []store.RepoStat
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		out, err = sf.RepoStats(ctx, tx)
 		return err
@@ -381,6 +444,9 @@ func (s *Service) CommitsOnDay(ctx context.Context, orgID string, f Filter, day 
 	sf := f.toStoreFilter()
 	var out []store.DayCommit
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		out, err = sf.CommitsOnDay(ctx, tx, day)
 		return err
@@ -424,6 +490,9 @@ func (s *Service) PullRequests(ctx context.Context, orgID string, f Filter) (*PR
 		tp  []store.PRThroughput
 	)
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		if sum, err = sf.PRStats(ctx, tx); err != nil {
 			return err
@@ -473,6 +542,9 @@ func (s *Service) IssueFlow(ctx context.Context, orgID string, f Filter) (*Issue
 		byProj []store.IssueProjectStat
 	)
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		if counts, err = sf.IssueFlowCounts(ctx, tx); err != nil {
 			return err
@@ -527,6 +599,9 @@ func (s *Service) AgentShare(ctx context.Context, orgID string, f Filter) (*Agen
 		ot    []store.AgentDay
 	)
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		if share, err = sf.AgentShare(ctx, tx); err != nil {
 			return err
@@ -554,6 +629,9 @@ func (s *Service) Projects(ctx context.Context, orgID string, f Filter) ([]store
 	sf := f.toStoreFilter()
 	var out []store.ProjectStat
 	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if err := expandAuthor(ctx, tx, orgID, &sf); err != nil {
+			return err
+		}
 		var err error
 		out, err = sf.ProjectStats(ctx, tx)
 		return err

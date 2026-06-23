@@ -208,6 +208,33 @@ func TestParseDay(t *testing.T) {
 	}
 }
 
+func TestContributorIDFromAuthor(t *testing.T) {
+	tests := []struct {
+		in     string
+		wantID string
+		wantOK bool
+	}{
+		{in: "contributor:abc-123", wantID: "abc-123", wantOK: true},
+		{in: "  contributor:abc-123  ", wantID: "abc-123", wantOK: true},
+		{in: "contributor: 9f8 ", wantID: "9f8", wantOK: true},
+		{in: "contributor:", wantOK: false},   // prefix only → not a contributor token
+		{in: "alice@example.com", wantOK: false}, // plain email
+		{in: "alice", wantOK: false},             // plain login
+		{in: "", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			id, ok := ContributorIDFromAuthor(tt.in)
+			if ok != tt.wantOK {
+				t.Fatalf("ContributorIDFromAuthor(%q) ok = %v, want %v", tt.in, ok, tt.wantOK)
+			}
+			if ok && id != tt.wantID {
+				t.Errorf("ContributorIDFromAuthor(%q) id = %q, want %q", tt.in, id, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestApplyDefaultsIsPure(t *testing.T) {
 	// applyDefaults must not mutate non-zero bounds.
 	now := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)

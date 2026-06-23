@@ -239,6 +239,120 @@ func TestContribAgg_CollapsesAndExcludes(t *testing.T) {
 	}
 }
 
+// TestContributorIdentityValues_AndAuthorFilter proves the author-expansion
+// mechanism end-to-end at the store layer:
+//   - ContributorIdentityValues returns ALL of a grouped person's identities.
+//   - An AuthorIdentities filter sums commits across the whole group, whereas a
+//     single-identity Author filter only sees that one identity's commits.
+func TestContributorIdentityValues_AndAuthorFilter(t *testing.T) {
+	ctx, tx, orgID, done := setupContribOrg(t)
+	defer done()
+
+	var repo string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO repos (org_id,platform,external_id,full_name) VALUES ($1,'github',$2,'acme/x') RETURNING id`,
+		orgID, fmt.Sprintf("ext-%d", time.Now().UnixNano())).Scan(&repo); err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	day := time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC)
+
+	// Cameron commits under two emails AND a third commit by a different login that
+	// also maps to him; plus an unrelated person (dana) so the group must filter out
+	// non-group commits.
+	rows := []struct{ sha, login, email string }{
+		{"k1", "cam", "cam@a.com"},
+		{"k2", "cameron", "cam@b.com"},
+		{"k3", "cam-alt", "cam-alt@c.com"},
+		{"d1", "dana", "dana@x.com"},
+	}
+	for i, c := range rows {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO commits (org_id,repo_id,sha,author_login,author_email,is_agent,additions,committed_at)
+			 VALUES ($1,$2,$3,$4,$5,false,10,$6)`,
+			orgID, repo, c.sha, c.login, c.email, day.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("commit %s: %v", c.sha, err)
+		}
+	}
+
+	// Group Cameron: 3 login + 3 email identities all → one contributor.
+	camID, err := CreateContributor(ctx, tx, orgID, "Cameron", "cam@a.com", false)
+	if err != nil {
+		t.Fatalf("create cameron: %v", err)
+	}
+	for _, id := range []struct{ kind, value string }{
+		{"login", "cam"}, {"login", "cameron"}, {"login", "cam-alt"},
+		{"email", "cam@a.com"}, {"email", "cam@b.com"}, {"email", "cam-alt@c.com"},
+	} {
+		if err := UpsertIdentity(ctx, tx, orgID, camID, id.kind, id.value, "Cameron"); err != nil {
+			t.Fatalf("ident %s/%s: %v", id.kind, id.value, err)
+		}
+	}
+
+	// ── ContributorIdentityValues returns ALL six identities (lowercased). ──────
+	vals, err := ContributorIdentityValues(ctx, tx, orgID, camID)
+	if err != nil {
+		t.Fatalf("identity values: %v", err)
+	}
+	want := map[string]bool{
+		"cam": true, "cameron": true, "cam-alt": true,
+		"cam@a.com": true, "cam@b.com": true, "cam-alt@c.com": true,
+	}
+	if len(vals) != len(want) {
+		t.Fatalf("identity values = %v, want %d entries", vals, len(want))
+	}
+	for _, v := range vals {
+		if !want[v] {
+			t.Errorf("unexpected identity value %q", v)
+		}
+	}
+
+	// Reverse resolver: any identity → cameron's id.
+	if got, _ := ContributorIDForIdentity(ctx, tx, orgID, "cam@b.com"); got != camID {
+		t.Errorf("ContributorIDForIdentity(cam@b.com) = %q, want %q", got, camID)
+	}
+
+	// ── Single-identity Author filter sees ONLY that one identity's commit. ─────
+	single := AnalyticsFilter{From: from, To: to, Author: "cam@a.com"}
+	sSum, err := single.Summary(ctx, tx)
+	if err != nil {
+		t.Fatalf("single summary: %v", err)
+	}
+	if sSum.TotalCommits != 1 {
+		t.Errorf("single-identity author commits = %d, want 1", sSum.TotalCommits)
+	}
+
+	// ── AuthorIdentities filter sums ALL THREE of Cameron's commits (not dana). ─
+	group := AnalyticsFilter{From: from, To: to, AuthorIdentities: vals}
+	gSum, err := group.Summary(ctx, tx)
+	if err != nil {
+		t.Fatalf("group summary: %v", err)
+	}
+	if gSum.TotalCommits != 3 {
+		t.Errorf("grouped author commits = %d, want 3 (cameron's whole group, excluding dana)", gSum.TotalCommits)
+	}
+
+	// And the leaderboard collapses the group to ONE row with 3 commits, carrying
+	// the canonical contributorId + identities.
+	lb, err := group.Contributors(ctx, tx, orgID)
+	if err != nil {
+		t.Fatalf("leaderboard: %v", err)
+	}
+	if len(lb) != 1 {
+		t.Fatalf("grouped leaderboard rows = %d, want 1", len(lb))
+	}
+	if lb[0].Commits != 3 {
+		t.Errorf("grouped leaderboard commits = %d, want 3", lb[0].Commits)
+	}
+	if lb[0].ContributorID != camID {
+		t.Errorf("leaderboard contributorId = %q, want %q", lb[0].ContributorID, camID)
+	}
+	if len(lb[0].Identities) != 6 {
+		t.Errorf("leaderboard identities = %v, want 6", lb[0].Identities)
+	}
+}
+
 func countWithCommits(aggs []ContribAggregate) int {
 	n := 0
 	for _, a := range aggs {
