@@ -14,6 +14,7 @@ import (
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
 	"github.com/exo/gitstate/internal/githubapp"
+	"github.com/exo/gitstate/internal/jobs"
 	"github.com/exo/gitstate/internal/metrics"
 	"github.com/exo/gitstate/internal/middleware"
 	"github.com/exo/gitstate/internal/store"
@@ -32,8 +33,22 @@ import (
 //	GET  /api/issues               — list issues ?source=&state=&project=
 //	POST /api/issues               — create a native (non-git) issue
 //	PATCH /api/issues/{id}         — update state; writes back to platform when source='git'
+// pkgJobQueue is the process-wide durable job queue, set by main.go via
+// SetJobQueue BEFORE RegisterSyncRoutes runs (NewRouter's signature can't change,
+// so the queue is injected out-of-band). When nil (e.g. dev-without-queue, tests
+// that don't wire it) the sync handlers fall back to the legacy in-process
+// goroutines so behavior degrades gracefully rather than dropping the work.
+var pkgJobQueue *jobs.Queue
+
+// SetJobQueue injects the durable job queue used by the sync/import handlers to
+// enqueue sync_repo / deep_analyze jobs instead of spawning detached goroutines.
+// Call this from main.go after creating + starting the queue and BEFORE serving
+// (it is read when each sync route handler runs). Passing nil restores the legacy
+// in-process behavior.
+func SetJobQueue(q *jobs.Queue) { pkgJobQueue = q }
+
 func RegisterSyncRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Config) {
-	h := &syncHandlers{db: database, cfg: cfg}
+	h := &syncHandlers{db: database, cfg: cfg, queue: pkgJobQueue}
 
 	requireAuth := middleware.RequireAuth(cfg.Auth.JWTSigningKey)
 	orgScope := middleware.OrgScope(database.Pool())
@@ -64,8 +79,26 @@ func RegisterSyncRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Config)
 }
 
 type syncHandlers struct {
-	db  *db.DB
-	cfg *config.Config
+	db    *db.DB
+	cfg   *config.Config
+	queue *jobs.Queue // durable job queue; nil → legacy in-process goroutine fallback
+}
+
+// enqueueRepoSync enqueues a durable sync_repo job (which itself enqueues a
+// deep_analyze on completion), coalescing duplicates via the repo dedupe key.
+// Returns false when no queue is wired so callers can fall back to the legacy
+// in-process path.
+func (h *syncHandlers) enqueueRepoSync(ctx context.Context, orgID, repoID string) bool {
+	if h.queue == nil {
+		return false
+	}
+	if err := h.queue.Enqueue(ctx, orgID, JobSyncRepo, repoJobPayload{RepoID: repoID}, jobs.EnqueueOpts{
+		DedupeKey: SyncJobDedupeKey(repoID),
+	}); err != nil {
+		slog.Error("enqueue sync_repo job", "org_id", orgID, "repo_id", repoID, "err", err)
+		return false
+	}
+	return true
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -272,8 +305,11 @@ func (h *syncHandlers) connectRepo(w http.ResponseWriter, r *http.Request) {
 	_ = autoRegisterRepoWebhook(r.Context(), h.db, h.cfg, orgID, req.Platform, repo.FullName, externalID, token, baseURL)
 
 	// Auto-sync the freshly imported repo so its issues/PRs/commits pull right away
-	// instead of waiting for a manual /sync. Best-effort, in the background.
-	h.startBackgroundSync(orgID, *repo, token, baseURL)
+	// instead of waiting for a manual /sync. Prefer the DURABLE queue (survives a
+	// restart); fall back to a detached goroutine only when no queue is wired.
+	if !h.enqueueRepoSync(r.Context(), orgID, repo.ID) {
+		h.startBackgroundSync(orgID, *repo, token, baseURL)
+	}
 
 	writeJSON(w, http.StatusCreated, repoToResponse(*repo))
 }
@@ -331,7 +367,11 @@ func (h *syncHandlers) triggerSync(w http.ResponseWriter, r *http.Request) {
 		"repoId": repoID,
 	})
 
-	h.startBackgroundSync(orgID, *repo, token, baseURL)
+	// Prefer the DURABLE queue (a restart no longer strands the sync). Fall back to
+	// a detached goroutine only when no queue is wired (dev-without-queue / tests).
+	if !h.enqueueRepoSync(r.Context(), orgID, repoID) {
+		h.startBackgroundSync(orgID, *repo, token, baseURL)
+	}
 }
 
 // ── POST /api/repos/sync-all ──────────────────────────────────────────────────
@@ -358,6 +398,20 @@ func (h *syncHandlers) syncAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "sync queued", "count": len(repos)})
+
+	// Prefer the DURABLE queue: enqueue one sync_repo job per repo (each enqueues a
+	// deep_analyze on completion). Coalesced by dedupe key, so re-running sync-all
+	// while jobs are still live is a no-op. Survives a restart.
+	if h.queue != nil {
+		queued := 0
+		for _, repo := range repos {
+			if h.enqueueRepoSync(r.Context(), orgID, repo.ID) {
+				queued++
+			}
+		}
+		slog.Info("sync-all: enqueued durable jobs", "org", orgID, "queued", queued, "total", len(repos))
+		return
+	}
 
 	bgCtx := context.Background()
 	go func() {
@@ -519,22 +573,30 @@ func (h *syncHandlers) importRepos(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = autoRegisterRepoWebhook(bgCtx, h.db, h.cfg, orgID, platform, rr.FullName, rr.ExternalID, hookTok, hookBase)
 		}
-		slog.Info("import: connected, starting parallel sync", "org", orgID, "platform", platform,
+		slog.Info("import: connected, enqueuing durable syncs", "org", orgID, "platform", platform,
 			"to_sync", len(repos), "requested", len(fullNames))
 
-		// PHASE 2 — sync them with a bounded worker pool (parallel, not one-at-a-time).
-		// The App installation token has its own rate budget and GraphQL batches PRs,
-		// so several repos at once is safe and far faster than sequential. Each repo
-		// resolves its OWNER's token from the cache.
+		// PHASE 2 — enqueue one DURABLE sync_repo job per repo. Each sync_repo handler
+		// enqueues a deep_analyze follow-up on completion, so the whole pipeline (fast
+		// sync → deep analysis) is now restart-proof: a server restart mid-import
+		// resumes the remaining jobs instead of stranding the import at e.g. 6/105.
+		// Jobs coalesce on the repo dedupe key, so a re-click of "Import all" is safe.
+		// Legacy in-process pools (syncReposConcurrently/analyzeReposConcurrently) are
+		// the fallback used only when no queue is wired.
+		if h.queue != nil {
+			queued := 0
+			for _, repo := range repos {
+				if h.enqueueRepoSync(bgCtx, orgID, repo.ID) {
+					queued++
+				}
+			}
+			slog.Info("import: enqueued durable jobs", "org", orgID, "platform", platform, "queued", queued, "total", len(repos))
+			return
+		}
+
+		// Fallback (no queue): the legacy bounded in-process pools.
 		syncReposConcurrently(bgCtx, h.db, orgID, platform, baseURL, tokens, repos, importSyncWorkers)
 		slog.Info("import: fast sync complete", "org", orgID, "platform", platform, "synced", len(repos))
-
-		// PHASE 3 — DEEP analysis pass (blame-survival / SZZ / coupling) over the same
-		// repos, in a SEPARATE, lower-parallelism pool. It is split from the fast sync
-		// so the dashboards populate within seconds while Contribution depth backfills
-		// behind them. Concurrency is low (deepAnalysisWorkers) because each clone+blame
-		// is CPU+memory heavy — running 8 at once gets git OOM-killed. The pass skips
-		// repos whose HEAD is unchanged since the last deep run (cheap ls-remote check).
 		analyzeReposConcurrently(bgCtx, h.db, orgID, platform, tokens, repos, deepAnalysisWorkers)
 		slog.Info("import: deep analysis complete", "org", orgID, "platform", platform, "analyzed", len(repos))
 	}()

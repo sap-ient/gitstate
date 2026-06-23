@@ -17,6 +17,7 @@ import (
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
 	"github.com/exo/gitstate/internal/exchange"
+	"github.com/exo/gitstate/internal/jobs"
 )
 
 func main() {
@@ -59,6 +60,22 @@ func main() {
 	if database != nil && cfg.Billing.Exchange.APIKey != "" {
 		exchange.New(database, cfg).StartRefresher(ctx)
 		slog.Info("exchange-rate refresher started", "provider", cfg.Billing.Exchange.Provider)
+	}
+
+	// Durable background job queue (repo syncs survive restarts). Prefers the
+	// BYPASSRLS admin pool (ADMIN_DATABASE_URL) for cross-org dequeue. SetJobQueue
+	// MUST run before api.NewRouter (which calls RegisterSyncRoutes, reading it).
+	if database != nil {
+		queue, qerr := jobs.New(database, cfg)
+		if qerr != nil {
+			slog.Error("failed to start job queue", "error", qerr)
+			os.Exit(1)
+		}
+		api.RegisterSyncJobHandlers(queue, database, cfg) // register BEFORE Start
+		api.SetJobQueue(queue)                            // inject into sync handlers (BEFORE NewRouter)
+		queue.Start(ctx)                                  // RequeueStale + workers + stale ticker
+		defer queue.Close()
+		slog.Info("job queue started")
 	}
 
 	// Build router with middleware wired.
