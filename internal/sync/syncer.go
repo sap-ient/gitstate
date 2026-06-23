@@ -29,31 +29,32 @@ import (
 var issueRefRe = regexp.MustCompile(`(?i)(?:closes?|fixes?|resolves?)?\s*#(\d+)`)
 
 // blameBudget caps the deep blame-survival/SZZ analysis so a huge repo can't consume
-// the whole sync budget and starve the post-steps (cycle time, calibration, embed).
-// A timeout here only yields partial Contribution data — everything else still lands.
+// the whole deep pass and wedge the deep-analysis pool. A timeout here only yields
+// partial Contribution data — the fast sync (commits/issues/PRs/analytics) is a
+// SEPARATE pass and already landed.
 const blameBudget = 6 * time.Minute
 
-// analyzeBlame clones the repo once (blobless) and does TWO things in that single
-// clone: (1) ingests EVERY commit on ALL branches into the commits table — the
-// PRIMARY commit source, zero API calls — and (2) runs the deep git analysis
-// (commit_files / blame-survival / SZZ / test-coupling) that needs real git
-// objects. The clone is deliberately minimal:
+// ingestCommitsFromBloblessClone clones the repo once (blobless, full history, ALL
+// branches) and ingests EVERY commit into the commits table — the PRIMARY commit
+// source, zero API calls. This is the ONLY git step on the FAST sync path; the
+// SLOW blame/SZZ analysis was split out into AnalyzeRepoDeep so it never blocks the
+// perceived sync. The clone is deliberately minimal:
 //
 //   - --filter=blob:none → a BLOBLESS partial clone: it fetches commits + trees
-//     for the full history but pulls file blobs lazily, on demand, only when blame
-//     actually touches a file. That is far less data than a full working-tree clone.
+//     for the full history but pulls file blobs lazily, on demand. Far less data
+//     than a full working-tree clone, and the commit walk needs no blobs at all.
 //   - --no-single-branch → fetch ALL branch refs (so the commit walk sees every
 //     branch, fixing the "default-branch only" gap the commits API had). Blobs are
 //     still lazy, so the extra refs cost almost nothing.
 //   - --no-tags → no tag refs.
-//   - NO --depth: blame-survival needs the FULL history, so the graph stays intact.
+//   - NO --depth: a full graph keeps the per-commit churn walk honest.
 //
 // It returns true when commits were successfully walked+upserted from the clone
 // (so the caller can skip the commits-API fallback entirely → a normal sync makes
 // ZERO commit-API calls). The clone lands in a temp dir and is deleted on return —
-// the repo is NEVER cached or persisted. Best-effort: a clone or blame failure logs
-// and returns false, so it never fails the overall sync.
-func analyzeBlame(ctx context.Context, database *db.DB, orgID string, repo store.Repo, token string, log *slog.Logger) (commitsIngested bool) {
+// the repo is NEVER cached or persisted. Best-effort: a clone/walk failure logs and
+// returns false, so it never fails the overall sync.
+func ingestCommitsFromBloblessClone(ctx context.Context, database *db.DB, orgID string, repo store.Repo, token string, log *slog.Logger) (commitsIngested bool) {
 	tmp, err := os.MkdirTemp("", "gitstate-sync-*")
 	if err != nil {
 		log.Error("sync: temp dir", "err", err)
@@ -64,7 +65,7 @@ func analyzeBlame(ctx context.Context, database *db.DB, orgID string, repo store
 	cloneCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var stderr bytes.Buffer
-	// gc.auto=0: a big repo triggers background "auto packing" mid-clone/blame which,
+	// gc.auto=0: a big repo triggers background "auto packing" mid-clone which,
 	// under several parallel imports, gets OOM-killed ("signal: killed") — taking the
 	// clone (and its commit churn) down with it. Disabling auto-gc keeps the clone
 	// lean and reliable; we never reuse the temp clone so packing buys us nothing.
@@ -78,28 +79,129 @@ func analyzeBlame(ctx context.Context, database *db.DB, orgID string, repo store
 		return false
 	}
 
-	// (1) Ingest commits from the clone (ALL branches, zero API calls). INCREMENTAL:
+	// Ingest commits from the clone (ALL branches, zero API calls). INCREMENTAL:
 	// since = repo.LastSyncedAt, so a re-sync only walks commits added since the last
 	// run (a zero LastSyncedAt walks full history). UpsertCommit is idempotent on
 	// (org_id, repo_id, sha). This is the PRIMARY commit path; the API path is only a
 	// fallback when the repo has no clone URL or the clone fails (handled by caller).
-	commitsIngested = ingestCommitsFromClone(ctx, database, orgID, repo, tmp, log)
+	return ingestCommitsFromClone(ctx, database, orgID, repo, tmp, log)
+}
 
-	// (2) Deep analysis → commit_files / blame-survival / SZZ (Contribution dashboards).
-	// AnalyzeRepo runs `git log` + `git blame`; the blobless clone fetches the blobs
-	// blame touches on demand, so this works without a full checkout. Bound it to its
-	// OWN sub-budget: on a huge repo, blaming every file can run for many minutes, and
-	// if it consumed the whole sync ctx the post-steps (cycle time, calibration,
-	// embeddings) would all fail with "deadline exceeded". Best-effort: a timeout here
-	// just means partial Contribution data; commits/issues/PRs/cycle-time still land.
+// AnalyzeRepoDeep runs the SLOW git-history analysis (commit_files / blame-survival
+// / SZZ / test-coupling) that powers the Contribution dashboards. It is SPLIT from
+// the fast SyncRepo path on purpose: blaming every file can take minutes on a large
+// repo, so running it inline would block the perceived sync. Instead this is kicked
+// off in a SEPARATE, lower-parallelism background pass after the fast sync, so the
+// dashboards populate fast and Contribution depth backfills behind them.
+//
+// SKIP-UNCHANGED: it first resolves the repo's live HEAD sha via `git ls-remote
+// <url> HEAD` (cheap, no clone). If that equals repo.LastAnalyzedSHA the analysis is
+// already current → it logs and returns WITHOUT cloning or blaming, making re-syncs
+// of an unchanged repo near-instant. Otherwise it does its OWN blobless full-history
+// clone (gc.auto=0, like the fast path), runs gitanalysis.AnalyzeRepo (bounded by
+// blameBudget), stores the result, and records last_analyzed_sha = the analyzed HEAD
+// + last_analyzed_at = now() so the next pass can skip it.
+//
+// Best-effort: every failure (no clone URL, ls-remote, clone, blame, store) logs and
+// returns nil. It never fails the caller.
+func AnalyzeRepoDeep(ctx context.Context, database *db.DB, orgID string, repo store.Repo, token string, log *slog.Logger) error {
+	log = log.With("phase", "deep-analysis")
+	if repo.CloneURL == "" {
+		log.Warn("deep analysis: no clone URL — skipping blame/contribution analysis")
+		return nil
+	}
+
+	cloneURL := injectCloneToken(repo.CloneURL, token)
+
+	// SKIP-UNCHANGED: resolve the live HEAD without cloning. ls-remote is a single
+	// cheap round-trip; if HEAD is unchanged since the last deep pass we avoid the
+	// (minutes-long) clone+blame entirely.
+	head, err := resolveRemoteHead(ctx, cloneURL)
+	if err != nil {
+		// Non-fatal: fall through to clone+analyze (the clone resolves HEAD too). A
+		// transient ls-remote failure must not permanently skip the deep analysis.
+		log.Warn("deep analysis: ls-remote HEAD failed; proceeding to clone", "err", err)
+	} else if head != "" && head == repo.LastAnalyzedSHA {
+		log.Info("deep analysis up-to-date, skipping", "head", head)
+		return nil
+	}
+
+	tmp, err := os.MkdirTemp("", "gitstate-deep-*")
+	if err != nil {
+		log.Error("deep analysis: temp dir", "err", err)
+		return nil
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+
+	cloneCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(cloneCtx, "git",
+		"-c", "gc.auto=0", "-c", "core.fsmonitor=false",
+		"clone", "--filter=blob:none", "--no-tags", "--no-single-branch",
+		cloneURL, tmp)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		log.Error("deep analysis: clone repo (blobless)", "err", err, "stderr", strings.TrimSpace(stderr.String()))
+		return nil
+	}
+
+	// Deep analysis → commit_files / blame-survival / SZZ. AnalyzeRepo runs `git log`
+	// + `git blame`; the blobless clone fetches the blobs blame touches on demand.
+	// Bound it to blameBudget so a pathological repo can't pin a deep-pool worker for
+	// the whole 10-min clone budget. Best-effort: a timeout just yields partial data.
 	blameCtx, blameCancel := context.WithTimeout(ctx, blameBudget)
 	defer blameCancel()
-	if res, err := gitanalysis.AnalyzeRepo(blameCtx, tmp); err != nil {
-		log.Error("sync: analyze git history (best-effort)", "err", err)
-	} else if err := store.StoreResult(ctx, database, orgID, repo.ID, res); err != nil {
-		log.Error("sync: store git analysis", "err", err)
+	res, err := gitanalysis.AnalyzeRepo(blameCtx, tmp)
+	if err != nil {
+		log.Error("deep analysis: analyze git history (best-effort)", "err", err)
+		return nil
 	}
-	return commitsIngested
+	if err := store.StoreResult(ctx, database, orgID, repo.ID, res); err != nil {
+		log.Error("deep analysis: store git analysis", "err", err)
+		return nil
+	}
+
+	// Record the analyzed HEAD so the next pass can skip when HEAD is unchanged. Use
+	// the HEAD AnalyzeRepo actually resolved (res.HeadSHA); fall back to the ls-remote
+	// value when AnalyzeRepo saw an empty/unborn branch.
+	analyzed := res.HeadSHA
+	if analyzed == "" {
+		analyzed = head
+	}
+	if analyzed != "" {
+		if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+			return store.UpdateRepoAnalyzed(ctx, tx, orgID, repo.ID, analyzed)
+		}); err != nil {
+			log.Error("deep analysis: record last_analyzed_sha", "err", err)
+		}
+	}
+	log.Info("deep analysis complete", "head", analyzed)
+	return nil
+}
+
+// resolveRemoteHead returns the sha that the remote's HEAD points at, via a single
+// `git ls-remote <url> HEAD` (no clone, no working tree). Returns an empty string
+// (no error) when the remote reports no HEAD (e.g. an empty repo).
+func resolveRemoteHead(ctx context.Context, cloneURL string) (string, error) {
+	lsCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	var out, stderr bytes.Buffer
+	cmd := exec.CommandContext(lsCtx, "git", "ls-remote", cloneURL, "HEAD")
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ls-remote: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	line := strings.TrimSpace(out.String())
+	if line == "" {
+		return "", nil
+	}
+	// Format: "<sha>\tHEAD". Take the leading sha token.
+	if i := strings.IndexAny(line, " \t"); i > 0 {
+		return line[:i], nil
+	}
+	return line, nil
 }
 
 // ingestCommitsFromClone walks ALL branches of the local clone and upserts each
@@ -346,18 +448,19 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 		}
 	}
 
-	// ── 4a. Commits from the blame clone (PRIMARY, zero API calls, ALL branches) ─
-	// The single blobless clone we already do for blame now ALSO ingests every
-	// commit on every branch (git WalkAllCommits → UpsertCommit) — zero commit-API
-	// calls and no "default-branch only" gap. analyzeBlame also runs the deep blame /
-	// SZZ / coupling analysis in the same clone. Best-effort: a clone failure (no
-	// token, network) must not fail the sync. Runs BEFORE ComputeCycleTimes so the
-	// commits feed is current.
+	// ── 4a. Commits from a blobless clone (PRIMARY, zero API calls, ALL branches) ─
+	// A single blobless clone ingests every commit on every branch (git
+	// WalkAllCommits → UpsertCommit) — zero commit-API calls and no "default-branch
+	// only" gap. The SLOW blame/SZZ/coupling analysis is NO LONGER done here: it was
+	// split into AnalyzeRepoDeep, which the caller runs as a separate background pass
+	// so it never blocks the perceived sync. This keeps SyncRepo FAST. Best-effort: a
+	// clone failure (no token, network) must not fail the sync. Runs BEFORE
+	// ComputeCycleTimes so the commits feed is current.
 	commitsFromClone := false
 	if repo.CloneURL == "" {
-		log.Warn("sync: no clone URL — skipping blame/contribution analysis; commits fall back to API")
+		log.Warn("sync: no clone URL — commits fall back to API; deep analysis will be skipped")
 	} else {
-		commitsFromClone = analyzeBlame(ctx, database, orgID, repo, cloneToken, log)
+		commitsFromClone = ingestCommitsFromBloblessClone(ctx, database, orgID, repo, cloneToken, log)
 	}
 
 	// ── 4b. Commit-API FALLBACK — only when the clone did not supply commits ──────

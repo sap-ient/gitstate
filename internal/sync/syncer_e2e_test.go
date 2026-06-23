@@ -11,7 +11,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -471,4 +474,186 @@ func TestSyncRepoSyncedAtOnlyOnComplete(t *testing.T) {
 			t.Error("last_synced_at = nil, want set (all fetches succeeded → must advance)")
 		}
 	})
+}
+
+// TestSyncRepoDoesNotBlockOnBlame proves the FAST/SLOW split: the deep blame/SZZ
+// analysis is no longer part of SyncRepo, so SyncRepo never writes the
+// contribution-analysis tables (commit_files etc.) itself — those only land via the
+// SEPARATE AnalyzeRepoDeep pass. Here the repo HAS a clone URL but SyncRepo must NOT
+// produce blame output (it would if blame were still inline). It also must stay fast
+// and advance last_synced_at on a complete fast sync.
+func TestSyncRepoDoesNotBlockOnBlame(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	database, err := db.New(ctx, &config.Config{Database: config.DatabaseConfig{URL: dbURL}})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	orgID, repo := setupSyncEnv(t, ctx, database)
+	// Build a real local git repo and point the clone URL at it (file://). The fast
+	// sync's blobless clone walks commits; the deep blame pass is NOT run by SyncRepo.
+	repoDir := newLocalGitRepo(t)
+	repo.CloneURL = "file://" + repoDir
+
+	prov := &fakeProvider{}
+	start := time.Now()
+	if err := SyncRepo(ctx, database, prov, orgID, repo, ""); err != nil {
+		t.Fatalf("SyncRepo returned error: %v", err)
+	}
+	elapsed := time.Since(start)
+	// A tiny local repo's fast sync (clone + commit walk, no blame) is well under the
+	// 6-min blame budget — assert it's quick to catch a regression that re-inlines blame.
+	if elapsed > 30*time.Second {
+		t.Errorf("fast SyncRepo took %v — blame may have been re-inlined into the fast path", elapsed)
+	}
+
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		// commit_files is a deep-analysis-only table; SyncRepo must NOT have populated it.
+		var cfCount int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM commit_files WHERE org_id=$1 AND repo_id=$2`, orgID, repo.ID).Scan(&cfCount); err != nil {
+			return err
+		}
+		if cfCount != 0 {
+			t.Errorf("commit_files rows after fast SyncRepo = %d, want 0 (deep blame is split out)", cfCount)
+		}
+		// The fast path still ingested commits from the clone.
+		var commitCount int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM commits WHERE org_id=$1 AND repo_id=$2`, orgID, repo.ID).Scan(&commitCount); err != nil {
+			return err
+		}
+		if commitCount == 0 {
+			t.Error("commits = 0 after fast SyncRepo — clone commit-ingest did not run")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	// last_analyzed_sha must still be empty — only AnalyzeRepoDeep sets it.
+	r := getRepo(t, ctx, database, orgID, repo.ID)
+	if r.LastAnalyzedSHA != "" {
+		t.Errorf("last_analyzed_sha = %q after fast sync, want empty (deep pass is separate)", r.LastAnalyzedSHA)
+	}
+}
+
+// TestAnalyzeRepoDeepRecordsAndSkips proves the deep pass (1) records
+// last_analyzed_sha = the analyzed HEAD and populates the contribution tables, and
+// (2) SKIPS a second run when HEAD is unchanged (no new analysis work).
+func TestAnalyzeRepoDeepRecordsAndSkips(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	database, err := db.New(ctx, &config.Config{Database: config.DatabaseConfig{URL: dbURL}})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	orgID, repo := setupSyncEnv(t, ctx, database)
+	repoDir := newLocalGitRepo(t)
+	repo.CloneURL = "file://" + repoDir
+	headSHA := gitHead(t, repoDir)
+
+	log := slog.Default()
+
+	// First run: clones, blames, stores, records last_analyzed_sha = HEAD.
+	if err := AnalyzeRepoDeep(ctx, database, orgID, repo, "", log); err != nil {
+		t.Fatalf("AnalyzeRepoDeep (1): %v", err)
+	}
+	r := getRepo(t, ctx, database, orgID, repo.ID)
+	if r.LastAnalyzedSHA != headSHA {
+		t.Fatalf("last_analyzed_sha = %q, want HEAD %q", r.LastAnalyzedSHA, headSHA)
+	}
+	if r.LastAnalyzedAt == nil {
+		t.Error("last_analyzed_at not set after deep analysis")
+	}
+	var cfCount int
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT count(*) FROM commit_files WHERE org_id=$1 AND repo_id=$2`, orgID, repo.ID).Scan(&cfCount)
+	}); err != nil {
+		t.Fatalf("count commit_files: %v", err)
+	}
+	if cfCount == 0 {
+		t.Error("commit_files = 0 after deep analysis — blame did not store")
+	}
+	firstAnalyzedAt := *r.LastAnalyzedAt
+
+	// Second run: HEAD is unchanged, so the deep pass must SKIP (no clone/blame). We
+	// pass the repo loaded WITH the recorded last_analyzed_sha so the skip fires.
+	r2 := getRepo(t, ctx, database, orgID, repo.ID)
+	if err := AnalyzeRepoDeep(ctx, database, orgID, *r2, "", log); err != nil {
+		t.Fatalf("AnalyzeRepoDeep (2): %v", err)
+	}
+	r3 := getRepo(t, ctx, database, orgID, repo.ID)
+	// A skip does NOT re-stamp last_analyzed_at (it returns before recording), so the
+	// timestamp must be identical to the first run.
+	if r3.LastAnalyzedAt == nil || !r3.LastAnalyzedAt.Equal(firstAnalyzedAt) {
+		t.Errorf("last_analyzed_at changed on a no-op re-run (%v → %v) — skip-unchanged did not fire",
+			firstAnalyzedAt, r3.LastAnalyzedAt)
+	}
+}
+
+// newLocalGitRepo creates a throwaway git repo with two commits and returns its dir.
+func newLocalGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Dev", "GIT_AUTHOR_EMAIL=dev@example.com",
+			"GIT_COMMITTER_NAME=Dev", "GIT_COMMITTER_EMAIL=dev@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	run("add", "a.txt")
+	run("commit", "-q", "-m", "first commit")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\nthere\nworld\n"), 0o644); err != nil {
+		t.Fatalf("rewrite a.txt: %v", err)
+	}
+	run("add", "a.txt")
+	run("commit", "-q", "-m", "second commit")
+	return dir
+}
+
+// gitHead returns the HEAD sha of a local repo.
+func gitHead(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return string([]byte(out[:len(out)-1])) // strip trailing newline
+}
+
+// getRepo loads a repo inside the org's RLS context.
+func getRepo(t *testing.T, ctx context.Context, database *db.DB, orgID, repoID string) *store.Repo {
+	t.Helper()
+	var r *store.Repo
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rr, e := store.GetRepo(ctx, tx, orgID, repoID)
+		r = rr
+		return e
+	}); err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	return r
 }

@@ -8,9 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	gogithub "github.com/google/go-github/v66/github"
 )
 
 // ── GitHub GraphQL mapping ─────────────────────────────────────────────────────
@@ -135,6 +139,166 @@ func TestGitHubGraphQLQueryWellFormed(t *testing.T) {
 		if !strings.Contains(githubPRsQuery, v) {
 			t.Errorf("githubPRsQuery missing var decl %q", v)
 		}
+	}
+}
+
+// ── GitHub GraphQL issues mapping ──────────────────────────────────────────────
+
+// githubIssuesFixture is a representative GitHub GraphQL issues response: one open
+// issue with two labels and one closed issue, both carrying real created/updated
+// timestamps (the dates the syncer wires into UpsertIssue).
+const githubIssuesFixture = `{
+  "data": {
+    "rateLimit": { "cost": 1, "remaining": 4998, "resetAt": "2030-01-01T00:00:00Z" },
+    "repository": {
+      "issues": {
+        "pageInfo": { "hasNextPage": false, "endCursor": "aXNzdWU6Mg==" },
+        "nodes": [
+          {
+            "number": 4242,
+            "title": "Fix the widget",
+            "body": "broken",
+            "state": "OPEN",
+            "databaseId": 900100,
+            "createdAt": "2026-05-10T09:00:00Z",
+            "updatedAt": "2026-05-11T10:30:00Z",
+            "labels": { "nodes": [ { "name": "bug" }, { "name": "p1" } ] }
+          },
+          {
+            "number": 4243,
+            "title": "API down",
+            "body": "outage",
+            "state": "CLOSED",
+            "databaseId": 900101,
+            "createdAt": "2026-05-12T08:00:00Z",
+            "updatedAt": "2026-05-12T12:00:00Z",
+            "labels": { "nodes": [ { "name": "sev1" } ] }
+          }
+        ]
+      }
+    }
+  }
+}`
+
+func TestDecodeGitHubGraphQLIssues(t *testing.T) {
+	var data githubIssuesResponse
+	if err := decodeGraphQL([]byte(githubIssuesFixture), &data); err != nil {
+		t.Fatalf("decodeGraphQL: %v", err)
+	}
+	nodes := data.Repository.Issues.Nodes
+	if len(nodes) != 2 {
+		t.Fatalf("got %d issue nodes, want 2", len(nodes))
+	}
+	if data.RateLimit.Remaining != 4998 {
+		t.Errorf("rateLimit.remaining = %d, want 4998", data.RateLimit.Remaining)
+	}
+
+	iss := mapGitHubIssueNode(nodes[0])
+	if iss.Number != 4242 || iss.ExternalID != "900100" {
+		t.Errorf("issue0 number/extid = %d/%s, want 4242/900100", iss.Number, iss.ExternalID)
+	}
+	if iss.Title != "Fix the widget" || iss.Body != "broken" {
+		t.Errorf("issue0 title/body = %q/%q", iss.Title, iss.Body)
+	}
+	if iss.State != "open" {
+		t.Errorf("issue0 state = %q, want open", iss.State)
+	}
+	// REAL timestamps must survive (carried into UpsertIssue).
+	if !iss.CreatedAt.Equal(mustTime(t, "2026-05-10T09:00:00Z")) {
+		t.Errorf("issue0 createdAt = %v, want 2026-05-10T09:00:00Z", iss.CreatedAt)
+	}
+	if !iss.UpdatedAt.Equal(mustTime(t, "2026-05-11T10:30:00Z")) {
+		t.Errorf("issue0 updatedAt = %v, want 2026-05-11T10:30:00Z", iss.UpdatedAt)
+	}
+	if len(iss.Labels) != 2 || iss.Labels[0] != "bug" || iss.Labels[1] != "p1" {
+		t.Errorf("issue0 labels = %v, want [bug p1]", iss.Labels)
+	}
+
+	iss2 := mapGitHubIssueNode(nodes[1])
+	if iss2.State != "closed" {
+		t.Errorf("issue1 state = %q, want closed", iss2.State)
+	}
+	if !iss2.UpdatedAt.Equal(mustTime(t, "2026-05-12T12:00:00Z")) {
+		t.Errorf("issue1 updatedAt = %v, want 2026-05-12T12:00:00Z", iss2.UpdatedAt)
+	}
+	if len(iss2.Labels) != 1 || iss2.Labels[0] != "sev1" {
+		t.Errorf("issue1 labels = %v, want [sev1]", iss2.Labels)
+	}
+}
+
+func TestGitHubIssuesGraphQLQueryWellFormed(t *testing.T) {
+	for _, want := range []string{
+		"issues(first:100", "after:$cur", "states:[OPEN,CLOSED]",
+		"pageInfo", "hasNextPage", "endCursor",
+		"labels(first:50)", "createdAt", "updatedAt", "databaseId", "rateLimit",
+	} {
+		if !strings.Contains(githubIssuesQuery, want) {
+			t.Errorf("githubIssuesQuery missing %q", want)
+		}
+	}
+	for _, v := range []string{"$owner:String!", "$name:String!", "$cur:String"} {
+		if !strings.Contains(githubIssuesQuery, v) {
+			t.Errorf("githubIssuesQuery missing var decl %q", v)
+		}
+	}
+}
+
+// roundTripFunc adapts a function to http.RoundTripper so we can stub GraphQL/REST
+// HTTP responses without a live server.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestListIssuesGraphQLToRESTFallback proves ListIssues prefers GraphQL and, on a
+// GraphQL error, falls back to the REST issues path (which still returns issues with
+// real dates). The GraphQL endpoint returns top-level errors → graphQLErrors → the
+// provider logs a WARN and routes to the REST client.
+func TestListIssuesGraphQLToRESTFallback(t *testing.T) {
+	restCalls := 0
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := ""
+		status := 200
+		switch {
+		case strings.Contains(r.URL.Path, "/graphql"):
+			// GraphQL: return a top-level error → forces REST fallback.
+			body = `{"data":null,"errors":[{"message":"Field 'issues' doesn't exist","type":"FIELD_ERROR"}]}`
+		case strings.Contains(r.URL.Path, "/issues"):
+			// REST issues page: one issue with real dates, no next page.
+			restCalls++
+			body = `[{"id":900100,"number":4242,"title":"Fix the widget","body":"broken","state":"open","created_at":"2026-05-10T09:00:00Z","updated_at":"2026-05-11T10:30:00Z","labels":[{"name":"bug"}]}]`
+		default:
+			status = 404
+			body = "{}"
+		}
+		return &http.Response{
+			StatusCode: status,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	stub := &http.Client{Transport: rt}
+	gh := &githubProvider{
+		client: gogithub.NewClient(stub),
+		token:  "t",
+		http:   stub,
+	}
+
+	issues, err := gh.ListIssues(context.Background(), "acme/repo")
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if restCalls == 0 {
+		t.Error("REST issues endpoint was not called — fallback did not happen")
+	}
+	if len(issues) != 1 || issues[0].Number != 4242 {
+		t.Fatalf("issues = %+v, want one issue #4242 from REST fallback", issues)
+	}
+	if !issues[0].CreatedAt.Equal(mustTime(t, "2026-05-10T09:00:00Z")) {
+		t.Errorf("fallback issue createdAt = %v, want real date", issues[0].CreatedAt)
+	}
+	if len(issues[0].Labels) != 1 || issues[0].Labels[0] != "bug" {
+		t.Errorf("fallback issue labels = %v, want [bug]", issues[0].Labels)
 	}
 }
 

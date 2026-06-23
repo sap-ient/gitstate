@@ -358,6 +358,13 @@ func (h *syncHandlers) syncAll(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		tokenCache := map[string][2]string{} // platform → {token, baseURL}, resolved once
 		ok, failed := 0, 0
+		// Track (repo, token) pairs that fast-synced OK so a SEPARATE deep-analysis
+		// pass can backfill Contribution depth after the fast pass, grouped by token.
+		type analyzeJob struct {
+			repo  store.Repo
+			token string
+		}
+		var toAnalyze []analyzeJob
 		for _, repo := range repos {
 			tb, cached := tokenCache[repo.Platform]
 			if !cached {
@@ -385,8 +392,25 @@ func (h *syncHandlers) syncAll(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			ok++
+			toAnalyze = append(toAnalyze, analyzeJob{repo: repo, token: tb[0]})
 		}
-		slog.Info("sync-all: complete", "org", orgID, "synced", ok, "failed", failed, "total", len(repos))
+		slog.Info("sync-all: fast sync complete", "org", orgID, "synced", ok, "failed", failed, "total", len(repos))
+
+		// DEEP analysis pass over the fast-synced repos, low concurrency (split from
+		// the fast sync; skips repos whose HEAD is unchanged). Group by token (one per
+		// platform) so each repo clones with the right credential.
+		byToken := map[string][]store.Repo{}
+		for _, j := range toAnalyze {
+			byToken[j.token] = append(byToken[j.token], j.repo)
+		}
+		analyzed := 0
+		for tok, rs := range byToken {
+			analyzeReposConcurrently(bgCtx, h.db, orgID, tok, rs, deepAnalysisWorkers)
+			analyzed += len(rs)
+		}
+		if analyzed > 0 {
+			slog.Info("sync-all: deep analysis complete", "org", orgID, "analyzed", analyzed)
+		}
 	}()
 }
 
@@ -494,12 +518,28 @@ func (h *syncHandlers) importRepos(w http.ResponseWriter, r *http.Request) {
 		// The App installation token has its own rate budget and GraphQL batches PRs,
 		// so several repos at once is safe and far faster than sequential.
 		syncReposConcurrently(bgCtx, h.db, provider, orgID, token, repos, importSyncWorkers)
-		slog.Info("import: batch complete", "org", orgID, "platform", platform, "synced", len(repos))
+		slog.Info("import: fast sync complete", "org", orgID, "platform", platform, "synced", len(repos))
+
+		// PHASE 3 — DEEP analysis pass (blame-survival / SZZ / coupling) over the same
+		// repos, in a SEPARATE, lower-parallelism pool. It is split from the fast sync
+		// so the dashboards populate within seconds while Contribution depth backfills
+		// behind them. Concurrency is low (deepAnalysisWorkers) because each clone+blame
+		// is CPU+memory heavy — running 8 at once gets git OOM-killed. The pass skips
+		// repos whose HEAD is unchanged since the last deep run (cheap ls-remote check).
+		analyzeReposConcurrently(bgCtx, h.db, orgID, token, repos, deepAnalysisWorkers)
+		slog.Info("import: deep analysis complete", "org", orgID, "platform", platform, "analyzed", len(repos))
 	}()
 }
 
-// importSyncWorkers bounds how many repos sync concurrently during a bulk import.
-const importSyncWorkers = 3
+// importSyncWorkers bounds how many repos run the FAST sync concurrently during a
+// bulk import. The App installation token has its own rate budget and GraphQL
+// batches issues/PRs, so 8 concurrent fast syncs are safe and far faster.
+const importSyncWorkers = 8
+
+// deepAnalysisWorkers bounds how many repos run the SLOW deep analysis (clone +
+// blame/SZZ) concurrently. Kept low: each is CPU+memory heavy and running many at
+// once gets git OOM-killed ("signal: killed").
+const deepAnalysisWorkers = 2
 
 // syncReposConcurrently runs SyncRepo over repos with a fixed worker pool, so a
 // large import finishes in roughly total/workers time instead of the sum of every
@@ -529,6 +569,36 @@ func syncReposConcurrently(ctx context.Context, database *db.DB, provider gitSyn
 	wg.Wait()
 }
 
+// analyzeReposConcurrently runs the SLOW deep analysis (gitSync.AnalyzeRepoDeep) over
+// repos with a fixed, low-concurrency worker pool. It is a SEPARATE pass from the
+// fast sync so contribution depth (blame-survival / SZZ) backfills behind the already-
+// populated dashboards. Each AnalyzeRepoDeep is best-effort (it logs, never returns a
+// fatal error) and skips repos whose HEAD is unchanged since the last deep run, so a
+// re-import that touched nothing is near-instant.
+func analyzeReposConcurrently(ctx context.Context, database *db.DB, orgID, token string, repos []store.Repo, workers int) {
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan store.Repo)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for repo := range jobs {
+				if e := gitSync.AnalyzeRepoDeep(ctx, database, orgID, repo, token, slog.Default()); e != nil {
+					slog.Error("import: deep analyze repo", "full_name", repo.FullName, "err", e)
+				}
+			}
+		}()
+	}
+	for _, repo := range repos {
+		jobs <- repo
+	}
+	close(jobs)
+	wg.Wait()
+}
+
 // startBackgroundSync runs a repo sync in a detached goroutine. Shared by the
 // import path (so a freshly connected repo pulls issues/PRs/commits immediately)
 // and the manual /sync trigger. Best-effort: it logs failures and never blocks
@@ -543,6 +613,12 @@ func (h *syncHandlers) startBackgroundSync(orgID string, repo store.Repo, token,
 		}
 		if err := gitSync.SyncRepo(bgCtx, h.db, provider, orgID, repo, token); err != nil {
 			slog.Error("sync: sync repo", "repo_id", repo.ID, "err", err)
+		}
+		// DEEP analysis runs AFTER the fast sync so the dashboards populate first;
+		// Contribution depth (blame-survival / SZZ) backfills behind it. It skips when
+		// HEAD is unchanged since the last deep run (near-instant re-sync). Best-effort.
+		if err := gitSync.AnalyzeRepoDeep(bgCtx, h.db, orgID, repo, token, slog.Default()); err != nil {
+			slog.Error("sync: deep analyze repo", "repo_id", repo.ID, "err", err)
 		}
 	}()
 }

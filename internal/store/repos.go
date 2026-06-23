@@ -19,7 +19,12 @@ type Repo struct {
 	DefaultBranch string
 	CloneURL      string
 	LastSyncedAt  *time.Time
-	CreatedAt     time.Time
+	// LastAnalyzedSHA is the HEAD sha the deep blame/SZZ analysis last ran against.
+	// AnalyzeRepoDeep skips re-analysis when the current HEAD equals this value, so
+	// re-syncs of an unchanged repo never pay the (minutes-long) blame cost again.
+	LastAnalyzedSHA string
+	LastAnalyzedAt  *time.Time
+	CreatedAt       time.Time
 	// Token is NOT stored in the DB — supplied at connect time and held in memory.
 	// For persisted connections the caller must re-supply the token on sync.
 	Token string `db:"-"`
@@ -44,7 +49,7 @@ func ConnectRepo(ctx context.Context, tx pgx.Tx, orgID, platform, externalID, fu
 			clone_url      = COALESCE(EXCLUDED.clone_url, repos.clone_url)
 		RETURNING id, org_id, platform, external_id, full_name,
 		          COALESCE(default_branch,''), COALESCE(clone_url,''),
-		          last_synced_at, created_at`
+		          last_synced_at, COALESCE(last_analyzed_sha,''), last_analyzed_at, created_at`
 
 	var r Repo
 	var lastSynced *time.Time
@@ -52,7 +57,7 @@ func ConnectRepo(ctx context.Context, tx pgx.Tx, orgID, platform, externalID, fu
 		orgID, platform, externalID, fullName, defaultBranch, cloneURL,
 	).Scan(
 		&r.ID, &r.OrgID, &r.Platform, &r.ExternalID, &r.FullName,
-		&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.CreatedAt,
+		&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.LastAnalyzedSHA, &r.LastAnalyzedAt, &r.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: connect repo: %w", err)
@@ -67,7 +72,7 @@ func ListRepos(ctx context.Context, tx pgx.Tx, orgID string) ([]Repo, error) {
 	const q = `
 		SELECT id, org_id, platform, external_id, full_name,
 		       COALESCE(default_branch,''), COALESCE(clone_url,''),
-		       last_synced_at, created_at
+		       last_synced_at, COALESCE(last_analyzed_sha,''), last_analyzed_at, created_at
 		FROM repos
 		WHERE org_id = $1
 		ORDER BY full_name`
@@ -84,7 +89,7 @@ func ListRepos(ctx context.Context, tx pgx.Tx, orgID string) ([]Repo, error) {
 		var lastSynced *time.Time
 		if err := rows.Scan(
 			&r.ID, &r.OrgID, &r.Platform, &r.ExternalID, &r.FullName,
-			&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.CreatedAt,
+			&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.LastAnalyzedSHA, &r.LastAnalyzedAt, &r.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan repo: %w", err)
 		}
@@ -101,7 +106,7 @@ func GetRepo(ctx context.Context, tx pgx.Tx, orgID, repoID string) (*Repo, error
 	const q = `
 		SELECT id, org_id, platform, external_id, full_name,
 		       COALESCE(default_branch,''), COALESCE(clone_url,''),
-		       last_synced_at, created_at
+		       last_synced_at, COALESCE(last_analyzed_sha,''), last_analyzed_at, created_at
 		FROM repos
 		WHERE id = $1 AND org_id = $2`
 
@@ -109,7 +114,7 @@ func GetRepo(ctx context.Context, tx pgx.Tx, orgID, repoID string) (*Repo, error
 	var lastSynced *time.Time
 	err := tx.QueryRow(ctx, q, repoID, orgID).Scan(
 		&r.ID, &r.OrgID, &r.Platform, &r.ExternalID, &r.FullName,
-		&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.CreatedAt,
+		&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.LastAnalyzedSHA, &r.LastAnalyzedAt, &r.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -131,6 +136,22 @@ func UpdateRepoSyncedAt(ctx context.Context, tx pgx.Tx, orgID, repoID string) er
 	_, err := tx.Exec(ctx, q, repoID, orgID)
 	if err != nil {
 		return fmt.Errorf("store: update repo synced_at: %w", err)
+	}
+	return nil
+}
+
+// UpdateRepoAnalyzed records the HEAD sha the deep blame/SZZ analysis last ran
+// against (last_analyzed_sha) and stamps last_analyzed_at = now(). A later
+// AnalyzeRepoDeep compares the live HEAD to last_analyzed_sha and skips the
+// (expensive) re-analysis when they match. MUST be called inside a
+// db.WithOrg(ctx, orgID, …) tx so RLS permits the UPDATE.
+func UpdateRepoAnalyzed(ctx context.Context, tx pgx.Tx, orgID, repoID, sha string) error {
+	const q = `
+		UPDATE repos SET last_analyzed_sha = $3, last_analyzed_at = now()
+		WHERE id = $1 AND org_id = $2`
+	_, err := tx.Exec(ctx, q, repoID, orgID, sha)
+	if err != nil {
+		return fmt.Errorf("store: update repo analyzed: %w", err)
 	}
 	return nil
 }

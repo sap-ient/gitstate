@@ -619,7 +619,142 @@ func (g *githubProvider) ListRepos(ctx context.Context) ([]RemoteRepo, error) {
 	return out, nil
 }
 
+// githubIssuesQuery pages issues (100/page) with number/title/body/state/labels and
+// the REAL created/updated timestamps in ONE request — replacing the REST issues
+// fan-out (a 1727-issue repo is 18 sequential REST pages). It excludes PRs natively
+// (the issues connection returns only issues, unlike the REST issues endpoint).
+const githubIssuesQuery = `query($owner:String!,$name:String!,$cur:String){
+  rateLimit { cost remaining resetAt }
+  repository(owner:$owner, name:$name) {
+    issues(first:100, after:$cur, states:[OPEN,CLOSED], orderBy:{field:CREATED_AT, direction:ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title body state databaseId createdAt updatedAt
+        labels(first:50) { nodes { name } }
+      }
+    }
+  }
+}`
+
+// githubIssuesResponse mirrors githubIssuesQuery's "data".
+type githubIssuesResponse struct {
+	RateLimit struct {
+		Cost      int    `json:"cost"`
+		Remaining int    `json:"remaining"`
+		ResetAt   string `json:"resetAt"`
+	} `json:"rateLimit"`
+	Repository struct {
+		Issues struct {
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
+			Nodes []githubIssueNode `json:"nodes"`
+		} `json:"issues"`
+	} `json:"repository"`
+}
+
+type githubIssueNode struct {
+	Number     int       `json:"number"`
+	Title      string    `json:"title"`
+	Body       string    `json:"body"`
+	State      string    `json:"state"` // OPEN | CLOSED
+	DatabaseID int64     `json:"databaseId"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+	Labels     struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"labels"`
+}
+
+// mapGitHubIssueNode maps one GraphQL issue node to a RemoteIssue, carrying the real
+// platform created/updated timestamps so issue dates reflect the platform.
+func mapGitHubIssueNode(n githubIssueNode) RemoteIssue {
+	ri := RemoteIssue{
+		ExternalID: fmt.Sprintf("%d", n.DatabaseID),
+		Number:     n.Number,
+		Title:      n.Title,
+		Body:       n.Body,
+		State:      normaliseState(strings.ToLower(n.State)),
+		CreatedAt:  n.CreatedAt,
+		UpdatedAt:  n.UpdatedAt,
+	}
+	for _, l := range n.Labels.Nodes {
+		if l.Name != "" {
+			ri.Labels = append(ri.Labels, l.Name)
+		}
+	}
+	return ri
+}
+
+// ListIssues fetches all issues for the repo. It PREFERS the GraphQL path (one
+// query per 100 issues vs the REST per-page fan-out); on ANY GraphQL error it logs a
+// WARN and falls back to the REST path (listIssuesREST) so a query bug or schema
+// drift never fails a sync. RemoteIssue carries the real created/updated timestamps
+// either way.
 func (g *githubProvider) ListIssues(ctx context.Context, fullName string) ([]RemoteIssue, error) {
+	owner, name, err := splitFullName(fullName)
+	if err != nil {
+		return nil, err
+	}
+	issues, gerr := g.graphQLIssues(ctx, owner, name)
+	if gerr != nil {
+		slog.Warn("github: graphql issue fetch failed, falling back to REST", "repo", fullName, "err", gerr)
+		return g.listIssuesREST(ctx, fullName)
+	}
+	return issues, nil
+}
+
+// graphQLIssues runs the paged GraphQL issues query and maps the result to
+// []RemoteIssue. Returns an error on any GraphQL/transport failure so the caller can
+// fall back to REST.
+func (g *githubProvider) graphQLIssues(ctx context.Context, owner, name string) ([]RemoteIssue, error) {
+	var (
+		out    []RemoteIssue
+		cursor string
+	)
+	for {
+		vars := map[string]any{"owner": owner, "name": name}
+		if cursor != "" {
+			vars["cur"] = cursor
+		} else {
+			vars["cur"] = nil
+		}
+		var data githubIssuesResponse
+		if err := graphQLDo(ctx, g.http, githubGraphQLEndpoint, "bearer", g.token, githubIssuesQuery, vars, &data); err != nil {
+			return nil, err
+		}
+		for _, n := range data.Repository.Issues.Nodes {
+			out = append(out, mapGitHubIssueNode(n))
+		}
+		// Polite throttle: if the GraphQL budget is nearly spent, wait for resetAt.
+		if data.RateLimit.Remaining > 0 && data.RateLimit.Remaining <= data.RateLimit.Cost {
+			if reset, perr := time.Parse(time.RFC3339, data.RateLimit.ResetAt); perr == nil {
+				wait := time.Until(reset) + time.Second
+				if wait > 0 {
+					if wait > maxRateWait {
+						wait = maxRateWait
+					}
+					slog.Info("github: graphql issue budget low, waiting for reset", "dur", wait.Round(time.Second))
+					if serr := sleepCtx(ctx, wait); serr != nil {
+						return nil, serr
+					}
+				}
+			}
+		}
+		if !data.Repository.Issues.PageInfo.HasNextPage {
+			break
+		}
+		cursor = data.Repository.Issues.PageInfo.EndCursor
+	}
+	return out, nil
+}
+
+// listIssuesREST is the REST fallback for ListIssues (paginated GitHub issues API,
+// skipping PRs). Used only when the GraphQL path errors.
+func (g *githubProvider) listIssuesREST(ctx context.Context, fullName string) ([]RemoteIssue, error) {
 	owner, name, err := splitFullName(fullName)
 	if err != nil {
 		return nil, err
