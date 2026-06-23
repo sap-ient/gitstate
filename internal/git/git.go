@@ -250,13 +250,23 @@ func parseWalkOutput(raw, sentinel string) ([]CommitRecord, error) {
 			msgBuf.WriteByte('\n')
 
 		case stNumstat:
+			// git emits: sentinel → BLANK separator → numstat lines → (immediately) the
+			// next commit's SHA, with NO trailing blank. So a blank here is the LEADING
+			// separator (skip it), and the numstat block ends when we hit a line with no
+			// tab — that's the next SHA (numstat lines are always "<add>\t<del>\t<file>").
 			if line == "" {
-				// End of numstat for this commit; next line starts the next header.
+				continue // leading separator between sentinel and numstat
+			}
+			if !strings.Contains(line, "\t") {
+				// Next commit's header line (SHA). Close this commit and restart.
+				flush()
+				inBlock = true
+				cur.SHA = line
+				lineNo = 1 // SHA consumed; next lines are author/email/ts
 				st = stHeader
-				lineNo = 0
 				continue
 			}
-			// Format: <add>\t<del>\t<file>  (or "-" for binary)
+			// Numstat: <add>\t<del>\t<file> ("-" for binary → not a number, skipped).
 			parts := strings.SplitN(line, "\t", 3)
 			if len(parts) == 3 {
 				if a, err := strconv.Atoi(parts[0]); err == nil {

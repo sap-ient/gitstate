@@ -477,12 +477,18 @@ func (h *syncHandlers) importRepos(w http.ResponseWriter, r *http.Request) {
 				slog.Error("import: connect repo", "full_name", fn, "err", e)
 				continue
 			}
-			repos = append(repos, *repo)
+			// RESUMABLE: only (re)sync repos that aren't already fully synced. A repo
+			// keeps last_synced_at NULL until a COMPLETE sync, so re-clicking "Import all"
+			// picks up exactly the not-yet-imported + previously-failed/incomplete repos
+			// and skips the ones already done — no wasted re-syncing.
+			if repo.LastSyncedAt == nil {
+				repos = append(repos, *repo)
+			}
 			// Real-time webhook (best-effort; skipped on localhost).
 			_ = autoRegisterRepoWebhook(bgCtx, h.db, h.cfg, orgID, platform, rr.FullName, rr.ExternalID, token, baseURL)
 		}
 		slog.Info("import: connected, starting parallel sync", "org", orgID, "platform", platform,
-			"connected", len(repos), "requested", len(fullNames))
+			"to_sync", len(repos), "requested", len(fullNames))
 
 		// PHASE 2 — sync them with a bounded worker pool (parallel, not one-at-a-time).
 		// The App installation token has its own rate budget and GraphQL batches PRs,

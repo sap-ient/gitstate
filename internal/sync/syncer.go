@@ -28,6 +28,11 @@ import (
 // Capture group 1 is the issue number string.
 var issueRefRe = regexp.MustCompile(`(?i)(?:closes?|fixes?|resolves?)?\s*#(\d+)`)
 
+// blameBudget caps the deep blame-survival/SZZ analysis so a huge repo can't consume
+// the whole sync budget and starve the post-steps (cycle time, calibration, embed).
+// A timeout here only yields partial Contribution data — everything else still lands.
+const blameBudget = 6 * time.Minute
+
 // analyzeBlame clones the repo once (blobless) and does TWO things in that single
 // clone: (1) ingests EVERY commit on ALL branches into the commits table — the
 // PRIMARY commit source, zero API calls — and (2) runs the deep git analysis
@@ -82,9 +87,15 @@ func analyzeBlame(ctx context.Context, database *db.DB, orgID string, repo store
 
 	// (2) Deep analysis → commit_files / blame-survival / SZZ (Contribution dashboards).
 	// AnalyzeRepo runs `git log` + `git blame`; the blobless clone fetches the blobs
-	// blame touches on demand, so this works without a full checkout.
-	if res, err := gitanalysis.AnalyzeRepo(ctx, tmp); err != nil {
-		log.Error("sync: analyze git history", "err", err)
+	// blame touches on demand, so this works without a full checkout. Bound it to its
+	// OWN sub-budget: on a huge repo, blaming every file can run for many minutes, and
+	// if it consumed the whole sync ctx the post-steps (cycle time, calibration,
+	// embeddings) would all fail with "deadline exceeded". Best-effort: a timeout here
+	// just means partial Contribution data; commits/issues/PRs/cycle-time still land.
+	blameCtx, blameCancel := context.WithTimeout(ctx, blameBudget)
+	defer blameCancel()
+	if res, err := gitanalysis.AnalyzeRepo(blameCtx, tmp); err != nil {
+		log.Error("sync: analyze git history (best-effort)", "err", err)
 	} else if err := store.StoreResult(ctx, database, orgID, repo.ID, res); err != nil {
 		log.Error("sync: store git analysis", "err", err)
 	}

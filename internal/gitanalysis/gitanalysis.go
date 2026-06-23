@@ -701,12 +701,17 @@ func runGitBytes(ctx context.Context, dir string, args ...string) ([]byte, error
 	cctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	full := append([]string{"-C", dir}, args...)
+	// gc.auto=0: blame/log on a big repo otherwise triggers background "auto packing"
+	// (a forked git gc) which, under parallel imports, gets OOM-"signal: killed",
+	// cascades a context-deadline failure across the whole sync, and the repo then
+	// retries forever. The temp clone is never reused, so packing buys nothing.
+	full := append([]string{"-c", "gc.auto=0", "-C", dir}, args...)
 	cmd := exec.CommandContext(cctx, "git", full...)
 	cmd.Env = append(os.Environ(),
 		"LC_ALL=C",
 		"GIT_TERMINAL_PROMPT=0", // never block on credential prompts
 		"GIT_OPTIONAL_LOCKS=0",
+		"GIT_AUTO_GC=0", // belt-and-suspenders: also suppresses the post-op auto gc
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
