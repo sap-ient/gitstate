@@ -220,6 +220,25 @@ func TestContribAgg_CollapsesAndExcludes(t *testing.T) {
 		t.Errorf("jane merged human commits = %d, want 2", janeHuman)
 	}
 
+	// The collapsed aggregate carries the CONTRIBUTOR identity: the canonical
+	// display_name ("Jane", not a raw git login) + the contributorId, so the
+	// frontend can key on the stable person and label rows correctly.
+	var janeAgg *ContribAggregate
+	for i := range post {
+		if post[i].HumanCommits == 2 {
+			janeAgg = &post[i]
+		}
+	}
+	if janeAgg == nil {
+		t.Fatalf("jane aggregate not found")
+	}
+	if janeAgg.ContributorID != janeID {
+		t.Errorf("jane aggregate ContributorID = %q, want %q", janeAgg.ContributorID, janeID)
+	}
+	if janeAgg.Name != "Jane" {
+		t.Errorf("jane aggregate Name = %q, want canonical display_name %q", janeAgg.Name, "Jane")
+	}
+
 	// Exclude carol → she drops out.
 	excl := true
 	if err := UpdateContributor(ctx, tx, orgID, carolID, ContributorUpdate{Excluded: &excl}); err != nil {

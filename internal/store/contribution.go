@@ -101,7 +101,13 @@ func UpsertContributionWeights(ctx context.Context, tx pgx.Tx, w ContributionWei
 // already mapped to a user identity. All "shipped"/"effort" counts are gated to
 // accepted work in SQL.
 type ContribAggregate struct {
-	UserID          string
+	UserID string
+	// ContributorID is the canonical contributor (the PERSON) this aggregate was
+	// collapsed onto, or "" for a raw git identity not yet mapped to a contributor.
+	// It is the STABLE per-person key the API/frontend group by (a grouped person
+	// usually has no UserID, so userId can't be the key). A contributor linked to a
+	// user still also keeps its UserID (member drill-down/invite stay intact).
+	ContributorID   string
 	Name            string
 	Email           string
 	Login           string
@@ -499,6 +505,13 @@ func collapseByContributor(ctx context.Context, tx pgx.Tx, orgID string, byIdent
 	if err != nil {
 		return err
 	}
+	// Canonical display fields (display_name / primary_email) per contributor, so a
+	// collapsed person shows their CANONICAL name (e.g. "Cameron Dawson") instead of
+	// whichever git identity happened to survive the merge ("cameroncognizance").
+	display, err := contributorDisplay(ctx, tx, orgID)
+	if err != nil {
+		return err
+	}
 
 	// resolve returns the contributor_id for an accumulator, or "" when none.
 	resolve := func(a *contribAcc) string {
@@ -547,6 +560,26 @@ func collapseByContributor(ctx context.Context, tx pgx.Tx, orgID string, byIdent
 		} else {
 			mergeAcc(byIdent[pk], a)
 			delete(byIdent, k)
+		}
+	}
+
+	// Stamp the canonical contributor identity onto each surviving accumulator: its
+	// ContributorID, and the CANONICAL display_name/primary_email (overwriting the
+	// random surviving git identity). UserID is left untouched (a linked contributor
+	// keeps its user link for the member drill-down/invite).
+	for cid, k := range primary {
+		a := byIdent[k]
+		if a == nil {
+			continue
+		}
+		a.ContributorID = cid
+		if d, ok := display[cid]; ok {
+			if d[0] != "" {
+				a.Name = d[0]
+			}
+			if d[1] != "" {
+				a.Email = d[1]
+			}
 		}
 	}
 	return nil
