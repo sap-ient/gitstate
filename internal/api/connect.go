@@ -427,6 +427,42 @@ func (h *connectHandlers) status(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Auto-detect an existing GitHub App install: the App's installations live on
+	// GitHub (persist across our DB resets), and the App key can enumerate them any
+	// time — so if the App is enabled but we have no stored github connection, check
+	// for installations and ADOPT them (create the connection) instead of forcing a
+	// re-install. This is why "the App is already installed on two orgs" is detected.
+	if gh := byPlatform["github"]; gh.AppEnabled && !gh.Connected {
+		insts, ierr := githubapp.ListInstallations(r.Context(),
+			h.cfg.Git.GitHub.AppID, h.cfg.Git.GitHub.AppPrivateKey)
+		if ierr != nil {
+			slog.Warn("connect status: list app installations", "err", ierr)
+		} else if len(insts) > 0 {
+			logins := make([]string, 0, len(insts))
+			for _, in := range insts {
+				if in.Login != "" {
+					logins = append(logins, in.Login)
+				}
+			}
+			label := strings.Join(logins, ", ")
+			// Adopt: store a github_app connection so listRepos/import use the App path.
+			if e := h.db.WithOrg(r.Context(), orgID, func(tx pgx.Tx) error {
+				_, ue := store.UpsertConnection(r.Context(), tx, store.UpsertConnectionInput{
+					OrgID:          orgID,
+					Platform:       "github",
+					ConnectionType: "github_app",
+					InstallationID: fmt.Sprint(insts[0].ID),
+					ExternalLogin:  label,
+				})
+				return ue
+			}); e != nil {
+				slog.Warn("connect status: adopt app installation", "err", e)
+			}
+			gh.Connected = true
+			gh.Login = label
+		}
+	}
+
 	out := []connectStatus{*byPlatform["github"], *byPlatform["gitlab"]}
 	writeJSON(w, http.StatusOK, out)
 }
