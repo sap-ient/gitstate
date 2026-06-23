@@ -11,7 +11,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import {
   Users, Loader2, Sparkles, Search, Link2, Mail, EyeOff, Eye, GitMerge,
   X, Pencil, Bot, GitCommitHorizontal, GitPullRequest, MessageSquare,
-  Scissors, AtSign, AlertCircle, ChevronDown,
+  Scissors, Star, AtSign, AlertCircle, ChevronDown,
 } from 'lucide-react'
 import { useOrg } from '../lib/useOrg.js'
 import { useContributors, useOrgMembers } from '../lib/useContributors.js'
@@ -76,13 +76,32 @@ function StatusChip({ c }) {
 
 // ── Identity chip (with split affordance) ────────────────────────────────────────
 
-function IdentityChip({ identity, canSplit, onSplit, busy }) {
+function IdentityChip({ identity, canSplit, onSplit, isDefault, onSetDefault, settingDefault, busy }) {
   const isLogin = identity.kind === 'login'
   return (
     <span
-      className="group/idn inline-flex items-center gap-1 max-w-full rounded-[var(--radius-badge)] border border-[var(--border)] bg-[var(--bg-surface3)] pl-1.5 pr-1 py-0.5 text-[11px] font-mono text-[var(--text-muted)]"
-      title={identity.nameSeen ? `Seen as “${identity.nameSeen}”` : (isLogin ? 'login' : 'email')}
+      className={[
+        'group/idn inline-flex items-center gap-1 max-w-full rounded-[var(--radius-badge)] border pl-1.5 pr-1 py-0.5 text-[11px] font-mono',
+        isDefault
+          ? 'border-[var(--brand-teal)]/40 bg-[var(--brand-teal)]/10 text-[var(--text-dim)]'
+          : 'border-[var(--border)] bg-[var(--bg-surface3)] text-[var(--text-muted)]',
+      ].join(' ')}
+      title={`${identity.nameSeen ? `Seen as “${identity.nameSeen}” · ` : ''}${isLogin ? 'login' : 'email'}${isDefault ? ' · default identity' : ''}`}
     >
+      {/* Default-identity star: filled when this is the canonical name/email used everywhere. */}
+      <button
+        type="button"
+        onClick={() => onSetDefault(identity)}
+        disabled={settingDefault || isDefault}
+        aria-label={isDefault ? `${identity.value} is the default identity` : `Make ${identity.value} the default identity`}
+        title={isDefault ? 'Default identity (used everywhere)' : 'Set as default identity'}
+        className={[
+          'grid place-items-center w-4 h-4 rounded shrink-0 transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--brand-teal)]',
+          isDefault ? 'text-[var(--brand-teal)] cursor-default' : 'text-[var(--text-faint)] hover:text-[var(--brand-teal)] hover:bg-[var(--bg-surface)] disabled:opacity-40',
+        ].join(' ')}
+      >
+        {settingDefault ? <Loader2 size={9} className="animate-spin" /> : <Star size={9} className={isDefault ? 'fill-current' : ''} />}
+      </button>
       {isLogin ? <AtSign size={10} className="shrink-0 text-[var(--text-faint)]" /> : <Mail size={10} className="shrink-0 text-[var(--text-faint)]" />}
       <span className="truncate">{identity.value}</span>
       {canSplit && (
@@ -323,8 +342,12 @@ function MiniStat({ icon, value, label }) {
 
 function ContributorRow({
   c, members, membersLoading, selected, onToggleSelect,
-  onRename, onLink, onInvite, onToggleExclude, onSplit, busy,
+  onRename, onLink, onInvite, onToggleExclude, onSplit, onSetDefault, busy,
 }) {
+  // An identity is the current default when it supplies the canonical name/email.
+  const isDefaultIdentity = (idn) =>
+    (idn.kind === 'email' && !!c.primaryEmail && idn.value === c.primaryEmail) ||
+    (idn.kind === 'login' && !c.primaryEmail && (idn.nameSeen || idn.value) === c.displayName)
   const muted = c.excluded
   const canSplit = (c.identities?.length ?? 0) > 1
   const stats = c.stats ?? {}
@@ -380,6 +403,9 @@ function ContributorRow({
                   identity={idn}
                   canSplit={canSplit}
                   onSplit={(v) => onSplit(c.id, v)}
+                  isDefault={isDefaultIdentity(idn)}
+                  onSetDefault={(i) => onSetDefault(c.id, i)}
+                  settingDefault={busy.default === `${c.id}:${idn.value}`}
                   busy={busy.split === `${c.id}:${idn.value}`}
                 />
               ))}
@@ -540,6 +566,21 @@ export default function People() {
     catch (e) { setActionError(e?.message ?? 'Split failed') }
     finally { setBusyKey('split', null) }
   }, [split, setBusyKey])
+
+  // onSetDefault makes a chosen identity the canonical one for an unlinked (or any)
+  // contributor — its name + (for an email identity) its address become the
+  // display_name/primary_email used throughout the leaderboard, contribution, and
+  // every people-keyed chart.
+  const onSetDefault = useCallback(async (id, idn) => {
+    setActionError(null)
+    setBusyKey('default', `${id}:${idn.value}`)
+    try {
+      const body = { displayName: idn.nameSeen || idn.value }
+      if (idn.kind === 'email') body.primaryEmail = idn.value
+      await patch(id, body)
+    } catch (e) { setActionError(e?.message ?? 'Set-default failed') }
+    finally { setBusyKey('default', null) }
+  }, [patch, setBusyKey])
 
   const onMerge = useCallback(async (survivorId) => {
     setActionError(null)
@@ -804,6 +845,7 @@ export default function People() {
               onInvite={onInvite}
               onToggleExclude={onToggleExclude}
               onSplit={onSplit}
+              onSetDefault={onSetDefault}
               busy={busy}
             />
           ))}
