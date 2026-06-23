@@ -293,9 +293,6 @@ func (h *contributionHandlers) report(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Backfill involvement for the window so shipped/review/ownership populate on
-	// synced data before scoring (idempotent; failures are non-fatal).
-	h.ensureInvolvement(r.Context(), orgID, p)
 	rep, err := h.svc.Compute(r.Context(), orgID, p)
 	if err != nil {
 		slog.Error("contribution report", "err", err)
@@ -331,7 +328,6 @@ func (h *contributionHandlers) member(w http.ResponseWriter, r *http.Request) {
 	}
 	// Same window-backfill as the roster so the member's dimensions/evidence are
 	// scored against fresh involvement (idempotent; non-fatal on failure).
-	h.ensureInvolvement(r.Context(), orgID, p)
 	detail, found, err := h.svc.ComputeMember(r.Context(), orgID, userID, p)
 	if err != nil {
 		slog.Error("contribution member", "err", err)

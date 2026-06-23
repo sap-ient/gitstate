@@ -357,51 +357,80 @@ func LoadContributionAggregates(ctx context.Context, tx pgx.Tx, orgID string, fr
 		rows.Close()
 	}
 
-	// 4) Involvement texture (features_shipped, reviews_done, areas_owned),
-	//    summed over periods overlapping the window, attributed to the user.
+	// 4) Review + ownership texture, computed DIRECTLY from git identities (not the
+	//    user_id-keyed `involvement` table). When you import someone else's org the
+	//    contributors aren't gitstate users — there are 100+ git authors but only the
+	//    person who signed in has a users row — so an involvement→users join attributes
+	//    to almost nobody. These work off the same login/email identities as the
+	//    commit/PR aggregates above, so every real contributor fills out.
+	//    (shipped already comes from MergedPRs in step 2, also git-identity-native.)
 	{
-		const q = `
-			SELECT COALESCE(lower(u.email::text),'') AS ident,
-			       COALESCE(u.id::text,'') AS user_id,
-			       COALESCE(u.name,'') AS name,
-			       COALESCE(u.email::text,'') AS email,
-			       COALESCE(SUM(inv.features_shipped),0) AS features_shipped,
-			       COALESCE(SUM(inv.reviews_done),0)     AS reviews_done,
-			       COALESCE(MAX(inv.areas_owned),0)      AS areas_owned
-			FROM involvement inv
-			JOIN users u ON u.id = inv.user_id
-			WHERE inv.org_id = $1
-			  AND inv.period_start >= ($2)::date AND inv.period_start < ($3)::date
-			GROUP BY 1,2,3,4`
-		rows, err := tx.Query(ctx, q, orgID, from, to)
+		// 4a) reviews_done = DISTINCT PRs a person reviewed (not their own), by
+		//     reviewer_login. The invisible senior work.
+		const qReviews = `
+			SELECT lower(pr.reviewer_login) AS ident,
+			       MAX(pr.reviewer_login)   AS login,
+			       count(DISTINCT pr.pr_id) AS reviews_done
+			FROM pr_reviews pr
+			JOIN pull_requests p ON p.id = pr.pr_id
+			WHERE pr.org_id = $1
+			  AND pr.submitted_at >= ($2) AND pr.submitted_at < ($3)
+			  AND pr.reviewer_login <> ''
+			  AND lower(pr.reviewer_login) <> lower(COALESCE(p.author_login,''))
+			GROUP BY 1`
+		rows, err := tx.Query(ctx, qReviews, orgID, from, to)
 		if err != nil {
-			return nil, fmt.Errorf("store: contribution involvement agg: %w", err)
+			return nil, fmt.Errorf("store: contribution reviews agg: %w", err)
 		}
 		for rows.Next() {
-			var ident, userID, name, email string
-			var feats, reviews, areas int
-			if err := rows.Scan(&ident, &userID, &name, &email, &feats, &reviews, &areas); err != nil {
+			var ident, login string
+			var reviews int
+			if err := rows.Scan(&ident, &login, &reviews); err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("store: scan contribution involvement agg: %w", err)
+				return nil, fmt.Errorf("store: scan contribution reviews agg: %w", err)
 			}
 			if ident == "" {
 				continue
 			}
-			a := get(ident, "", email)
-			a.FeaturesShipped = feats
+			// Merge BY LOGIN so a reviewer's review credit lands on their commit
+			// identity (commits key on email, reviews on login) — same as the PR step.
+			a := mergeByLogin(byIdent, ident, login)
 			a.ReviewsDone = reviews
+		}
+		rows.Close()
+
+		// 4b) areas_owned = DISTINCT top-level directories a person commits in
+		//     (a bus-factor / knowledge-spread proxy), by author_email from commit_files.
+		const qAreas = `
+			SELECT lower(cf.author_email::text)                  AS ident,
+			       count(DISTINCT split_part(cf.path, '/', 1))   AS areas_owned
+			FROM commit_files cf
+			WHERE cf.org_id = $1
+			  AND cf.committed_at >= ($2) AND cf.committed_at < ($3)
+			  AND cf.author_email::text <> ''
+			GROUP BY 1`
+		rows2, err := tx.Query(ctx, qAreas, orgID, from, to)
+		if err != nil {
+			return nil, fmt.Errorf("store: contribution areas agg: %w", err)
+		}
+		for rows2.Next() {
+			var ident string
+			var areas int
+			if err := rows2.Scan(&ident, &areas); err != nil {
+				rows2.Close()
+				return nil, fmt.Errorf("store: scan contribution areas agg: %w", err)
+			}
+			if ident == "" {
+				continue
+			}
+			a := get(ident, "", ident)
 			a.AreasOwned = areas
-			if a.UserID == "" {
-				a.UserID = userID
-			}
-			if a.Name == "" {
-				a.Name = name
-			}
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("store: contribution involvement agg rows: %w", err)
+		if err := rows2.Err(); err != nil {
+			rows2.Close()
+			return nil, fmt.Errorf("store: contribution areas agg rows: %w", err)
 		}
+		rows2.Close()
 		rows.Close()
 	}
 
