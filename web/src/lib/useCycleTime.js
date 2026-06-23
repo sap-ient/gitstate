@@ -29,7 +29,7 @@ export function useCycleTime(filters = {}) {
   const [state, dispatch] = useReducer(reducer, init)
   const genRef = useRef(0)
 
-  const { repo, from, to } = filters
+  const { repo, from, to, author } = filters
 
   const doFetch = useCallback(async () => {
     if (!activeOrgId) return
@@ -40,6 +40,9 @@ export function useCycleTime(filters = {}) {
       if (repo) params.set('repo', repo)
       if (from) params.set('from', from)
       if (to)   params.set('to', to)
+      // author may be a raw login/email OR a `contributor:<id>` token — the backend
+      // expands the latter into the contributor's full identity set.
+      if (author) params.set('author', author)
       const qs = params.toString()
       const data = await api.get(`/api/metrics/cycle-time${qs ? `?${qs}` : ''}`)
       if (genRef.current !== gen) return
@@ -67,7 +70,7 @@ export function useCycleTime(filters = {}) {
       if (genRef.current !== gen) return
       dispatch({ type: 'FETCH_ERROR', error: e.message ?? 'Failed to load cycle time' })
     }
-  }, [activeOrgId, repo, from, to])
+  }, [activeOrgId, repo, from, to, author])
 
   useEffect(() => { doFetch().catch(() => {}) }, [doFetch])
 

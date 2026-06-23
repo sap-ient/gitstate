@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { Timer, GitMerge, AlertTriangle, RotateCw, Gauge, Activity, TrendingUp, Zap, Hourglass } from 'lucide-react'
 import { useCycleTime } from '../lib/useCycleTime.js'
 import { useRepos } from '../lib/useRepos.js'
+import { useContributors } from '../lib/useAnalytics.js'
 import { LineChart } from '../components/LineChart.jsx'
 import { Card, Button, StatCard } from '../components/ui/index.js'
 import { Reveal, RevealList } from '../components/Reveal.jsx'
@@ -104,9 +105,14 @@ function trendDelta(values, { goodWhenDown = false } = {}) {
 export default function CycleTime() {
   const { repos } = useRepos()
   const [repo, setRepo] = useState('')
+  const [author, setAuthor] = useState('')
   const [from, setFrom] = useState(isoDaysAgo(90))
   const [to, setTo] = useState(todayISO())
   const [preset, setPreset] = useState('90d')
+  // Full contributor list (all-time, all repos) for the author dropdown — each
+  // grouped person carries a canonical contributorId so selecting them filters by
+  // ALL their identities, consistent with the Analytics author filter.
+  const { data: contributors } = useContributors({ from: '', to: '', repo: '', author: '' })
   const [groupBy, setGroupBy] = useState('repo') // 'repo' | 'time'
   const [openGroups, setOpenGroups] = useState({}) // collapsible group state
 
@@ -117,7 +123,7 @@ export default function CycleTime() {
   }
   const toggleGroup = (key) => setOpenGroups((g) => ({ ...g, [key]: !g[key] }))
 
-  const { points, loading, error, refetch } = useCycleTime({ repo, from, to })
+  const { points, loading, error, refetch } = useCycleTime({ repo, from, to, author })
 
   const stats = computeStats(points)
   const hasData = !loading && points.length > 0
@@ -187,6 +193,23 @@ export default function CycleTime() {
               <select className={filterInputCls} value={repo} onChange={e => setRepo(e.target.value)}>
                 <option value="">All repos</option>
                 {repos.map(r => <option key={r.id} value={r.name ?? r.fullName ?? r.id}>{r.name ?? r.fullName}</option>)}
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] font-medium text-[var(--text-faint)] uppercase tracking-widest font-mono">Author</label>
+              <select className={filterInputCls} value={author} onChange={e => setAuthor(e.target.value)}>
+                <option value="">All authors</option>
+                {(contributors || []).map(c => {
+                  // Grouped person → `contributor:<id>` (filters all their identities);
+                  // ungrouped → raw login/email.
+                  const value = c.contributorId ? `contributor:${c.contributorId}` : (c.login || c.email)
+                  return (
+                    <option key={c.contributorId || c.login || c.email} value={value}>
+                      {c.name || c.login || c.email}
+                    </option>
+                  )
+                })}
               </select>
             </div>
 

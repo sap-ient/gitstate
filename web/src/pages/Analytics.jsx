@@ -168,11 +168,18 @@ function FiltersBar({ filters, setFilters, preset, setPreset, contributors, repo
           onChange={e => setFilters(f => ({ ...f, author: e.target.value }))}
         >
           <option value="">All authors</option>
-          {contributors.map(c => (
-            <option key={c.login || c.email} value={c.login || c.email}>
-              {c.name || c.login || c.email}
-            </option>
-          ))}
+          {contributors.map(c => {
+            // A grouped person carries a canonical contributorId + their full
+            // identity set: send `contributor:<id>` so the backend expands it and
+            // filters ALL of that person's identities at once. Ungrouped rows fall
+            // back to the raw login/email.
+            const value = c.contributorId ? `contributor:${c.contributorId}` : (c.login || c.email)
+            return (
+              <option key={c.contributorId || c.login || c.email} value={value}>
+                {c.name || c.login || c.email}
+              </option>
+            )
+          })}
         </FilterSelect>
 
         <FilterSelect
