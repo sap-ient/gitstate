@@ -13,6 +13,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -178,6 +179,224 @@ func scanDayCounts(ctx context.Context, tx pgx.Tx, label, q string, args []any) 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: %s rows: %w", label, err)
+	}
+	return out, nil
+}
+
+// ── Commits-by-contributor (per-contributor over-time series) ──────────────────
+
+// ContributorSeries is one contributor's commit-count timeline over the
+// bucketed range. Points carries one entry per bucket in the window (0-filled so
+// every series shares the same x-axis), ordered ascending by bucket start.
+type ContributorSeries struct {
+	Login   string     `json:"login"`
+	Name    string     `json:"name"`
+	Email   string     `json:"email"`
+	IsAgent bool       `json:"isAgent"`
+	Points  []DayCount `json:"points"`
+}
+
+// CommitsByContributor returns a per-contributor commit-count timeline for the
+// top-N contributors (by total commits in the window), bucketed the same way as
+// CommitsOverTime (day/week/month). Identities are merged by email (falling back
+// to login) exactly like the leaderboard, and agent/bot commits are included to
+// match how the leaderboard ranks.
+//
+// Every returned series is 0-filled across the full set of buckets that appear in
+// the window (the union of buckets with any commit), so the lines share a common
+// x-axis and align point-for-point. Series are ordered by total commits
+// descending (ties broken by login) — index 0 is the top contributor.
+//
+// When includeOther is true an extra "Everyone else" series (the aggregate of all
+// non-top-N contributors) is appended after the top-N, also 0-filled; it is
+// omitted entirely when there are no other contributors.
+//
+// bucket must be "day", "week", or "month"; any other value defaults to "day".
+func (f AnalyticsFilter) CommitsByContributor(ctx context.Context, tx pgx.Tx, bucket string, topN int, includeOther bool) ([]ContributorSeries, error) {
+	if topN <= 0 {
+		topN = 5
+	}
+	trunc := "day"
+	switch bucket {
+	case "week":
+		trunc = "week"
+	case "month":
+		trunc = "month"
+	}
+	where, args, _ := f.whereClause(1)
+
+	// One pass: per identity per bucket commit counts, plus a representative
+	// login/email/name and the is_agent flag from the latest commit. The CTE
+	// mirrors Contributors' identity-merge (lowercased email, else lowercased
+	// login). We rank identities by total commits and keep the top-N; the rest
+	// optionally collapse into an "everyone else" bucket.
+	q := fmt.Sprintf(`
+		WITH scoped AS (
+			SELECT
+				COALESCE(NULLIF(lower(c.author_email::text),''),
+				         NULLIF(lower(c.author_login),'')) AS identity,
+				c.author_login,
+				c.author_email,
+				c.is_agent,
+				c.committed_at,
+				date_trunc('%s', c.committed_at)::date AS bucket
+			FROM commits c
+			WHERE true%s
+		),
+		ranked AS (
+			SELECT identity, COUNT(*) AS total
+			FROM scoped
+			WHERE identity IS NOT NULL
+			GROUP BY identity
+			ORDER BY total DESC, identity ASC
+			LIMIT $%d
+		),
+		latest AS (
+			SELECT DISTINCT ON (identity)
+				identity,
+				COALESCE(author_login,'')        AS login,
+				COALESCE(author_email::text,'')  AS email,
+				is_agent
+			FROM scoped
+			WHERE identity IN (SELECT identity FROM ranked)
+			ORDER BY identity, committed_at DESC
+		),
+		per_bucket AS (
+			SELECT identity, bucket, COUNT(*) AS n
+			FROM scoped
+			WHERE identity IN (SELECT identity FROM ranked)
+			GROUP BY identity, bucket
+		)
+		SELECT
+			l.identity, l.login, l.email, l.is_agent, pb.bucket, pb.n,
+			r.total
+		FROM per_bucket pb
+		JOIN latest l USING (identity)
+		JOIN ranked r USING (identity)
+		ORDER BY r.total DESC, l.identity ASC, pb.bucket ASC`, trunc, where, len(args)+1)
+
+	rankArgs := append(append([]any{}, args...), topN)
+	rows, err := tx.Query(ctx, q, rankArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: analytics commits-by-contributor: %w", err)
+	}
+	defer rows.Close()
+
+	// Accumulate per identity (preserving first-seen order, which is rank order
+	// because the query is ordered by total DESC). Also collect the global set of
+	// buckets so every series can be 0-filled to a shared x-axis.
+	type acc struct {
+		series ContributorSeries
+		total  int
+		counts map[time.Time]int
+	}
+	order := make([]string, 0, topN)
+	byID := make(map[string]*acc)
+	bucketSet := make(map[time.Time]struct{})
+
+	for rows.Next() {
+		var (
+			identity, login, email string
+			isAgent                bool
+			bkt                    time.Time
+			n, total               int
+		)
+		if err := rows.Scan(&identity, &login, &email, &isAgent, &bkt, &n, &total); err != nil {
+			return nil, fmt.Errorf("store: scan commits-by-contributor row: %w", err)
+		}
+		a := byID[identity]
+		if a == nil {
+			a = &acc{
+				series: ContributorSeries{Login: login, Email: email, Name: login, IsAgent: isAgent},
+				total:  total,
+				counts: map[time.Time]int{},
+			}
+			byID[identity] = a
+			order = append(order, identity)
+		}
+		a.counts[bkt] = n
+		bucketSet[bkt] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: analytics commits-by-contributor rows: %w", err)
+	}
+
+	// Optionally collect the "everyone else" aggregate (all identities NOT in the
+	// top-N) so the chart can show a single residual line.
+	var other *acc
+	if includeOther {
+		oq := fmt.Sprintf(`
+			WITH scoped AS (
+				SELECT
+					COALESCE(NULLIF(lower(c.author_email::text),''),
+					         NULLIF(lower(c.author_login),'')) AS identity,
+					date_trunc('%s', c.committed_at)::date AS bucket
+				FROM commits c
+				WHERE true%s
+			),
+			ranked AS (
+				SELECT identity, COUNT(*) AS total
+				FROM scoped
+				WHERE identity IS NOT NULL
+				GROUP BY identity
+				ORDER BY total DESC, identity ASC
+				LIMIT $%d
+			)
+			SELECT bucket, COUNT(*) AS n
+			FROM scoped
+			WHERE identity IS NOT NULL
+			  AND identity NOT IN (SELECT identity FROM ranked)
+			GROUP BY bucket
+			ORDER BY bucket`, trunc, where, len(args)+1)
+		orows, err := tx.Query(ctx, oq, rankArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("store: analytics commits-by-contributor (other): %w", err)
+		}
+		defer orows.Close()
+		o := &acc{
+			series: ContributorSeries{Login: "Everyone else", Name: "Everyone else"},
+			counts: map[time.Time]int{},
+		}
+		for orows.Next() {
+			var bkt time.Time
+			var n int
+			if err := orows.Scan(&bkt, &n); err != nil {
+				return nil, fmt.Errorf("store: scan commits-by-contributor (other) row: %w", err)
+			}
+			o.counts[bkt] = n
+			o.total += n
+			bucketSet[bkt] = struct{}{}
+		}
+		if err := orows.Err(); err != nil {
+			return nil, fmt.Errorf("store: analytics commits-by-contributor (other) rows: %w", err)
+		}
+		if o.total > 0 {
+			other = o
+		}
+	}
+
+	// Sorted, deduplicated bucket axis shared by every series.
+	buckets := make([]time.Time, 0, len(bucketSet))
+	for b := range bucketSet {
+		buckets = append(buckets, b)
+	}
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Before(buckets[j]) })
+
+	fill := func(a *acc) ContributorSeries {
+		s := a.series
+		s.Points = make([]DayCount, len(buckets))
+		for i, b := range buckets {
+			s.Points[i] = DayCount{Date: b, Count: a.counts[b]}
+		}
+		return s
+	}
+
+	out := make([]ContributorSeries, 0, len(order)+1)
+	for _, id := range order {
+		out = append(out, fill(byID[id]))
+	}
+	if other != nil {
+		out = append(out, fill(other))
 	}
 	return out, nil
 }

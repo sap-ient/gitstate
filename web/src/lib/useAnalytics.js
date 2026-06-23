@@ -8,6 +8,7 @@
  *   useSummary(filters)          → { data, loading, error, refetch }
  *   useHeatmap(filters)          → { data, loading, error, refetch }   data: [{date,count}]
  *   useCommitsOverTime(filters, bucket) → { data, loading, error, refetch }  data: [{date,count}]
+ *   useCommitsByContributor(filters, bucket, top, other) → { ... }  data: [{login,...,points:[{date,count}]}]
  *   useContributors(filters)     → { data, loading, error, refetch }   data: [{login,...}]
  *   useRepoStats(filters)        → { data, loading, error, refetch }   data: [{repoId,...}]
  *   usePullRequests(filters)     → { data, loading, error, refetch }   data: {total,merged,...,throughput:[]}
@@ -105,6 +106,20 @@ export function useCommitsOverTime(filters = {}, bucket = 'day') {
 
 export function useContributors(filters = {}) {
   return useAnalyticsResource('contributors', filters, [], asArray)
+}
+
+/**
+ * Per-contributor commit timeline: the top-N contributors as separate 0-filled
+ * series sharing a bucket axis. data: [{login,email,name,isAgent,points:[{date,count}]}]
+ * @param {object} filters shared filter object
+ * @param {string} bucket  day|week|month (same auto-bucket as commits-over-time)
+ * @param {number} top     top-N contributors (default 5)
+ * @param {boolean} other  append an "Everyone else" aggregate line
+ */
+export function useCommitsByContributor(filters = {}, bucket = 'day', top = 5, other = false) {
+  return useAnalyticsResource('commits-by-contributor', filters, [], asArray, {
+    bucket, top, other: other ? 1 : undefined,
+  })
 }
 
 export function useRepoStats(filters = {}) {

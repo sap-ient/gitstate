@@ -13,7 +13,7 @@
  */
 import { useState, useMemo, useRef, useLayoutEffect } from 'react'
 import {
-  useSummary, useHeatmap, useCommitsOverTime,
+  useSummary, useHeatmap, useCommitsOverTime, useCommitsByContributor,
   useContributors, useRepoStats, useDayCommits,
   usePullRequests, useIssueFlow, useAgentShare, useProjects,
 } from '../lib/useAnalytics.js'
@@ -520,14 +520,39 @@ function autoBucket(filters) {
   return 'month'
 }
 
+// Display name for a contributor series — prefer name/login, else the email
+// local-part, else a short fallback so the legend never shows a blank swatch.
+function seriesLabel(s) {
+  const raw = s?.name || s?.login || ''
+  if (raw && raw !== 'Everyone else') return raw
+  if (raw === 'Everyone else') return raw
+  const email = s?.email || ''
+  if (email) return email.split('@')[0]
+  return 'unknown'
+}
+
+const xLabelFor = (bucket) => (p) => bucket === 'month'
+  ? fmtDate(p.x, { month: 'short', year: '2-digit' })
+  : bucket === 'week'
+    ? fmtDate(p.x, { month: 'short', day: 'numeric', year: '2-digit' })
+    : fmtDate(p.x, { month: 'short', day: 'numeric' })
+
 function CommitsOverTime({ filters }) {
   // 'auto' follows the range width (day/week/month); the explicit toggles let the
   // user override. Reset to auto whenever the range changes so a wide "All time"
   // window doesn't stay stuck on daily.
   const [bucketMode, setBucketMode] = useState('auto')
+  // 'total' = one aggregate line (legacy); 'contributor' = the top-5 multi-line.
+  const [mode, setMode] = useState('total')
   const resolvedBucket = bucketMode === 'auto' ? autoBucket(filters) : bucketMode
-  const { data, loading } = useCommitsOverTime(filters, resolvedBucket)
   const bucket = resolvedBucket
+
+  const { data, loading } = useCommitsOverTime(filters, resolvedBucket)
+  // Only fetch the per-contributor series while that mode is active (cheap when
+  // hidden). Same range + auto-bucket as the aggregate so the lines align.
+  const { data: contribData, loading: contribLoading } = useCommitsByContributor(
+    filters, resolvedBucket, 5, false,
+  )
 
   const points = useMemo(() => (data || []).filter(d => d?.date), [data])
   const total = useMemo(() => points.reduce((a, p) => a + (p.count || 0), 0), [points])
@@ -536,9 +561,22 @@ function CommitsOverTime({ filters }) {
     [points],
   )
 
+  // Build multi-series for the LineChart: one series per top contributor, each
+  // already 0-filled to a shared bucket axis by the backend.
+  const contribSeries = useMemo(
+    () => (contribData || []).map(s => ({
+      name: seriesLabel(s),
+      points: (s.points || []).map(p => ({ x: p.date, y: p.count || 0, raw: p })),
+    })),
+    [contribData],
+  )
+
+  const showContrib = mode === 'contributor'
+  const busy = showContrib ? contribLoading : loading
+
   return (
     <Card padding="lg">
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
         <div className="flex items-center gap-2.5">
           <span className="grid place-items-center w-7 h-7 rounded-[6px] shrink-0" style={{ color: 'var(--chart-1)', background: 'color-mix(in srgb, var(--chart-1) 14%, transparent)' }}>
             <Activity size={15} />
@@ -546,33 +584,64 @@ function CommitsOverTime({ filters }) {
           <div>
             <h2 className="text-sm font-semibold text-[var(--text)]">Commits over time</h2>
             <p className="text-xs text-[var(--text-faint)] mt-0.5">
-              {fmtNum(total)} commits, bucketed by {bucket}{bucketMode === 'auto' ? ' (auto)' : ''}
+              {showContrib
+                ? `Top ${contribSeries.length} contributors, bucketed by ${bucket}${bucketMode === 'auto' ? ' (auto)' : ''}`
+                : `${fmtNum(total)} commits, bucketed by ${bucket}${bucketMode === 'auto' ? ' (auto)' : ''}`}
             </p>
           </div>
         </div>
-        <div className="inline-flex items-center rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-0.5">
-          {['auto', 'day', 'week', 'month'].map(b => {
-            // In auto mode, highlight the resolved bucket too so the user sees
-            // which granularity is being shown.
-            const active = bucketMode === b || (b === 'auto' && bucketMode === 'auto')
-            return (
+        <div className="flex items-center gap-2">
+          {/* Total vs By-contributor */}
+          <div className="inline-flex items-center rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-0.5">
+            {[['total', 'Total'], ['contributor', 'By contributor']].map(([k, label]) => (
               <button
-                key={b}
-                onClick={() => setBucketMode(b)}
+                key={k}
+                onClick={() => setMode(k)}
                 className={[
-                  'px-3 py-1 text-[11px] font-mono font-medium rounded-[6px] transition-colors capitalize',
-                  active ? 'bg-[#2DD4BF]/15 text-[#2DD4BF]' : 'text-[var(--text-faint)] hover:text-[var(--text-dim)]',
+                  'px-3 py-1 text-[11px] font-mono font-medium rounded-[6px] transition-colors',
+                  mode === k ? 'bg-[#2DD4BF]/15 text-[#2DD4BF]' : 'text-[var(--text-faint)] hover:text-[var(--text-dim)]',
                 ].join(' ')}
               >
-                {b}
+                {label}
               </button>
-            )
-          })}
+            ))}
+          </div>
+          {/* bucket granularity */}
+          <div className="inline-flex items-center rounded-[var(--radius-btn)] border border-[var(--border)] bg-[var(--bg)] p-0.5">
+            {['auto', 'day', 'week', 'month'].map(b => {
+              const active = bucketMode === b || (b === 'auto' && bucketMode === 'auto')
+              return (
+                <button
+                  key={b}
+                  onClick={() => setBucketMode(b)}
+                  className={[
+                    'px-3 py-1 text-[11px] font-mono font-medium rounded-[6px] transition-colors capitalize',
+                    active ? 'bg-[#2DD4BF]/15 text-[#2DD4BF]' : 'text-[var(--text-faint)] hover:text-[var(--text-dim)]',
+                  ].join(' ')}
+                >
+                  {b}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
 
-      {loading ? (
+      {busy ? (
         <div className="h-[220px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
+      ) : showContrib ? (
+        <div className="overflow-x-auto">
+          <LineChart
+            series={contribSeries}
+            width={760}
+            height={240}
+            fill={false}
+            xLabel={xLabelFor(bucket)}
+            yLabel={v => fmtNum(Math.round(v))}
+            emptyIcon={<Users size={22} className="text-[var(--text-faint)]" />}
+            emptyText="No contributor activity in this range."
+          />
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <LineChart
@@ -580,11 +649,7 @@ function CommitsOverTime({ filters }) {
             width={760}
             height={220}
             color="var(--chart-1)"
-            xLabel={p => bucket === 'month'
-              ? fmtDate(p.x, { month: 'short', year: '2-digit' })
-              : bucket === 'week'
-                ? fmtDate(p.x, { month: 'short', day: 'numeric', year: '2-digit' })
-                : fmtDate(p.x, { month: 'short', day: 'numeric' })}
+            xLabel={xLabelFor(bucket)}
             yLabel={v => fmtNum(Math.round(v))}
             tooltip={p => `${fmtDate(p.x)} · ${p.y} commit${p.y === 1 ? '' : 's'}`}
             emptyIcon={<Activity size={22} className="text-[var(--text-faint)]" />}

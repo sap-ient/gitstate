@@ -499,6 +499,175 @@ func TestAnalyticsAggregates(t *testing.T) {
 		prs.Total, prs.Merged, share.AgentCommits, share.HumanCommits)
 }
 
+// TestCommitsByContributor verifies the per-contributor over-time series:
+// top-N ranking by total commits, identity-merge by email, 0-filled shared
+// bucket axis, and the optional "Everyone else" aggregate line.
+func TestCommitsByContributor(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping commits-by-contributor integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	defer pool.Close()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO organizations (slug, name) VALUES ($1, $2) RETURNING id`,
+		fmt.Sprintf("cbc-test-%d", time.Now().UnixNano()), "CBC Test Org",
+	).Scan(&orgID); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_org', $1, true)", orgID); err != nil {
+		t.Fatalf("set org: %v", err)
+	}
+	var repoID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO repos (org_id, platform, external_id, full_name)
+		 VALUES ($1, 'github', $2, 'acme/series') RETURNING id`,
+		orgID, fmt.Sprintf("cbc-repo-%d", time.Now().UnixNano()),
+	).Scan(&repoID); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	// Three authors across three distinct weeks so weekly bucketing yields a
+	// 3-bucket shared x-axis and each author has a "hole" to be 0-filled.
+	//   wk0 (Mar  2): jane x3, bob x1
+	//   wk1 (Mar  9): jane x2, carol x1
+	//   wk2 (Mar 16): bob  x2
+	// totals: jane=5, bob=3, carol=1.
+	wk0 := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC) // a Monday
+	wk1 := wk0.AddDate(0, 0, 7)
+	wk2 := wk0.AddDate(0, 0, 14)
+	type fix struct {
+		sha, login, email string
+		at                time.Time
+	}
+	fixtures := []fix{
+		{"c1", "jane", "jane@work", wk0}, {"c2", "jane", "jane@work", wk0.Add(time.Hour)}, {"c3", "jane", "jane@work", wk0.Add(2 * time.Hour)},
+		{"c4", "bob", "bob@work", wk0},
+		{"c5", "jane", "jane@work", wk1}, {"c6", "jane", "jane@work", wk1.Add(time.Hour)},
+		{"c7", "carol", "carol@work", wk1},
+		{"c8", "bob", "bob@work", wk2}, {"c9", "bob", "bob@work", wk2.Add(time.Hour)},
+	}
+	for _, f := range fixtures {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO commits (org_id, repo_id, sha, author_login, author_email,
+			 is_agent, message, additions, deletions, committed_at)
+			 VALUES ($1,$2,$3,$4,$5,false,$6,1,0,$7)`,
+			orgID, repoID, f.sha, f.login, f.email, "msg "+f.sha, f.at,
+		); err != nil {
+			t.Fatalf("insert commit %s: %v", f.sha, err)
+		}
+	}
+
+	filter := AnalyticsFilter{
+		From: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	// top-2, no "other": jane then bob, each 0-filled to the 3-week axis.
+	series, err := filter.CommitsByContributor(ctx, tx, "week", 2, false)
+	if err != nil {
+		t.Fatalf("CommitsByContributor: %v", err)
+	}
+	if len(series) != 2 {
+		t.Fatalf("series = %d, want 2 (top-2)", len(series))
+	}
+	if series[0].Email != "jane@work" {
+		t.Errorf("series[0].Email = %q, want jane@work (top contributor)", series[0].Email)
+	}
+	if series[1].Email != "bob@work" {
+		t.Errorf("series[1].Email = %q, want bob@work (2nd)", series[1].Email)
+	}
+	// Shared, aligned 3-bucket axis for every series.
+	if len(series[0].Points) != 3 || len(series[1].Points) != 3 {
+		t.Fatalf("points = (%d,%d), want both 3 (shared axis)", len(series[0].Points), len(series[1].Points))
+	}
+	for i := range series[0].Points {
+		if !series[0].Points[i].Date.Equal(series[1].Points[i].Date) {
+			t.Errorf("axis mismatch at %d: %v vs %v", i, series[0].Points[i].Date, series[1].Points[i].Date)
+		}
+	}
+	// jane: [3,2,0]; bob: [1,0,2] (the 0s are the 0-fill).
+	wantJane := []int{3, 2, 0}
+	wantBob := []int{1, 0, 2}
+	for i, w := range wantJane {
+		if series[0].Points[i].Count != w {
+			t.Errorf("jane point[%d] = %d, want %d", i, series[0].Points[i].Count, w)
+		}
+	}
+	for i, w := range wantBob {
+		if series[1].Points[i].Count != w {
+			t.Errorf("bob point[%d] = %d, want %d", i, series[1].Points[i].Count, w)
+		}
+	}
+	janeTotal := 0
+	for _, p := range series[0].Points {
+		janeTotal += p.Count
+	}
+	if janeTotal != 5 {
+		t.Errorf("jane total = %d, want 5", janeTotal)
+	}
+
+	// top-2 WITH "other": carol (the only non-top-2 contributor) collapses into
+	// a single "Everyone else" line with total 1, also 0-filled to 3 buckets.
+	withOther, err := filter.CommitsByContributor(ctx, tx, "week", 2, true)
+	if err != nil {
+		t.Fatalf("CommitsByContributor(other): %v", err)
+	}
+	if len(withOther) != 3 {
+		t.Fatalf("series with other = %d, want 3 (top-2 + everyone else)", len(withOther))
+	}
+	other := withOther[2]
+	if other.Name != "Everyone else" {
+		t.Errorf("other.Name = %q, want \"Everyone else\"", other.Name)
+	}
+	if len(other.Points) != 3 {
+		t.Fatalf("other points = %d, want 3", len(other.Points))
+	}
+	otherTotal := 0
+	for _, p := range other.Points {
+		otherTotal += p.Count
+	}
+	if otherTotal != 1 {
+		t.Errorf("everyone-else total = %d, want 1 (carol)", otherTotal)
+	}
+
+	// top-5 (more than the 3 distinct authors) → exactly 3 series, no "other".
+	all, err := filter.CommitsByContributor(ctx, tx, "week", 5, true)
+	if err != nil {
+		t.Fatalf("CommitsByContributor(top5): %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("top-5 over 3 authors = %d series, want 3 (no everyone-else)", len(all))
+	}
+
+	t.Logf("commits-by-contributor OK: top series jane=%d bob=%d, %d buckets",
+		janeTotal, func() int {
+			n := 0
+			for _, p := range series[1].Points {
+				n += p.Count
+			}
+			return n
+		}(), len(series[0].Points))
+}
+
 // TestUpsertPlatformDates verifies that UpsertPR and UpsertIssue persist the REAL
 // platform created_at / updated_at — NOT the sync time (DB default now()). This is
 // the regression for "pull requests date dont seem to be date of pull request":

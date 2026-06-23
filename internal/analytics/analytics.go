@@ -326,6 +326,27 @@ func (s *Service) CommitsOverTime(ctx context.Context, orgID string, f Filter, b
 	return out, nil
 }
 
+// CommitsByContributor returns a per-contributor commit-count timeline for the
+// top-N contributors over the window, bucketed by day/week/month. Each series is
+// 0-filled across the shared bucket axis so the lines align. topN defaults to 5
+// when non-positive; includeOther appends an "Everyone else" aggregate line.
+func (s *Service) CommitsByContributor(ctx context.Context, orgID string, f Filter, bucket string, topN int, includeOther bool) ([]store.ContributorSeries, error) {
+	sf := f.toStoreFilter()
+	b := NormalizeBucket(bucket)
+	if topN <= 0 {
+		topN = 5
+	}
+	var out []store.ContributorSeries
+	if err := s.db.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var err error
+		out, err = sf.CommitsByContributor(ctx, tx, b, topN, includeOther)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("analytics.CommitsByContributor: %w", err)
+	}
+	return out, nil
+}
+
 // Contributors returns the leaderboard for the window.
 func (s *Service) Contributors(ctx context.Context, orgID string, f Filter) ([]store.Contributor, error) {
 	sf := f.toStoreFilter()

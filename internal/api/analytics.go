@@ -12,6 +12,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 //	GET /api/analytics/summary             → totals + averages
 //	GET /api/analytics/heatmap             → []{date, count} per calendar day
 //	GET /api/analytics/commits-over-time   → []{date, count} (?bucket=day|week)
+//	GET /api/analytics/commits-by-contributor → []{login,email,name,isAgent,points:[{date,count}]} top-N series (?bucket&top&other)
 //	GET /api/analytics/contributors        → leaderboard
 //	GET /api/analytics/repos               → per-repo table
 //	GET /api/analytics/pull-requests       → PR totals, merge-rate, lead-time, throughput
@@ -48,6 +50,7 @@ func RegisterAnalyticsRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Co
 	mux.Handle("GET /api/analytics/summary", auth(http.HandlerFunc(h.summary)))
 	mux.Handle("GET /api/analytics/heatmap", auth(http.HandlerFunc(h.heatmap)))
 	mux.Handle("GET /api/analytics/commits-over-time", auth(http.HandlerFunc(h.commitsOverTime)))
+	mux.Handle("GET /api/analytics/commits-by-contributor", auth(http.HandlerFunc(h.commitsByContributor)))
 	mux.Handle("GET /api/analytics/contributors", auth(http.HandlerFunc(h.contributors)))
 	mux.Handle("GET /api/analytics/repos", auth(http.HandlerFunc(h.repos)))
 	mux.Handle("GET /api/analytics/pull-requests", auth(http.HandlerFunc(h.pullRequests)))
@@ -132,6 +135,35 @@ func (h *analyticsHandlers) commitsOverTime(w http.ResponseWriter, r *http.Reque
 	res, err := h.svc.CommitsOverTime(r.Context(), orgID, f, r.URL.Query().Get("bucket"))
 	if err != nil {
 		writeAnalyticsError(w, "compute commits-over-time", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, emptySlice(res))
+}
+
+// GET /api/analytics/commits-by-contributor?bucket=day|week|month&top=5&other=1
+// Returns one commit-count series per top-N contributor (0-filled to a shared
+// bucket axis), ordered by total commits descending. `other=1` appends an
+// aggregate "Everyone else" series.
+func (h *analyticsHandlers) commitsByContributor(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	f, ok := h.parseFilter(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	topN := 5
+	if v := strings.TrimSpace(q.Get("top")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			if n > 20 {
+				n = 20 // cap so the palette + payload stay sane
+			}
+			topN = n
+		}
+	}
+	includeOther := q.Get("other") == "1" || strings.EqualFold(q.Get("other"), "true")
+	res, err := h.svc.CommitsByContributor(r.Context(), orgID, f, q.Get("bucket"), topN, includeOther)
+	if err != nil {
+		writeAnalyticsError(w, "compute commits-by-contributor", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, emptySlice(res))
