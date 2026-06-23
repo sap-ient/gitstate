@@ -13,6 +13,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	gogithub "github.com/google/go-github/v66/github"
@@ -47,6 +48,30 @@ type RemotePR struct {
 	ChangedFiles int
 	MergedAt     *time.Time
 	CreatedAt    time.Time
+	// FirstCommitAt is the author/commit date of the EARLIEST commit on the PR
+	// branch. It is the start of the DORA lead time (first commit → merged_at)
+	// computed by metrics.ComputeCycleTimes; zero when the PR has no commits.
+	FirstCommitAt time.Time
+}
+
+// RemoteReview is a normalised PR/MR review event fetched from a platform.
+// On GitHub it maps to a PullRequest review; on GitLab it is approximated from
+// approvals + reviewer notes (GitLab has no first-class "review" object).
+type RemoteReview struct {
+	ReviewerLogin string
+	State         string // "approved" | "changes_requested" | "commented" | "dismissed"
+	SubmittedAt   time.Time
+	ExternalID    string // platform review id (idempotency); may be empty
+}
+
+// RemoteDeployment is a normalised CI/CD deployment fetched from a platform.
+// It feeds the deployments table → DORA deploy frequency + change-failure rate.
+type RemoteDeployment struct {
+	ExternalID  string
+	Environment string
+	Status      string // "success" | "failure"
+	SHA         string
+	DeployedAt  time.Time
 }
 
 // RemoteRepo is a normalised repository record from a platform.
@@ -72,7 +97,16 @@ type Provider interface {
 	ListIssues(ctx context.Context, fullName string) ([]RemoteIssue, error)
 
 	// ListPullRequests returns all PRs (open + merged + closed) for the repo.
+	// Each RemotePR carries FirstCommitAt (earliest commit on the branch) so the
+	// metrics layer can compute DORA lead time.
 	ListPullRequests(ctx context.Context, fullName string) ([]RemotePR, error)
+
+	// ListReviews returns the review events for one PR/MR number on the repo.
+	// GitHub: real PR reviews. GitLab: approvals + reviewer notes (approximation).
+	ListReviews(ctx context.Context, fullName string, prNumber int) ([]RemoteReview, error)
+
+	// ListDeployments returns the CI/CD deployments for the repo (newest-first ok).
+	ListDeployments(ctx context.Context, fullName string) ([]RemoteDeployment, error)
 
 	// UpdateIssueState writes an issue state change back to the platform.
 	// state should be "open" or "closed"; platforms may reject other values.
@@ -249,7 +283,125 @@ func (g *githubProvider) ListPullRequests(ctx context.Context, fullName string) 
 			default:
 				rpr.State = "open"
 			}
+			// DORA lead time starts at the FIRST commit on the branch. Best-effort:
+			// a commits-fetch failure leaves FirstCommitAt zero (cycle time for this
+			// PR is simply skipped) but never aborts the PR list.
+			if first, ferr := g.firstCommitAt(ctx, owner, name, pr.GetNumber()); ferr == nil && !first.IsZero() {
+				rpr.FirstCommitAt = first
+			}
 			out = append(out, rpr)
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+// firstCommitAt returns the earliest author/commit date among a PR's commits.
+func (g *githubProvider) firstCommitAt(ctx context.Context, owner, name string, number int) (time.Time, error) {
+	opts := &gogithub.ListOptions{PerPage: 100}
+	var earliest time.Time
+	for {
+		commits, resp, err := g.client.PullRequests.ListCommits(ctx, owner, name, number, opts)
+		if err != nil {
+			return time.Time{}, err
+		}
+		for _, c := range commits {
+			t := commitTime(c)
+			if t.IsZero() {
+				continue
+			}
+			if earliest.IsZero() || t.Before(earliest) {
+				earliest = t
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return earliest, nil
+}
+
+// commitTime extracts the author date (falling back to committer date) of a
+// RepositoryCommit returned by the GitHub pulls API.
+func commitTime(c *gogithub.RepositoryCommit) time.Time {
+	if c == nil || c.Commit == nil {
+		return time.Time{}
+	}
+	if a := c.Commit.Author; a != nil && a.Date != nil {
+		return a.Date.Time
+	}
+	if cm := c.Commit.Committer; cm != nil && cm.Date != nil {
+		return cm.Date.Time
+	}
+	return time.Time{}
+}
+
+func (g *githubProvider) ListReviews(ctx context.Context, fullName string, prNumber int) ([]RemoteReview, error) {
+	owner, name, err := splitFullName(fullName)
+	if err != nil {
+		return nil, err
+	}
+	opts := &gogithub.ListOptions{PerPage: 100}
+	var out []RemoteReview
+	for {
+		reviews, resp, err := g.client.PullRequests.ListReviews(ctx, owner, name, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("github: list reviews %s#%d: %w", fullName, prNumber, err)
+		}
+		for _, rv := range reviews {
+			login := rv.GetUser().GetLogin()
+			if login == "" {
+				continue
+			}
+			out = append(out, RemoteReview{
+				ReviewerLogin: login,
+				State:         normaliseReviewState(rv.GetState()),
+				SubmittedAt:   rv.GetSubmittedAt().Time,
+				ExternalID:    fmt.Sprintf("%d", rv.GetID()),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+func (g *githubProvider) ListDeployments(ctx context.Context, fullName string) ([]RemoteDeployment, error) {
+	owner, name, err := splitFullName(fullName)
+	if err != nil {
+		return nil, err
+	}
+	opts := &gogithub.DeploymentsListOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
+	var out []RemoteDeployment
+	for {
+		deps, resp, err := g.client.Repositories.ListDeployments(ctx, owner, name, opts)
+		if err != nil {
+			return nil, fmt.Errorf("github: list deployments %s: %w", fullName, err)
+		}
+		for _, d := range deps {
+			rd := RemoteDeployment{
+				ExternalID:  fmt.Sprintf("%d", d.GetID()),
+				Environment: d.GetEnvironment(),
+				SHA:         d.GetSHA(),
+				Status:      "success", // default until a status says otherwise
+				DeployedAt:  d.GetCreatedAt().Time,
+			}
+			// The deployment object carries no terminal status — the latest
+			// deployment STATUS does. Best-effort: a status-fetch failure leaves the
+			// optimistic "success" default rather than dropping the deployment.
+			if statuses, _, serr := g.client.Repositories.ListDeploymentStatuses(ctx, owner, name, d.GetID(), &gogithub.ListOptions{PerPage: 1}); serr == nil && len(statuses) > 0 {
+				rd.Status = normaliseDeployStatus(statuses[0].GetState())
+				if t := statuses[0].GetUpdatedAt(); !t.Time.IsZero() {
+					rd.DeployedAt = t.Time
+				}
+			}
+			out = append(out, rd)
 		}
 		if resp.NextPage == 0 {
 			break
@@ -394,7 +546,151 @@ func (gl *gitlabProvider) ListPullRequests(ctx context.Context, fullName string)
 			default:
 				rpr.State = "open"
 			}
+			// DORA lead time starts at the MR's first commit. Best-effort.
+			if first, ferr := gl.firstCommitAt(ctx, fullName, mr.IID); ferr == nil && !first.IsZero() {
+				rpr.FirstCommitAt = first
+			}
 			out = append(out, rpr)
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+// firstCommitAt returns the earliest authored/committed date among an MR's commits.
+func (gl *gitlabProvider) firstCommitAt(ctx context.Context, fullName string, mrIID int64) (time.Time, error) {
+	opts := &gogitlab.GetMergeRequestCommitsOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
+	var earliest time.Time
+	for {
+		commits, resp, err := gl.client.MergeRequests.GetMergeRequestCommits(fullName, mrIID, opts, gogitlab.WithContext(ctx))
+		if err != nil {
+			return time.Time{}, err
+		}
+		for _, c := range commits {
+			var t time.Time
+			switch {
+			case c.AuthoredDate != nil:
+				t = *c.AuthoredDate
+			case c.CommittedDate != nil:
+				t = *c.CommittedDate
+			case c.CreatedAt != nil:
+				t = *c.CreatedAt
+			}
+			if t.IsZero() {
+				continue
+			}
+			if earliest.IsZero() || t.Before(earliest) {
+				earliest = t
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return earliest, nil
+}
+
+// ListReviews approximates GitLab reviews from (1) MR approvals and (2) review
+// notes/discussions left by users other than the author. GitLab has no
+// first-class review object, so approvals map to "approved" and non-author,
+// non-system notes map to "commented". Submission time uses the approval/note
+// timestamp where available, falling back to the MR's last-update time.
+func (gl *gitlabProvider) ListReviews(ctx context.Context, fullName string, prNumber int) ([]RemoteReview, error) {
+	mrIID := int64(prNumber)
+	var out []RemoteReview
+	// dedupe (login, state) so a reviewer who both approved and commented yields at
+	// most one row per state; the store's unique key further protects idempotency.
+	seen := map[string]bool{}
+
+	// (1) Approvals → "approved". The configuration endpoint returns approved_by +
+	// an updated_at we can use as the approval time.
+	if appr, _, err := gl.client.MergeRequestApprovals.GetConfiguration(fullName, mrIID, gogitlab.WithContext(ctx)); err == nil && appr != nil {
+		when := time.Now().UTC()
+		if appr.UpdatedAt != nil {
+			when = *appr.UpdatedAt
+		}
+		for _, a := range appr.ApprovedBy {
+			if a == nil || a.User == nil || a.User.Username == "" {
+				continue
+			}
+			key := a.User.Username + "|approved"
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, RemoteReview{
+				ReviewerLogin: a.User.Username,
+				State:         "approved",
+				SubmittedAt:   when,
+			})
+		}
+	}
+
+	// (2) Reviewer notes → "commented". Non-system notes authored by someone other
+	// than the MR author are review activity.
+	nopts := &gogitlab.ListMergeRequestNotesOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
+	for {
+		notes, resp, err := gl.client.Notes.ListMergeRequestNotes(fullName, mrIID, nopts, gogitlab.WithContext(ctx))
+		if err != nil {
+			break // best-effort: approvals may already have produced rows
+		}
+		for _, n := range notes {
+			if n == nil || n.System || n.Author.Username == "" {
+				continue
+			}
+			key := n.Author.Username + "|commented"
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			when := time.Now().UTC()
+			if n.CreatedAt != nil {
+				when = *n.CreatedAt
+			}
+			out = append(out, RemoteReview{
+				ReviewerLogin: n.Author.Username,
+				State:         "commented",
+				SubmittedAt:   when,
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		nopts.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+func (gl *gitlabProvider) ListDeployments(ctx context.Context, fullName string) ([]RemoteDeployment, error) {
+	opts := &gogitlab.ListProjectDeploymentsOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
+	var out []RemoteDeployment
+	for {
+		deps, resp, err := gl.client.Deployments.ListProjectDeployments(fullName, opts, gogitlab.WithContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("gitlab: list deployments %s: %w", fullName, err)
+		}
+		for _, d := range deps {
+			rd := RemoteDeployment{
+				ExternalID: fmt.Sprintf("%d", d.ID),
+				Status:     normaliseDeployStatus(d.Status),
+				SHA:        d.SHA,
+			}
+			if d.Environment != nil {
+				rd.Environment = d.Environment.Name
+			}
+			switch {
+			case d.Deployable.FinishedAt != nil:
+				rd.DeployedAt = *d.Deployable.FinishedAt
+			case d.UpdatedAt != nil:
+				rd.DeployedAt = *d.UpdatedAt
+			case d.CreatedAt != nil:
+				rd.DeployedAt = *d.CreatedAt
+			}
+			out = append(out, rd)
 		}
 		if resp.NextPage == 0 {
 			break
@@ -441,5 +737,36 @@ func normaliseState(s string) string {
 		return s
 	default:
 		return "open"
+	}
+}
+
+// normaliseReviewState maps a platform review state to the lowercase canonical
+// set used by the pr_reviews table: approved | changes_requested | commented |
+// dismissed. GitHub emits UPPER_CASE (APPROVED, CHANGES_REQUESTED, COMMENTED,
+// DISMISSED); unknown values fall back to "commented" (a review happened).
+func normaliseReviewState(s string) string {
+	switch strings.ToUpper(s) {
+	case "APPROVED":
+		return "approved"
+	case "CHANGES_REQUESTED":
+		return "changes_requested"
+	case "DISMISSED":
+		return "dismissed"
+	case "COMMENTED":
+		return "commented"
+	default:
+		return "commented"
+	}
+}
+
+// normaliseDeployStatus maps platform deployment/status strings to the
+// deployments.status set: "success" | "failure". Anything that is not an
+// explicit failure/error is treated as success (matches store.InsertDeployment).
+func normaliseDeployStatus(s string) string {
+	switch strings.ToLower(s) {
+	case "failure", "failed", "error", "canceled", "cancelled":
+		return "failure"
+	default:
+		return "success"
 	}
 }

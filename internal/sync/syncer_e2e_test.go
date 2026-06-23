@@ -16,14 +16,17 @@ import (
 
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
+	"github.com/exo/gitstate/internal/metrics"
 	"github.com/exo/gitstate/internal/store"
 	"github.com/jackc/pgx/v5"
 )
 
 // fakeProvider returns canned remote data so SyncRepo runs without network.
 type fakeProvider struct {
-	issues []RemoteIssue
-	prs    []RemotePR
+	issues  []RemoteIssue
+	prs     []RemotePR
+	reviews map[int][]RemoteReview // keyed by PR number
+	deploys []RemoteDeployment
 }
 
 func (f *fakeProvider) Platform() string { return "github" }
@@ -35,6 +38,12 @@ func (f *fakeProvider) ListIssues(context.Context, string) ([]RemoteIssue, error
 }
 func (f *fakeProvider) ListPullRequests(context.Context, string) ([]RemotePR, error) {
 	return f.prs, nil
+}
+func (f *fakeProvider) ListReviews(_ context.Context, _ string, prNumber int) ([]RemoteReview, error) {
+	return f.reviews[prNumber], nil
+}
+func (f *fakeProvider) ListDeployments(context.Context, string) ([]RemoteDeployment, error) {
+	return f.deploys, nil
 }
 func (f *fakeProvider) UpdateIssueState(context.Context, string, int, string) error {
 	return nil
@@ -78,13 +87,64 @@ func TestSyncRepoEndToEnd(t *testing.T) {
 	}
 
 	merged := time.Now().Add(-24 * time.Hour)
+	firstCommit := merged.Add(-48 * time.Hour) // lead time = firstCommit → merged
+	devEmail := fmt.Sprintf("dev-%d@example.com", ns)
+	reviewerEmail := fmt.Sprintf("reviewer-%d@example.com", ns)
+	prExtID := fmt.Sprintf("e2e-pr-%d", ns)
 	prov := &fakeProvider{
 		issues: []RemoteIssue{
 			{ExternalID: fmt.Sprintf("e2e-iss-%d", ns), Number: 4242, Title: "Fix the widget", Body: "broken", State: "open", Labels: []string{"bug"}},
+			// An incident-labelled, closed issue → derived incident (DORA MTTR input).
+			{ExternalID: fmt.Sprintf("e2e-inc-%d", ns), Number: 4243, Title: "API down", Body: "outage", State: "closed",
+				Labels: []string{"sev1"}, CreatedAt: merged.Add(-3 * time.Hour), UpdatedAt: merged.Add(-1 * time.Hour)},
 		},
 		prs: []RemotePR{
-			{ExternalID: fmt.Sprintf("e2e-pr-%d", ns), Number: 9001, Title: "Fix the widget (closes #4242)", Body: "closes #4242", State: "merged", AuthorLogin: "dev", Additions: 10, Deletions: 2, ChangedFiles: 3, MergedAt: &merged, CreatedAt: merged.Add(-2 * time.Hour)},
+			{ExternalID: prExtID, Number: 9001, Title: "Fix the widget (closes #4242)", Body: "closes #4242", State: "merged", AuthorLogin: "dev", Additions: 10, Deletions: 2, ChangedFiles: 3, MergedAt: &merged, CreatedAt: merged.Add(-2 * time.Hour), FirstCommitAt: firstCommit},
 		},
+		// reviewer (not the author) reviewed PR 9001 → reviews_done for reviewer.
+		// A self-review by "dev" must be skipped by the syncer.
+		reviews: map[int][]RemoteReview{
+			9001: {
+				{ReviewerLogin: "reviewer", State: "approved", SubmittedAt: merged.Add(-30 * time.Minute), ExternalID: "rv-1"},
+				{ReviewerLogin: "dev", State: "commented", SubmittedAt: merged.Add(-90 * time.Minute), ExternalID: "rv-self"},
+			},
+		},
+		deploys: []RemoteDeployment{
+			{ExternalID: fmt.Sprintf("e2e-dep-%d", ns), Environment: "production", Status: "success", SHA: "abc123", DeployedAt: merged},
+		},
+	}
+
+	// Seed users + commits so the commit-identity bridge (login→email→users) can
+	// resolve the PR author and the reviewer to real users rows. Without these,
+	// ComputeInvolvement has nothing to attribute features_shipped / reviews_done to.
+	var devUserID, reviewerUserID string
+	if err := database.Pool().QueryRow(ctx,
+		`INSERT INTO users (email, name) VALUES ($1,'Dev') RETURNING id`, devEmail).Scan(&devUserID); err != nil {
+		t.Fatalf("seed dev user: %v", err)
+	}
+	if err := database.Pool().QueryRow(ctx,
+		`INSERT INTO users (email, name) VALUES ($1,'Reviewer') RETURNING id`, reviewerEmail).Scan(&reviewerUserID); err != nil {
+		t.Fatalf("seed reviewer user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = database.Pool().Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`,
+			[]string{devUserID, reviewerUserID})
+	})
+	// Commits give us the login→email identity bridge. author_login matches the PR
+	// author_login / reviewer_login; author_email matches the seeded users.
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		for _, c := range []store.Commit{
+			{OrgID: orgID, RepoID: repoID, SHA: fmt.Sprintf("sha-dev-%d", ns), AuthorLogin: "dev", AuthorEmail: devEmail, Message: "x", Additions: 5, Deletions: 1, CommittedAt: firstCommit},
+			{OrgID: orgID, RepoID: repoID, SHA: fmt.Sprintf("sha-rev-%d", ns), AuthorLogin: "reviewer", AuthorEmail: reviewerEmail, Message: "y", Additions: 3, Deletions: 0, CommittedAt: firstCommit},
+		} {
+			cc := c
+			if err := store.UpsertCommit(ctx, tx, &cc); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed commits: %v", err)
 	}
 
 	var repo *store.Repo
@@ -148,8 +208,126 @@ func TestSyncRepoEndToEnd(t *testing.T) {
 		if embCount == 0 {
 			t.Error("no embedding for the synced issue — post-sync embed step did not run")
 		}
+
+		// 6. Gap A — Cycle Time: the PR carried FirstCommitAt, so first_commit_at
+		//    is set and ComputeCycleTimes (run in SyncRepo) produced a lead time.
+		var firstCommitAt *time.Time
+		if err := tx.QueryRow(ctx,
+			`SELECT first_commit_at FROM pull_requests WHERE org_id=$1 AND number=9001`, orgID).
+			Scan(&firstCommitAt); err != nil {
+			return err
+		}
+		if firstCommitAt == nil {
+			t.Error("first_commit_at not set — gap A (PR commits → cycle time) did not run")
+		}
+		var leadCount int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM cycle_times c
+			JOIN pull_requests p ON p.id = c.pr_id
+			WHERE c.org_id=$1 AND p.number=9001 AND c.lead_time_secs IS NOT NULL`, orgID).
+			Scan(&leadCount); err != nil {
+			return err
+		}
+		if leadCount == 0 {
+			t.Error("no cycle_time lead_time_secs — gap A did not populate Cycle Time")
+		}
+
+		// 7. Gap B — Reviews: the reviewer's review landed; the self-review by the
+		//    PR author ("dev") was skipped.
+		var reviewerRows, selfRows int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM pr_reviews WHERE org_id=$1 AND lower(reviewer_login)='reviewer'`, orgID).
+			Scan(&reviewerRows); err != nil {
+			return err
+		}
+		if reviewerRows != 1 {
+			t.Errorf("pr_reviews for reviewer = %d, want 1 (gap B)", reviewerRows)
+		}
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM pr_reviews WHERE org_id=$1 AND lower(reviewer_login)='dev'`, orgID).
+			Scan(&selfRows); err != nil {
+			return err
+		}
+		if selfRows != 0 {
+			t.Errorf("pr_reviews for self-reviewer 'dev' = %d, want 0 (self-reviews skipped)", selfRows)
+		}
+
+		// 8. Gap C — Deployment landed (DORA deploy frequency input).
+		var depCount int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM deployments WHERE org_id=$1 AND source='github_actions'`, orgID).
+			Scan(&depCount); err != nil {
+			return err
+		}
+		if depCount != 1 {
+			t.Errorf("deployments = %d, want 1 (gap C)", depCount)
+		}
+
+		// 9. Gap C — Incident derived from the sev1 closed issue, with resolved_at.
+		var incOpen, incResolved int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*), count(*) FILTER (WHERE resolved_at IS NOT NULL)
+			FROM incidents WHERE org_id=$1 AND severity='sev1'`, orgID).
+			Scan(&incOpen, &incResolved); err != nil {
+			return err
+		}
+		if incOpen != 1 {
+			t.Errorf("sev1 incidents = %d, want 1 (gap C derive-from-issues)", incOpen)
+		}
+		if incResolved != 1 {
+			t.Errorf("resolved sev1 incidents = %d, want 1 (closed issue → resolved incident)", incResolved)
+		}
 		return nil
 	}); err != nil {
 		t.Fatalf("side-effect verification: %v", err)
+	}
+
+	// Gap B end-to-end: ComputeInvolvement must now read reviews_done from
+	// pr_reviews. Compute for the calendar month containing the review.
+	period := time.Date(merged.Year(), merged.Month(), 1, 0, 0, 0, 0, time.UTC)
+	svc := metrics.New(database, nil)
+	if err := svc.ComputeInvolvement(ctx, orgID, period); err != nil {
+		t.Fatalf("ComputeInvolvement: %v", err)
+	}
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		// reviewer's involvement row should show reviews_done = 1 (one distinct PR).
+		var reviewsDone int
+		if err := tx.QueryRow(ctx,
+			`SELECT reviews_done FROM involvement WHERE org_id=$1 AND user_id=$2 AND period_start=$3`,
+			orgID, reviewerUserID, period).Scan(&reviewsDone); err != nil {
+			return fmt.Errorf("reviewer involvement row missing: %w", err)
+		}
+		if reviewsDone != 1 {
+			t.Errorf("reviewer reviews_done = %d, want 1 (gap B — distinct PRs reviewed)", reviewsDone)
+		}
+		// The PR author shipped a merged PR → features_shipped >= 1.
+		var featuresShipped int
+		if err := tx.QueryRow(ctx,
+			`SELECT features_shipped FROM involvement WHERE org_id=$1 AND user_id=$2 AND period_start=$3`,
+			orgID, devUserID, period).Scan(&featuresShipped); err != nil {
+			return fmt.Errorf("dev involvement row missing: %w", err)
+		}
+		if featuresShipped < 1 {
+			t.Errorf("dev features_shipped = %d, want >= 1", featuresShipped)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("involvement verification: %v", err)
+	}
+
+	// Gap C end-to-end: DORA deploy frequency reads DeploymentStatsForWindow.
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		from := merged.Add(-7 * 24 * time.Hour)
+		to := merged.Add(24 * time.Hour)
+		st, err := store.DeploymentStatsForWindow(ctx, tx, orgID, from, to)
+		if err != nil {
+			return err
+		}
+		if st.Total != 1 {
+			t.Errorf("DeploymentStats.Total = %d, want 1 (gap C — DORA deploy frequency)", st.Total)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("DORA deployment verification: %v", err)
 	}
 }

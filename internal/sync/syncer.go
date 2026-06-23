@@ -190,6 +190,23 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 		log.Error("sync: upsert prs tx", "err", err)
 	}
 
+	// ── 2.5. Fetch + store PR reviews (Involvement: reviews_done) ─────────────
+	// One API call per PR (ListReviews), so this loops over the just-synced PRs.
+	// Self-reviews (reviewer == PR author) are skipped — they are not "the
+	// invisible senior work" Involvement credits. All best-effort: a fetch/store
+	// failure logs and continues; it must never fail the sync.
+	syncPRReviews(ctx, database, provider, orgID, repo, remotePRs, log)
+
+	// ── 2.6. Fetch + store deployments (DORA: deploy frequency / CFR) ─────────
+	// Idempotent on (org_id, source, external_id) via store.InsertDeployment's
+	// ON CONFLICT, so re-syncs do not double-count. Best-effort.
+	syncDeployments(ctx, database, provider, orgID, repo, log)
+
+	// ── 2.7. Derive incidents from synced issues (DORA: MTTR) ─────────────────
+	// GitHub/GitLab have no native incidents — derive them HONESTLY from issues
+	// whose labels mark them as an incident/outage/sevN. Best-effort.
+	syncIncidentsFromIssues(ctx, database, orgID, repo, remoteIssues, log)
+
 	// ── 3. Apply derived_state from linked PRs (auto-progress) ───────────────
 	if len(issueProgress) > 0 {
 		issues, err := store.ListIssuesByRepo(ctx, database.Pool(), orgID, repo.ID)
@@ -281,6 +298,9 @@ func remotePRtoPullRequest(orgID, repoID, platform string, rpr RemotePR) *store.
 	if rpr.MergedAt != nil {
 		pr.MergedAt = *rpr.MergedAt
 	}
+	if !rpr.FirstCommitAt.IsZero() {
+		pr.FirstCommitAt = rpr.FirstCommitAt
+	}
 	return pr
 }
 
@@ -301,6 +321,209 @@ func parseIssueRefs(text string) []int {
 		}
 	}
 	return out
+}
+
+// syncPRReviews fetches reviews for each synced PR and stores them mapped to the
+// PR's internal id. Reviews authored by the PR author (self-reviews) are skipped.
+// Wholly best-effort: every failure logs and continues.
+func syncPRReviews(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, remotePRs []RemotePR, log *slog.Logger) {
+	stored := 0
+	for _, rpr := range remotePRs {
+		reviews, err := provider.ListReviews(ctx, repo.FullName, rpr.Number)
+		if err != nil {
+			log.Error("sync: list reviews", "pr_number", rpr.Number, "err", err)
+			continue
+		}
+		if len(reviews) == 0 {
+			continue
+		}
+		if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+			// Resolve this PR's internal UUID (UpsertPR keys on external_id). Read
+			// inside the org-scoped tx so FORCE-RLS permits it (a bare-pool lookup
+			// returns no rows here).
+			var prID string
+			if err := tx.QueryRow(ctx,
+				`SELECT id FROM pull_requests WHERE org_id=$1 AND repo_id=$2 AND external_id=$3`,
+				orgID, repo.ID, rpr.ExternalID).Scan(&prID); err != nil {
+				return fmt.Errorf("resolve pr %s: %w", rpr.ExternalID, err)
+			}
+			for _, rv := range reviews {
+				// Skip self-reviews: a reviewer who is the PR author is not doing the
+				// invisible review work Involvement credits.
+				if strings.EqualFold(rv.ReviewerLogin, rpr.AuthorLogin) {
+					continue
+				}
+				if rv.ReviewerLogin == "" {
+					continue
+				}
+				if err := store.UpsertPRReview(ctx, tx, store.PRReviewInput{
+					OrgID:         orgID,
+					RepoID:        repo.ID,
+					PRID:          prID,
+					ReviewerLogin: rv.ReviewerLogin,
+					State:         rv.State,
+					ExternalID:    rv.ExternalID,
+					SubmittedAt:   rv.SubmittedAt,
+				}); err != nil {
+					log.Error("sync: upsert review", "pr_id", prID, "reviewer", rv.ReviewerLogin, "err", err)
+					continue
+				}
+				stored++
+			}
+			return nil
+		}); err != nil {
+			log.Error("sync: store reviews tx", "pr_number", rpr.Number, "err", err)
+		}
+	}
+	if stored > 0 {
+		log.Info("sync: pr reviews stored", "count", stored)
+	}
+}
+
+// syncDeployments fetches CI/CD deployments for the repo and stores them
+// idempotently (ON CONFLICT on (org_id, source, external_id)). Best-effort.
+func syncDeployments(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, log *slog.Logger) {
+	deps, err := provider.ListDeployments(ctx, repo.FullName)
+	if err != nil {
+		log.Error("sync: list deployments", "err", err)
+		return
+	}
+	if len(deps) == 0 {
+		return
+	}
+	source := "manual"
+	switch provider.Platform() {
+	case "github":
+		source = "github_actions"
+	case "gitlab":
+		source = "gitlab_ci"
+	}
+	stored := 0
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		for _, d := range deps {
+			if _, err := store.InsertDeployment(ctx, tx, store.DeploymentInput{
+				OrgID:       orgID,
+				RepoID:      repo.ID,
+				Environment: d.Environment,
+				Status:      d.Status,
+				SHA:         d.SHA,
+				Source:      source,
+				ExternalID:  d.ExternalID,
+				DeployedAt:  d.DeployedAt,
+			}); err != nil {
+				log.Error("sync: insert deployment", "external_id", d.ExternalID, "err", err)
+				continue
+			}
+			stored++
+		}
+		return nil
+	}); err != nil {
+		log.Error("sync: store deployments tx", "err", err)
+	}
+	if stored > 0 {
+		log.Info("sync: deployments stored", "count", stored)
+	}
+}
+
+// incidentLabelRe / incidentSeverity classify an issue's labels as an incident.
+var (
+	incidentLabelRe = regexp.MustCompile(`(?i)^(incident|outage|sev[-_ ]?[12]|severity[:\-_/].+)$`)
+	severityLabelRe = regexp.MustCompile(`(?i)^(?:sev[-_ ]?([12])|severity[:\-_/](.+))$`)
+)
+
+// incidentFromLabels reports whether the labels mark an issue as an incident and,
+// if so, the derived severity (e.g. "sev1", "sev2", or the severity:* value).
+func incidentFromLabels(labels []string) (bool, string) {
+	isIncident := false
+	severity := ""
+	for _, l := range labels {
+		t := strings.TrimSpace(l)
+		if !incidentLabelRe.MatchString(t) {
+			continue
+		}
+		isIncident = true
+		if m := severityLabelRe.FindStringSubmatch(t); m != nil {
+			switch {
+			case m[1] != "":
+				severity = "sev" + m[1]
+			case m[2] != "":
+				severity = strings.ToLower(strings.TrimSpace(m[2]))
+			}
+		} else if severity == "" {
+			// bare "incident"/"outage" with no severity → "major"
+			severity = "major"
+		}
+	}
+	return isIncident, severity
+}
+
+// syncIncidentsFromIssues derives incidents from synced issues whose labels mark
+// them as an incident/outage/sevN. opened_at = issue created_at; resolved_at =
+// the close time when the issue is closed. Best-effort and idempotent by title
+// dedupe (one open incident per repo+title at a time via HasOpenIncidentForRepo
+// is too coarse, so we dedupe on existing rows with the same title+opened_at).
+func syncIncidentsFromIssues(ctx context.Context, database *db.DB, orgID string, repo store.Repo, issues []RemoteIssue, log *slog.Logger) {
+	created := 0
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		for _, iss := range issues {
+			ok, sev := incidentFromLabels(iss.Labels)
+			if !ok {
+				continue
+			}
+			opened := iss.CreatedAt
+			if opened.IsZero() {
+				opened = time.Now().UTC()
+			}
+			// Idempotency: skip if an incident with the same repo+title+opened_at
+			// already exists (re-sync of the same issue must not duplicate).
+			var exists bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM incidents
+					WHERE org_id = $1 AND repo_id = $2 AND title = $3 AND opened_at = $4
+				)`, orgID, repo.ID, iss.Title, opened.UTC()).Scan(&exists); err != nil {
+				log.Error("sync: incident exists check", "issue_number", iss.Number, "err", err)
+				continue
+			}
+			if exists {
+				// Already recorded; if the issue has since closed, stamp resolved_at.
+				if iss.State == "closed" && !iss.UpdatedAt.IsZero() {
+					if _, err := tx.Exec(ctx, `
+						UPDATE incidents SET resolved_at = $5
+						WHERE org_id = $1 AND repo_id = $2 AND title = $3 AND opened_at = $4
+						  AND resolved_at IS NULL`,
+						orgID, repo.ID, iss.Title, opened.UTC(), iss.UpdatedAt.UTC()); err != nil {
+						log.Error("sync: incident resolve", "issue_number", iss.Number, "err", err)
+					}
+				}
+				continue
+			}
+			inc, err := store.InsertIncident(ctx, tx, store.IncidentInput{
+				OrgID:    orgID,
+				RepoID:   repo.ID,
+				Title:    iss.Title,
+				Severity: sev,
+				OpenedAt: opened,
+			})
+			if err != nil {
+				log.Error("sync: insert incident", "issue_number", iss.Number, "err", err)
+				continue
+			}
+			created++
+			// A closed incident-issue is a resolved incident → resolved_at = close time.
+			if iss.State == "closed" && !iss.UpdatedAt.IsZero() {
+				if _, err := store.ResolveIncident(ctx, tx, orgID, inc.ID, iss.UpdatedAt); err != nil {
+					log.Error("sync: resolve incident", "issue_number", iss.Number, "err", err)
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Error("sync: store incidents tx", "err", err)
+	}
+	if created > 0 {
+		log.Info("sync: incidents derived from issues", "count", created)
+	}
 }
 
 // NewProvider constructs the correct Provider for the given platform.

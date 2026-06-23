@@ -236,6 +236,48 @@ func (s *Service) ComputeInvolvement(ctx context.Context, orgID string, periodSt
 		}
 		prRows.Close()
 
+		// ── Dimension: reviews_done (DISTINCT PRs reviewed, from pr_reviews) ──────
+		// The invisible senior work (decisions P2). Count the DISTINCT PRs each
+		// reviewer touched within the window, resolving reviewer_login → users via
+		// the same commit-identity bridge used for PR authorship. Self-reviews
+		// (reviewer == PR author) are excluded so a contributor cannot inflate this
+		// by "reviewing" their own PR.
+		const reviewQ = `
+			WITH ident AS (
+				SELECT DISTINCT lower(author_login) AS login,
+				       lower(author_email::text)    AS email
+				FROM commits
+				WHERE org_id = $1 AND author_login IS NOT NULL AND author_login <> ''
+			)
+			SELECT u.id::text AS user_id, COUNT(DISTINCT r.pr_id) AS cnt
+			FROM pr_reviews r
+			JOIN pull_requests p ON p.id = r.pr_id
+			JOIN ident i ON i.login = lower(r.reviewer_login)
+			JOIN users u ON lower(u.email::text) = i.email
+			WHERE r.org_id = $1
+			  AND r.submitted_at >= $2 AND r.submitted_at <= $3
+			  AND lower(r.reviewer_login) <> lower(COALESCE(p.author_login,''))
+			GROUP BY u.id`
+
+		reviewRows, err := tx.Query(ctx, reviewQ, orgID, start, end)
+		if err != nil {
+			return fmt.Errorf("metrics.ComputeInvolvement: query reviews: %w", err)
+		}
+		for reviewRows.Next() {
+			var userID string
+			var cnt int
+			if err := reviewRows.Scan(&userID, &cnt); err != nil {
+				reviewRows.Close()
+				return fmt.Errorf("metrics.ComputeInvolvement: scan review row: %w", err)
+			}
+			getStat(userID).reviewsDone = cnt
+		}
+		if err := reviewRows.Err(); err != nil {
+			reviewRows.Close()
+			return fmt.Errorf("metrics.ComputeInvolvement: review rows: %w", err)
+		}
+		reviewRows.Close()
+
 		// ── Dimensions: areas_owned + commit volume (via commits → users) ─────────
 		// areas_owned = distinct repos a user committed to in the period.
 		// is_agent    = the identity's commits are entirely agent-authored.
@@ -287,8 +329,9 @@ func (s *Service) ComputeInvolvement(ctx context.Context, orgID string, periodSt
 // userStats accumulates per-user dimension values before upserting.
 type userStats struct {
 	featuresShipped int
-	areas           int             // distinct repos committed to (areas_owned)
-	commits         int             // commit volume in the period (texture only)
+	reviewsDone     int // DISTINCT PRs reviewed in the period (from pr_reviews)
+	areas           int // distinct repos committed to (areas_owned)
+	commits         int // commit volume in the period (texture only)
 	additions       int
 	deletions       int
 	isAgent         bool // identity is entirely agent-authored
@@ -297,13 +340,12 @@ type userStats struct {
 // upsertInvolvement writes one involvement row per RESOLVED user inside the
 // caller's org-scoped tx.
 //
-// reviews_done is deliberately NOT fabricated here. gitstate has no review-event
-// signal in the sync layer yet, so the old "every merged PR by someone else"
-// approximation (totalMerged − features_shipped) wildly over-credited anyone who
-// shipped little — a part-time committer looked like they reviewed the whole org.
-// Until real review data lands we PRESERVE whatever reviews_done the prior rows
-// carry (ReplaceUserInvolvement carries the MAX forward) rather than overwrite it
-// with a misleading number. New rows start at 0 reviews, honestly empty.
+// reviews_done is now a REAL signal: the count of DISTINCT PRs each user
+// reviewed in the period, sourced from the pr_reviews table the sync layer
+// populates from GitHub PR reviews / GitLab approvals+notes. Self-reviews are
+// excluded upstream in the query. ReplaceUserInvolvement still carries the MAX
+// of (prior, incoming) forward, so a recompute can only ever raise this value,
+// never erase a previously-recorded review count.
 //
 // ReplaceUserInvolvement deletes any prior rows for (user, period) — across every
 // project partition — and writes one org-level row, so recompute is idempotent
@@ -311,7 +353,7 @@ type userStats struct {
 func (s *Service) upsertInvolvement(ctx context.Context, tx pgx.Tx, orgID string, start, end time.Time, stats map[string]*userStats) error {
 	written := 0
 	for userID, us := range stats {
-		active := us.featuresShipped > 0 || us.areas > 0 || us.commits > 0
+		active := us.featuresShipped > 0 || us.areas > 0 || us.commits > 0 || us.reviewsDone > 0
 
 		// extensible dimensions — independent facts, no score. Keys mirror the seed
 		// shape so the texture reads consistently across seeded + recomputed rows.
@@ -330,7 +372,7 @@ func (s *Service) upsertInvolvement(ctx context.Context, tx pgx.Tx, orgID string
 			ProjectID:       nil, // org-level: commits/PRs carry no project attribution
 			PeriodStart:     start,
 			FeaturesShipped: us.featuresShipped,
-			ReviewsDone:     0, // preserved-on-conflict; see doc comment
+			ReviewsDone:     us.reviewsDone, // DISTINCT PRs reviewed (from pr_reviews)
 			AreasOwned:      us.areas,
 			Active:          active,
 			Dimensions:      dimensions,
