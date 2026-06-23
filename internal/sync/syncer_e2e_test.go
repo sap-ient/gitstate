@@ -9,6 +9,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -33,6 +34,10 @@ type fakeProvider struct {
 	// assert the incremental wiring (SyncRepo passes repo.LastSyncedAt).
 	commitsSinceCalled bool
 	commitsSince       time.Time
+
+	// commitsErr, when set, makes ListCommits fail (simulating a fetch that errored
+	// after all retries). SyncRepo must then NOT advance last_synced_at.
+	commitsErr error
 }
 
 func (f *fakeProvider) Platform() string { return "github" }
@@ -54,6 +59,9 @@ func (f *fakeProvider) ListDeployments(context.Context, string) ([]RemoteDeploym
 func (f *fakeProvider) ListCommits(_ context.Context, _ string, since time.Time) ([]RemoteCommit, error) {
 	f.commitsSinceCalled = true
 	f.commitsSince = since
+	if f.commitsErr != nil {
+		return nil, f.commitsErr
+	}
 	return f.commits, nil
 }
 func (f *fakeProvider) UpdateIssueState(context.Context, string, int, string) error {
@@ -374,4 +382,93 @@ func TestSyncRepoEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("DORA deployment verification: %v", err)
 	}
+}
+
+// setupSyncEnv seeds an org + repo and returns the loaded repo for a SyncRepo run.
+// It registers cleanup of the org (which cascades to repo rows).
+func setupSyncEnv(t *testing.T, ctx context.Context, database *db.DB) (orgID string, repo store.Repo) {
+	t.Helper()
+	ns := time.Now().UnixNano()
+	if err := database.Pool().QueryRow(ctx,
+		`INSERT INTO organizations (slug, name) VALUES ($1,$2) RETURNING id`,
+		fmt.Sprintf("sync-synced-%d", ns), "Sync SyncedAt").Scan(&orgID); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = database.Pool().Exec(context.Background(), `DELETE FROM organizations WHERE id=$1`, orgID)
+	})
+	var repoID string
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`INSERT INTO repos (org_id, platform, external_id, full_name, default_branch)
+			 VALUES ($1,'github',$2,$3,'main') RETURNING id`,
+			orgID, fmt.Sprintf("synced-repo-%d", ns), "acme/synced").Scan(&repoID)
+	}); err != nil {
+		t.Fatalf("seed repo: %v", err)
+	}
+	var r *store.Repo
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rr, e := store.GetRepo(ctx, tx, orgID, repoID)
+		r = rr
+		return e
+	}); err != nil {
+		t.Fatalf("load repo: %v", err)
+	}
+	return orgID, *r
+}
+
+func lastSyncedAt(t *testing.T, ctx context.Context, database *db.DB, orgID, repoID string) *time.Time {
+	t.Helper()
+	var synced *time.Time
+	// Read inside the org's RLS context (repos is FORCE-RLS, so a bare-pool read
+	// returns no rows).
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT last_synced_at FROM repos WHERE id=$1`, repoID).Scan(&synced)
+	}); err != nil {
+		t.Fatalf("read last_synced_at: %v", err)
+	}
+	return synced
+}
+
+// TestSyncRepoSyncedAtOnlyOnComplete proves the gap-prevention fix: when a remote
+// FETCH errors after retries, SyncRepo must NOT advance last_synced_at (so the
+// next run re-pulls the missed window); when all fetches succeed, it MUST advance.
+func TestSyncRepoSyncedAtOnlyOnComplete(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping SyncRepo synced-at test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	database, err := db.New(ctx, &config.Config{Database: config.DatabaseConfig{URL: dbURL}})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	// ── Case 1: a fetch fails → last_synced_at stays nil ──────────────────────
+	t.Run("incomplete_fetch_holds_synced_at", func(t *testing.T) {
+		orgID, repo := setupSyncEnv(t, ctx, database)
+		prov := &fakeProvider{
+			commitsErr: errors.New("simulated rate-limit exhaustion after retries"),
+		}
+		if err := SyncRepo(ctx, database, prov, orgID, repo, ""); err != nil {
+			t.Fatalf("SyncRepo returned error: %v", err)
+		}
+		if got := lastSyncedAt(t, ctx, database, orgID, repo.ID); got != nil {
+			t.Errorf("last_synced_at = %v, want nil (a fetch errored → must not advance)", got)
+		}
+	})
+
+	// ── Case 2: all fetches succeed → last_synced_at is set ───────────────────
+	t.Run("complete_fetch_advances_synced_at", func(t *testing.T) {
+		orgID, repo := setupSyncEnv(t, ctx, database)
+		prov := &fakeProvider{} // no error → all fetches succeed
+		if err := SyncRepo(ctx, database, prov, orgID, repo, ""); err != nil {
+			t.Fatalf("SyncRepo returned error: %v", err)
+		}
+		if got := lastSyncedAt(t, ctx, database, orgID, repo.ID); got == nil {
+			t.Error("last_synced_at = nil, want set (all fetches succeeded → must advance)")
+		}
+	})
 }

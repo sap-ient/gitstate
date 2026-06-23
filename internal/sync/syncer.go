@@ -179,17 +179,32 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 		log.Error("sync: upsert prs tx", "err", err)
 	}
 
+	// fetchComplete tracks whether EVERY remote FETCH (issues/PRs above, plus
+	// reviews/deployments/commits below) succeeded after retries. last_synced_at
+	// is advanced ONLY when this stays true — otherwise the next sync re-pulls
+	// from the last good point (commits `since` stays put) so a rate-limit-
+	// truncated run can never leave a permanent gap. Issues+PRs already returned
+	// early on error above, so reaching here they succeeded.
+	fetchComplete := true
+
 	// ── 2.5. Fetch + store PR reviews (Involvement: reviews_done) ─────────────
-	// One API call per PR (ListReviews), so this loops over the just-synced PRs.
-	// Self-reviews (reviewer == PR author) are skipped — they are not "the
-	// invisible senior work" Involvement credits. All best-effort: a fetch/store
-	// failure logs and continues; it must never fail the sync.
-	syncPRReviews(ctx, database, provider, orgID, repo, remotePRs, log)
+	// Only MERGED PRs are queried for reviews: "reviews done" is the completed-
+	// work signal, and gating on merged removes a per-PR API call for every
+	// open/closed-unmerged PR (cuts the request multiplier). Self-reviews
+	// (reviewer == PR author) are skipped. A reviews FETCH error after retries
+	// marks the sync incomplete (so last_synced_at is not advanced); store errors
+	// stay best-effort.
+	if !syncPRReviews(ctx, database, provider, orgID, repo, remotePRs, log) {
+		fetchComplete = false
+	}
 
 	// ── 2.6. Fetch + store deployments (DORA: deploy frequency / CFR) ─────────
 	// Idempotent on (org_id, source, external_id) via store.InsertDeployment's
-	// ON CONFLICT, so re-syncs do not double-count. Best-effort.
-	syncDeployments(ctx, database, provider, orgID, repo, log)
+	// ON CONFLICT, so re-syncs do not double-count. A deployments FETCH error
+	// after retries marks the sync incomplete.
+	if !syncDeployments(ctx, database, provider, orgID, repo, log) {
+		fetchComplete = false
+	}
 
 	// ── 2.7. Derive incidents from synced issues (DORA: MTTR) ─────────────────
 	// GitHub/GitLab have no native incidents — derive them HONESTLY from issues
@@ -223,13 +238,23 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 	// failure logs and continues. Runs BEFORE ComputeCycleTimes so the commits feed
 	// is current. (The list endpoint omits churn → additions/deletions stay 0; the
 	// blame pass below supplies per-file churn via commit_files.)
-	syncCommitsFromAPI(ctx, database, provider, orgID, repo, log)
+	if !syncCommitsFromAPI(ctx, database, provider, orgID, repo, log) {
+		fetchComplete = false
+	}
 
-	// ── 4. Update last_synced_at on the repo ──────────────────────────────────
-	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
-		return store.UpdateRepoSyncedAt(ctx, tx, orgID, repo.ID)
-	}); err != nil {
-		log.Error("sync: update last_synced_at", "err", err)
+	// ── 4. Update last_synced_at on the repo — ONLY on a COMPLETE sync ─────────
+	// If any remote fetch above failed after retries (e.g. a rate-limit wait was
+	// cut short by the ctx budget), advancing last_synced_at would make the next
+	// incremental run skip the never-fetched window → a permanent gap. So skip the
+	// update and let the next sync re-pull from the last good point.
+	if fetchComplete {
+		if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+			return store.UpdateRepoSyncedAt(ctx, tx, orgID, repo.ID)
+		}); err != nil {
+			log.Error("sync: update last_synced_at", "err", err)
+		}
+	} else {
+		log.Warn("sync: incomplete — not advancing last_synced_at; will re-fetch next run")
 	}
 
 	// ── 4b. Blobless clone + deep blame analysis (blame-survival, SZZ, coupling) ─
@@ -321,15 +346,25 @@ func parseIssueRefs(text string) []int {
 	return out
 }
 
-// syncPRReviews fetches reviews for each synced PR and stores them mapped to the
+// syncPRReviews fetches reviews for each MERGED PR and stores them mapped to the
 // PR's internal id. Reviews authored by the PR author (self-reviews) are skipped.
-// Wholly best-effort: every failure logs and continues.
-func syncPRReviews(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, remotePRs []RemotePR, log *slog.Logger) {
+// Returns false if any review FETCH failed after retries (so the caller can hold
+// last_synced_at); store failures stay best-effort and do NOT flip the result.
+//
+// Only merged PRs are queried: "reviews done" is the completed-work signal, so
+// skipping open/closed-unmerged PRs here removes a per-PR API call without losing
+// any metric, cutting the request multiplier on busy repos.
+func syncPRReviews(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, remotePRs []RemotePR, log *slog.Logger) bool {
 	stored := 0
+	complete := true
 	for _, rpr := range remotePRs {
+		if rpr.State != "merged" {
+			continue
+		}
 		reviews, err := provider.ListReviews(ctx, repo.FullName, rpr.Number)
 		if err != nil {
 			log.Error("sync: list reviews", "pr_number", rpr.Number, "err", err)
+			complete = false
 			continue
 		}
 		if len(reviews) == 0 {
@@ -376,18 +411,20 @@ func syncPRReviews(ctx context.Context, database *db.DB, provider Provider, orgI
 	if stored > 0 {
 		log.Info("sync: pr reviews stored", "count", stored)
 	}
+	return complete
 }
 
 // syncDeployments fetches CI/CD deployments for the repo and stores them
-// idempotently (ON CONFLICT on (org_id, source, external_id)). Best-effort.
-func syncDeployments(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, log *slog.Logger) {
+// idempotently (ON CONFLICT on (org_id, source, external_id)). Returns false if
+// the deployments FETCH failed after retries; store failures stay best-effort.
+func syncDeployments(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, log *slog.Logger) bool {
 	deps, err := provider.ListDeployments(ctx, repo.FullName)
 	if err != nil {
 		log.Error("sync: list deployments", "err", err)
-		return
+		return false
 	}
 	if len(deps) == 0 {
-		return
+		return true
 	}
 	source := "manual"
 	switch provider.Platform() {
@@ -421,15 +458,17 @@ func syncDeployments(ctx context.Context, database *db.DB, provider Provider, or
 	if stored > 0 {
 		log.Info("sync: deployments stored", "count", stored)
 	}
+	return true
 }
 
 // syncCommitsFromAPI pulls commits from the platform commits API (no clone) and
 // upserts them into the commits table. The pull is INCREMENTAL: since =
 // repo.LastSyncedAt, so a re-sync only fetches commits added since the last sync;
 // a zero LastSyncedAt (first sync) pulls the full history. UpsertCommit is
-// idempotent on (org_id, repo_id, sha). Wholly best-effort: a fetch/store failure
-// logs and returns; it must never fail the sync.
-func syncCommitsFromAPI(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, log *slog.Logger) {
+// idempotent on (org_id, repo_id, sha). Returns false if the commits FETCH failed
+// after retries (so last_synced_at is held and the same `since` window is re-
+// pulled next run); store failures stay best-effort.
+func syncCommitsFromAPI(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, log *slog.Logger) bool {
 	var since time.Time
 	if repo.LastSyncedAt != nil {
 		since = *repo.LastSyncedAt
@@ -437,10 +476,10 @@ func syncCommitsFromAPI(ctx context.Context, database *db.DB, provider Provider,
 	commits, err := provider.ListCommits(ctx, repo.FullName, since)
 	if err != nil {
 		log.Error("sync: list commits (api)", "err", err)
-		return
+		return false
 	}
 	if len(commits) == 0 {
-		return
+		return true
 	}
 	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		for _, c := range commits {
@@ -458,10 +497,13 @@ func syncCommitsFromAPI(ctx context.Context, database *db.DB, provider Provider,
 		}
 		return nil
 	}); err != nil {
+		// Store failure is best-effort and does NOT hold last_synced_at — the FETCH
+		// (the thing that can truncate under rate limits) succeeded.
 		log.Error("sync: store commits (api) tx", "err", err)
-		return
+		return true
 	}
 	log.Info("sync: commits stored (api)", "count", len(commits), "incremental", !since.IsZero())
+	return true
 }
 
 // incidentLabelRe / incidentSeverity classify an issue's labels as an incident.

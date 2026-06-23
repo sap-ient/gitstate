@@ -12,7 +12,10 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +23,182 @@ import (
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
+
+// ── Rate-limit / retry plumbing ───────────────────────────────────────────────
+//
+// Large orgs blow GitHub's 5000 req/hr (and trip secondary "abuse" limits); the
+// GitLab API answers HTTP 429 under load. The OLD code was best-effort, so the
+// first rate-limited call simply errored and the sync DROPPED data silently. The
+// helpers below make EVERY API call site rate-limit-aware: on a primary/secondary
+// rate limit they SLEEP (ctx-aware, capped, logged) until the limit clears and
+// RETRY, and they retry transient 5xx/timeouts with a short backoff. The result
+// is COMPLETE-but-slower instead of fast-but-truncated.
+
+const (
+	// retryAttempts is how many times a single API call is retried before the
+	// fetch is considered failed. Rate-limit waits do not count against this —
+	// only transient-error backoffs do — so a genuinely rate-limited call keeps
+	// waiting until the window resets.
+	retryAttempts = 5
+	// maxRateWait caps a single rate-limit sleep so a bogus/far-future reset can
+	// never wedge a sync indefinitely. GitHub's primary window is <= 1h.
+	maxRateWait = time.Hour + time.Minute
+)
+
+// sleepCtx sleeps for d or until ctx is cancelled, whichever comes first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// ghDo runs a single GitHub API call fn and, on a rate-limit or transient error,
+// waits and retries. It returns once fn succeeds, the error is non-retryable, the
+// retry budget is exhausted, or ctx is cancelled. Wrapping every paginated loop's
+// call in ghDo is what guarantees completeness under the 5000/hr cap.
+func ghDo[T any](ctx context.Context, fn func() (T, *gogithub.Response, error)) (T, *gogithub.Response, error) {
+	var zero T
+	transient := 0
+	for {
+		v, resp, err := fn()
+		if err == nil {
+			return v, resp, nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return zero, resp, cerr
+		}
+
+		// Primary rate limit: sleep until the window resets (capped, ctx-aware).
+		var rle *gogithub.RateLimitError
+		if errors.As(err, &rle) {
+			wait := time.Until(rle.Rate.Reset.Time) + time.Second
+			if wait > maxRateWait {
+				wait = maxRateWait
+			}
+			if wait < 0 {
+				wait = time.Second
+			}
+			slog.Info("github: rate limited, waiting", "dur", wait.Round(time.Second), "reset", rle.Rate.Reset.Time)
+			if serr := sleepCtx(ctx, wait); serr != nil {
+				return zero, resp, serr
+			}
+			continue // not counted against the transient budget
+		}
+
+		// Secondary ("abuse") rate limit: honour Retry-After when present.
+		var arle *gogithub.AbuseRateLimitError
+		if errors.As(err, &arle) {
+			wait := arle.GetRetryAfter()
+			if wait <= 0 {
+				wait = time.Minute
+			}
+			if wait > maxRateWait {
+				wait = maxRateWait
+			}
+			slog.Info("github: rate limited, waiting", "dur", wait.Round(time.Second), "kind", "secondary")
+			if serr := sleepCtx(ctx, wait); serr != nil {
+				return zero, resp, serr
+			}
+			continue
+		}
+
+		// Transient 5xx / network timeout: short capped backoff, finite retries.
+		if isTransient(resp, err) && transient < retryAttempts {
+			transient++
+			back := time.Duration(transient) * 500 * time.Millisecond
+			slog.Info("github: transient error, retrying", "attempt", transient, "backoff", back, "err", err)
+			if serr := sleepCtx(ctx, back); serr != nil {
+				return zero, resp, serr
+			}
+			continue
+		}
+
+		return zero, resp, err
+	}
+}
+
+// isTransient reports whether an error is worth a short-backoff retry: a 5xx
+// response or a non-rate-limit network/timeout error.
+func isTransient(resp *gogithub.Response, err error) bool {
+	if resp != nil && resp.StatusCode >= 500 {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return false // the outer ctx budget is up; don't keep retrying
+	}
+	var terr interface{ Timeout() bool }
+	if errors.As(err, &terr) && terr.Timeout() {
+		return true
+	}
+	return false
+}
+
+// glDo runs a single GitLab API call fn and, on HTTP 429 (honouring Retry-After)
+// or a transient 5xx/timeout, waits and retries. GitLab has no typed rate-limit
+// error, so the 429 is detected on the response status code.
+func glDo[T any](ctx context.Context, fn func() (T, *gogitlab.Response, error)) (T, *gogitlab.Response, error) {
+	var zero T
+	transient := 0
+	for {
+		v, resp, err := fn()
+		if err == nil {
+			return v, resp, nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return zero, resp, cerr
+		}
+
+		if resp != nil && resp.Response != nil && resp.StatusCode == 429 {
+			wait := retryAfter(resp.Header.Get("Retry-After"))
+			if wait <= 0 {
+				wait = time.Minute
+			}
+			if wait > maxRateWait {
+				wait = maxRateWait
+			}
+			slog.Info("gitlab: rate limited, waiting", "dur", wait.Round(time.Second))
+			if serr := sleepCtx(ctx, wait); serr != nil {
+				return zero, resp, serr
+			}
+			continue
+		}
+
+		if (resp != nil && resp.Response != nil && resp.StatusCode >= 500) && transient < retryAttempts {
+			transient++
+			back := time.Duration(transient) * 500 * time.Millisecond
+			slog.Info("gitlab: transient error, retrying", "attempt", transient, "backoff", back, "err", err)
+			if serr := sleepCtx(ctx, back); serr != nil {
+				return zero, resp, serr
+			}
+			continue
+		}
+
+		return zero, resp, err
+	}
+}
+
+// retryAfter parses a Retry-After header value, which is an integer number of
+// seconds. Returns zero on an empty/unparseable value.
+func retryAfter(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
+}
 
 // ── Platform-neutral types ────────────────────────────────────────────────────
 
@@ -170,7 +349,9 @@ func (g *githubProvider) ListRepos(ctx context.Context) ([]RemoteRepo, error) {
 	//    reliably return all repos of an org the user belongs to — see step 2.)
 	uopts := &gogithub.RepositoryListByAuthenticatedUserOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
 	for {
-		repos, resp, err := g.client.Repositories.ListByAuthenticatedUser(ctx, uopts)
+		repos, resp, err := ghDo(ctx, func() ([]*gogithub.Repository, *gogithub.Response, error) {
+			return g.client.Repositories.ListByAuthenticatedUser(ctx, uopts)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("github: list user repos: %w", err)
 		}
@@ -189,7 +370,9 @@ func (g *githubProvider) ListRepos(ctx context.Context) ([]RemoteRepo, error) {
 	var orgs []*gogithub.Organization
 	oopts := &gogithub.ListOptions{PerPage: 100}
 	for {
-		page, resp, err := g.client.Organizations.List(ctx, "", oopts)
+		page, resp, err := ghDo(ctx, func() ([]*gogithub.Organization, *gogithub.Response, error) {
+			return g.client.Organizations.List(ctx, "", oopts)
+		})
 		if err != nil {
 			break // best-effort: user repos are already collected
 		}
@@ -202,7 +385,9 @@ func (g *githubProvider) ListRepos(ctx context.Context) ([]RemoteRepo, error) {
 	for _, org := range orgs {
 		ropts := &gogithub.RepositoryListByOrgOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
 		for {
-			repos, resp, err := g.client.Repositories.ListByOrg(ctx, org.GetLogin(), ropts)
+			repos, resp, err := ghDo(ctx, func() ([]*gogithub.Repository, *gogithub.Response, error) {
+				return g.client.Repositories.ListByOrg(ctx, org.GetLogin(), ropts)
+			})
 			if err != nil {
 				break // org may restrict the OAuth app; skip it, keep the rest
 			}
@@ -231,7 +416,9 @@ func (g *githubProvider) ListIssues(ctx context.Context, fullName string) ([]Rem
 	}
 	var out []RemoteIssue
 	for {
-		issues, resp, err := g.client.Issues.ListByRepo(ctx, owner, name, opts)
+		issues, resp, err := ghDo(ctx, func() ([]*gogithub.Issue, *gogithub.Response, error) {
+			return g.client.Issues.ListByRepo(ctx, owner, name, opts)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("github: list issues %s: %w", fullName, err)
 		}
@@ -274,7 +461,9 @@ func (g *githubProvider) ListPullRequests(ctx context.Context, fullName string) 
 	}
 	var out []RemotePR
 	for {
-		prs, resp, err := g.client.PullRequests.List(ctx, owner, name, opts)
+		prs, resp, err := ghDo(ctx, func() ([]*gogithub.PullRequest, *gogithub.Response, error) {
+			return g.client.PullRequests.List(ctx, owner, name, opts)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("github: list prs %s: %w", fullName, err)
 		}
@@ -302,11 +491,16 @@ func (g *githubProvider) ListPullRequests(ctx context.Context, fullName string) 
 			default:
 				rpr.State = "open"
 			}
-			// DORA lead time starts at the FIRST commit on the branch. Best-effort:
-			// a commits-fetch failure leaves FirstCommitAt zero (cycle time for this
-			// PR is simply skipped) but never aborts the PR list.
-			if first, ferr := g.firstCommitAt(ctx, owner, name, pr.GetNumber()); ferr == nil && !first.IsZero() {
-				rpr.FirstCommitAt = first
+			// DORA lead time starts at the FIRST commit on the branch. Cycle time is
+			// only computed for MERGED PRs, so gate this per-PR commits fetch on
+			// state=="merged": that removes a per-PR API call for every open/closed-
+			// unmerged PR, roughly halving the call volume on a busy repo without
+			// losing any metric. Best-effort: a commits-fetch failure leaves
+			// FirstCommitAt zero (this PR's cycle time is skipped) but never aborts.
+			if rpr.State == "merged" {
+				if first, ferr := g.firstCommitAt(ctx, owner, name, pr.GetNumber()); ferr == nil && !first.IsZero() {
+					rpr.FirstCommitAt = first
+				}
 			}
 			out = append(out, rpr)
 		}
@@ -323,7 +517,9 @@ func (g *githubProvider) firstCommitAt(ctx context.Context, owner, name string, 
 	opts := &gogithub.ListOptions{PerPage: 100}
 	var earliest time.Time
 	for {
-		commits, resp, err := g.client.PullRequests.ListCommits(ctx, owner, name, number, opts)
+		commits, resp, err := ghDo(ctx, func() ([]*gogithub.RepositoryCommit, *gogithub.Response, error) {
+			return g.client.PullRequests.ListCommits(ctx, owner, name, number, opts)
+		})
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -364,13 +560,20 @@ func (g *githubProvider) ListCommits(ctx context.Context, fullName string, since
 	if err != nil {
 		return nil, err
 	}
+	// HONESTY: GitHub's repository commits API lists the DEFAULT BRANCH only (no
+	// sha param → HEAD of the default branch). We deliberately do NOT enumerate
+	// every branch: that would multiply the call count by the branch count and
+	// blow the rate limit for marginal data. Default-branch history is what the
+	// analytics/heatmap/contribution surfaces need.
 	opts := &gogithub.CommitsListOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
 	if !since.IsZero() {
 		opts.Since = since
 	}
 	var out []RemoteCommit
 	for {
-		commits, resp, err := g.client.Repositories.ListCommits(ctx, owner, name, opts)
+		commits, resp, err := ghDo(ctx, func() ([]*gogithub.RepositoryCommit, *gogithub.Response, error) {
+			return g.client.Repositories.ListCommits(ctx, owner, name, opts)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("github: list commits %s: %w", fullName, err)
 		}
@@ -414,7 +617,9 @@ func (g *githubProvider) ListReviews(ctx context.Context, fullName string, prNum
 	opts := &gogithub.ListOptions{PerPage: 100}
 	var out []RemoteReview
 	for {
-		reviews, resp, err := g.client.PullRequests.ListReviews(ctx, owner, name, prNumber, opts)
+		reviews, resp, err := ghDo(ctx, func() ([]*gogithub.PullRequestReview, *gogithub.Response, error) {
+			return g.client.PullRequests.ListReviews(ctx, owner, name, prNumber, opts)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("github: list reviews %s#%d: %w", fullName, prNumber, err)
 		}
@@ -446,7 +651,9 @@ func (g *githubProvider) ListDeployments(ctx context.Context, fullName string) (
 	opts := &gogithub.DeploymentsListOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
 	var out []RemoteDeployment
 	for {
-		deps, resp, err := g.client.Repositories.ListDeployments(ctx, owner, name, opts)
+		deps, resp, err := ghDo(ctx, func() ([]*gogithub.Deployment, *gogithub.Response, error) {
+			return g.client.Repositories.ListDeployments(ctx, owner, name, opts)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("github: list deployments %s: %w", fullName, err)
 		}
@@ -461,7 +668,10 @@ func (g *githubProvider) ListDeployments(ctx context.Context, fullName string) (
 			// The deployment object carries no terminal status — the latest
 			// deployment STATUS does. Best-effort: a status-fetch failure leaves the
 			// optimistic "success" default rather than dropping the deployment.
-			if statuses, _, serr := g.client.Repositories.ListDeploymentStatuses(ctx, owner, name, d.GetID(), &gogithub.ListOptions{PerPage: 1}); serr == nil && len(statuses) > 0 {
+			statuses, _, serr := ghDo(ctx, func() ([]*gogithub.DeploymentStatus, *gogithub.Response, error) {
+				return g.client.Repositories.ListDeploymentStatuses(ctx, owner, name, d.GetID(), &gogithub.ListOptions{PerPage: 1})
+			})
+			if serr == nil && len(statuses) > 0 {
 				rd.Status = normaliseDeployStatus(statuses[0].GetState())
 				if t := statuses[0].GetUpdatedAt(); !t.Time.IsZero() {
 					rd.DeployedAt = t.Time
@@ -484,7 +694,9 @@ func (g *githubProvider) UpdateIssueState(ctx context.Context, fullName string, 
 	}
 	ghState := state // "open" or "closed"
 	req := &gogithub.IssueRequest{State: &ghState}
-	_, _, err = g.client.Issues.Edit(ctx, owner, name, number, req)
+	_, _, err = ghDo(ctx, func() (*gogithub.Issue, *gogithub.Response, error) {
+		return g.client.Issues.Edit(ctx, owner, name, number, req)
+	})
 	if err != nil {
 		return fmt.Errorf("github: update issue state %s#%d: %w", fullName, number, err)
 	}
@@ -521,7 +733,9 @@ func (gl *gitlabProvider) ListRepos(ctx context.Context) ([]RemoteRepo, error) {
 	}
 	var out []RemoteRepo
 	for {
-		projects, resp, err := gl.client.Projects.ListProjects(opts, gogitlab.WithContext(ctx))
+		projects, resp, err := glDo(ctx, func() ([]*gogitlab.Project, *gogitlab.Response, error) {
+			return gl.client.Projects.ListProjects(opts, gogitlab.WithContext(ctx))
+		})
 		if err != nil {
 			return nil, fmt.Errorf("gitlab: list repos: %w", err)
 		}
@@ -549,7 +763,9 @@ func (gl *gitlabProvider) ListIssues(ctx context.Context, fullName string) ([]Re
 	}
 	var out []RemoteIssue
 	for {
-		issues, resp, err := gl.client.Issues.ListProjectIssues(fullName, opts, gogitlab.WithContext(ctx))
+		issues, resp, err := glDo(ctx, func() ([]*gogitlab.Issue, *gogitlab.Response, error) {
+			return gl.client.Issues.ListProjectIssues(fullName, opts, gogitlab.WithContext(ctx))
+		})
 		if err != nil {
 			return nil, fmt.Errorf("gitlab: list issues %s: %w", fullName, err)
 		}
@@ -588,7 +804,9 @@ func (gl *gitlabProvider) ListPullRequests(ctx context.Context, fullName string)
 	}
 	var out []RemotePR
 	for {
-		mrs, resp, err := gl.client.MergeRequests.ListProjectMergeRequests(fullName, opts, gogitlab.WithContext(ctx))
+		mrs, resp, err := glDo(ctx, func() ([]*gogitlab.BasicMergeRequest, *gogitlab.Response, error) {
+			return gl.client.MergeRequests.ListProjectMergeRequests(fullName, opts, gogitlab.WithContext(ctx))
+		})
 		if err != nil {
 			return nil, fmt.Errorf("gitlab: list mrs %s: %w", fullName, err)
 		}
@@ -612,9 +830,14 @@ func (gl *gitlabProvider) ListPullRequests(ctx context.Context, fullName string)
 			default:
 				rpr.State = "open"
 			}
-			// DORA lead time starts at the MR's first commit. Best-effort.
-			if first, ferr := gl.firstCommitAt(ctx, fullName, mr.IID); ferr == nil && !first.IsZero() {
-				rpr.FirstCommitAt = first
+			// DORA lead time starts at the MR's first commit and is only computed for
+			// MERGED MRs, so gate this per-MR commits fetch on state=="merged" to drop
+			// a per-MR API call for every open/closed MR (cuts the call volume).
+			// Best-effort.
+			if rpr.State == "merged" {
+				if first, ferr := gl.firstCommitAt(ctx, fullName, mr.IID); ferr == nil && !first.IsZero() {
+					rpr.FirstCommitAt = first
+				}
 			}
 			out = append(out, rpr)
 		}
@@ -631,7 +854,9 @@ func (gl *gitlabProvider) firstCommitAt(ctx context.Context, fullName string, mr
 	opts := &gogitlab.GetMergeRequestCommitsOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
 	var earliest time.Time
 	for {
-		commits, resp, err := gl.client.MergeRequests.GetMergeRequestCommits(fullName, mrIID, opts, gogitlab.WithContext(ctx))
+		commits, resp, err := glDo(ctx, func() ([]*gogitlab.Commit, *gogitlab.Response, error) {
+			return gl.client.MergeRequests.GetMergeRequestCommits(fullName, mrIID, opts, gogitlab.WithContext(ctx))
+		})
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -668,7 +893,9 @@ func (gl *gitlabProvider) ListCommits(ctx context.Context, fullName string, sinc
 	}
 	var out []RemoteCommit
 	for {
-		commits, resp, err := gl.client.Commits.ListCommits(fullName, opts, gogitlab.WithContext(ctx))
+		commits, resp, err := glDo(ctx, func() ([]*gogitlab.Commit, *gogitlab.Response, error) {
+			return gl.client.Commits.ListCommits(fullName, opts, gogitlab.WithContext(ctx))
+		})
 		if err != nil {
 			return nil, fmt.Errorf("gitlab: list commits %s: %w", fullName, err)
 		}
@@ -714,7 +941,10 @@ func (gl *gitlabProvider) ListReviews(ctx context.Context, fullName string, prNu
 
 	// (1) Approvals → "approved". The configuration endpoint returns approved_by +
 	// an updated_at we can use as the approval time.
-	if appr, _, err := gl.client.MergeRequestApprovals.GetConfiguration(fullName, mrIID, gogitlab.WithContext(ctx)); err == nil && appr != nil {
+	appr, _, apprErr := glDo(ctx, func() (*gogitlab.MergeRequestApprovals, *gogitlab.Response, error) {
+		return gl.client.MergeRequestApprovals.GetConfiguration(fullName, mrIID, gogitlab.WithContext(ctx))
+	})
+	if apprErr == nil && appr != nil {
 		when := time.Now().UTC()
 		if appr.UpdatedAt != nil {
 			when = *appr.UpdatedAt
@@ -740,7 +970,9 @@ func (gl *gitlabProvider) ListReviews(ctx context.Context, fullName string, prNu
 	// than the MR author are review activity.
 	nopts := &gogitlab.ListMergeRequestNotesOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
 	for {
-		notes, resp, err := gl.client.Notes.ListMergeRequestNotes(fullName, mrIID, nopts, gogitlab.WithContext(ctx))
+		notes, resp, err := glDo(ctx, func() ([]*gogitlab.Note, *gogitlab.Response, error) {
+			return gl.client.Notes.ListMergeRequestNotes(fullName, mrIID, nopts, gogitlab.WithContext(ctx))
+		})
 		if err != nil {
 			break // best-effort: approvals may already have produced rows
 		}
@@ -775,7 +1007,9 @@ func (gl *gitlabProvider) ListDeployments(ctx context.Context, fullName string) 
 	opts := &gogitlab.ListProjectDeploymentsOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
 	var out []RemoteDeployment
 	for {
-		deps, resp, err := gl.client.Deployments.ListProjectDeployments(fullName, opts, gogitlab.WithContext(ctx))
+		deps, resp, err := glDo(ctx, func() ([]*gogitlab.Deployment, *gogitlab.Response, error) {
+			return gl.client.Deployments.ListProjectDeployments(fullName, opts, gogitlab.WithContext(ctx))
+		})
 		if err != nil {
 			return nil, fmt.Errorf("gitlab: list deployments %s: %w", fullName, err)
 		}
@@ -817,7 +1051,9 @@ func (gl *gitlabProvider) UpdateIssueState(ctx context.Context, fullName string,
 		se = "reopen"
 	}
 	opts := &gogitlab.UpdateIssueOptions{StateEvent: &se}
-	_, _, err := gl.client.Issues.UpdateIssue(fullName, int64(number), opts, gogitlab.WithContext(ctx))
+	_, _, err := glDo(ctx, func() (*gogitlab.Issue, *gogitlab.Response, error) {
+		return gl.client.Issues.UpdateIssue(fullName, int64(number), opts, gogitlab.WithContext(ctx))
+	})
 	if err != nil {
 		return fmt.Errorf("gitlab: update issue state %s#%d: %w", fullName, number, err)
 	}
