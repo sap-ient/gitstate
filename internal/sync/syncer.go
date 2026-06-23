@@ -14,7 +14,6 @@ import (
 
 	"github.com/exo/gitstate/internal/db"
 	"github.com/exo/gitstate/internal/embed"
-	"github.com/exo/gitstate/internal/git"
 	"github.com/exo/gitstate/internal/gitanalysis"
 	"github.com/exo/gitstate/internal/metrics"
 	"github.com/exo/gitstate/internal/store"
@@ -28,13 +27,21 @@ import (
 // Capture group 1 is the issue number string.
 var issueRefRe = regexp.MustCompile(`(?i)(?:closes?|fixes?|resolves?)?\s*#(\d+)`)
 
-// cloneAndIngest does ONE full clone of the repo and populates BOTH the commits
-// table (so Analytics, Cycle Time, and Contribution have data) AND the deep
-// git-analysis tables (commit_files / blame-survival / SZZ). A full clone (no
-// --depth) is required because blame-survival needs real history. Best-effort:
-// every step logs and continues, so a private repo the token can't read, or a
-// blame hiccup, never fails the overall sync.
-func cloneAndIngest(ctx context.Context, database *db.DB, orgID string, repo store.Repo, token string, log *slog.Logger) {
+// analyzeBlame runs the deep git analysis (commit_files / blame-survival / SZZ /
+// test-coupling) that needs real git objects. Commits themselves are NOT ingested
+// here — they come from the platform commits API (see provider.ListCommits) — so
+// this is the ONLY clone left in a sync, and it is deliberately minimal:
+//
+//   - --filter=blob:none → a BLOBLESS partial clone: it fetches commits + trees
+//     for the full history but pulls file blobs lazily, on demand, only when blame
+//     actually touches a file. That is far less data than a full working-tree clone.
+//   - --no-tags --single-branch → only the default branch's ref, no tag refs.
+//   - NO --depth: blame-survival needs the FULL history, so the graph stays intact.
+//
+// The clone lands in a temp dir and is deleted on return — the repo is NEVER
+// cached or persisted. Best-effort: a clone or blame failure logs and returns, so
+// it never fails the overall sync.
+func analyzeBlame(ctx context.Context, database *db.DB, orgID string, repo store.Repo, token string, log *slog.Logger) {
 	tmp, err := os.MkdirTemp("", "gitstate-sync-*")
 	if err != nil {
 		log.Error("sync: temp dir", "err", err)
@@ -45,36 +52,18 @@ func cloneAndIngest(ctx context.Context, database *db.DB, orgID string, repo sto
 	cloneCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(cloneCtx, "git", "clone", "--no-tags", injectCloneToken(repo.CloneURL, token), tmp)
+	cmd := exec.CommandContext(cloneCtx, "git", "clone",
+		"--filter=blob:none", "--no-tags", "--single-branch",
+		injectCloneToken(repo.CloneURL, token), tmp)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		log.Error("sync: clone repo", "err", err, "stderr", strings.TrimSpace(stderr.String()))
+		log.Error("sync: clone repo (blobless)", "err", err, "stderr", strings.TrimSpace(stderr.String()))
 		return
 	}
 
-	// 1. Raw commits → commits table (feeds Analytics, the heatmap, Cycle Time, Contribution).
-	if commits, err := git.WalkCommits(ctx, tmp, time.Time{}); err != nil {
-		log.Error("sync: walk commits", "err", err)
-	} else if len(commits) > 0 {
-		if e := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
-			for _, c := range commits {
-				if err := store.UpsertCommit(ctx, tx, &store.Commit{
-					OrgID: orgID, RepoID: repo.ID, SHA: c.SHA,
-					AuthorLogin: c.AuthorName, AuthorEmail: c.AuthorEmail, IsAgent: c.IsAgent,
-					Message: c.Message, Additions: c.Additions, Deletions: c.Deletions, CommittedAt: c.CommittedAt,
-				}); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); e != nil {
-			log.Error("sync: store commits", "err", e)
-		} else {
-			log.Info("sync: commits stored", "count", len(commits))
-		}
-	}
-
-	// 2. Deep analysis → commit_files / blame-survival / SZZ (Contribution dashboards).
+	// Deep analysis → commit_files / blame-survival / SZZ (Contribution dashboards).
+	// AnalyzeRepo runs `git log` + `git blame`; the blobless clone fetches the blobs
+	// blame touches on demand, so this works without a full checkout.
 	if res, err := gitanalysis.AnalyzeRepo(ctx, tmp); err != nil {
 		log.Error("sync: analyze git history", "err", err)
 	} else if err := store.StoreResult(ctx, database, orgID, repo.ID, res); err != nil {
@@ -226,6 +215,16 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 		}
 	}
 
+	// ── 4a. Fetch commits via the platform API (NO clone) ─────────────────────
+	// Commit-level data now comes from the platform commits API, not a clone. The
+	// pull is INCREMENTAL: since = repo.LastSyncedAt, so a re-sync fetches only
+	// commits added since the last run (a zero/first-sync pulls full history).
+	// UpsertCommit is idempotent on (org_id, repo_id, sha). Best-effort: a fetch
+	// failure logs and continues. Runs BEFORE ComputeCycleTimes so the commits feed
+	// is current. (The list endpoint omits churn → additions/deletions stay 0; the
+	// blame pass below supplies per-file churn via commit_files.)
+	syncCommitsFromAPI(ctx, database, provider, orgID, repo, log)
+
 	// ── 4. Update last_synced_at on the repo ──────────────────────────────────
 	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
 		return store.UpdateRepoSyncedAt(ctx, tx, orgID, repo.ID)
@@ -233,17 +232,16 @@ func SyncRepo(ctx context.Context, database *db.DB, provider Provider, orgID str
 		log.Error("sync: update last_synced_at", "err", err)
 	}
 
-	// ── 4.5. Clone + analyze git history (commits, blame-survival, SZZ, coupling) ─
-	// The platform API returns issues/PRs but NOT commit-level data — so without
-	// this, Contribution, the commit heatmap/analytics, and cycle time (lead time =
-	// merged_at − first commit) are all empty. Clone the repo and run the analysis
-	// engine, then persist commits/commit_files/attribution. Best-effort: a clone
-	// failure (private repo without a token, network) must not fail the sync. Runs
-	// BEFORE ComputeCycleTimes so lead times have first-commit timestamps.
+	// ── 4b. Blobless clone + deep blame analysis (blame-survival, SZZ, coupling) ─
+	// The platform API supplies commits (step 4a) but NOT blame/file-level data, so
+	// the deep Contribution metrics still need git objects. This is the ONLY clone
+	// in a sync, and it is a temp blobless partial clone that is deleted on return
+	// (the repo is never stored). Best-effort: a clone failure (private repo without
+	// a token, network) must not fail the sync. Runs BEFORE ComputeCycleTimes.
 	if repo.CloneURL == "" {
-		log.Warn("sync: no clone URL — skipping commit/contribution analysis")
+		log.Warn("sync: no clone URL — skipping blame/contribution analysis")
 	} else {
-		cloneAndIngest(ctx, database, orgID, repo, cloneToken, log)
+		analyzeBlame(ctx, database, orgID, repo, cloneToken, log)
 	}
 
 	// ── 5. Post-sync metrics: cycle times + self-calibrating effort curves ─────
@@ -423,6 +421,47 @@ func syncDeployments(ctx context.Context, database *db.DB, provider Provider, or
 	if stored > 0 {
 		log.Info("sync: deployments stored", "count", stored)
 	}
+}
+
+// syncCommitsFromAPI pulls commits from the platform commits API (no clone) and
+// upserts them into the commits table. The pull is INCREMENTAL: since =
+// repo.LastSyncedAt, so a re-sync only fetches commits added since the last sync;
+// a zero LastSyncedAt (first sync) pulls the full history. UpsertCommit is
+// idempotent on (org_id, repo_id, sha). Wholly best-effort: a fetch/store failure
+// logs and returns; it must never fail the sync.
+func syncCommitsFromAPI(ctx context.Context, database *db.DB, provider Provider, orgID string, repo store.Repo, log *slog.Logger) {
+	var since time.Time
+	if repo.LastSyncedAt != nil {
+		since = *repo.LastSyncedAt
+	}
+	commits, err := provider.ListCommits(ctx, repo.FullName, since)
+	if err != nil {
+		log.Error("sync: list commits (api)", "err", err)
+		return
+	}
+	if len(commits) == 0 {
+		return
+	}
+	if err := database.WithOrg(ctx, orgID, func(tx pgx.Tx) error {
+		for _, c := range commits {
+			if err := store.UpsertCommit(ctx, tx, &store.Commit{
+				OrgID:       orgID,
+				RepoID:      repo.ID,
+				SHA:         c.SHA,
+				AuthorLogin: c.AuthorLogin,
+				AuthorEmail: c.AuthorEmail,
+				Message:     c.Message,
+				CommittedAt: c.CommittedAt,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Error("sync: store commits (api) tx", "err", err)
+		return
+	}
+	log.Info("sync: commits stored (api)", "count", len(commits), "incremental", !since.IsZero())
 }
 
 // incidentLabelRe / incidentSeverity classify an issue's labels as an incident.

@@ -74,6 +74,19 @@ type RemoteDeployment struct {
 	DeployedAt  time.Time
 }
 
+// RemoteCommit is a normalised commit fetched from a platform's commits API
+// (the list-commits endpoint, NOT a clone). It carries enough to populate the
+// commits table that feeds Analytics, the heatmap, and Contribution. The list
+// endpoint returns no additions/deletions, so churn is left zero here; the deep
+// blame pass (commit_files) supplies per-file churn separately.
+type RemoteCommit struct {
+	SHA         string
+	AuthorLogin string // platform login, falling back to the git author name
+	AuthorEmail string
+	Message     string
+	CommittedAt time.Time
+}
+
 // RemoteRepo is a normalised repository record from a platform.
 type RemoteRepo struct {
 	ExternalID    string
@@ -104,6 +117,12 @@ type Provider interface {
 	// ListReviews returns the review events for one PR/MR number on the repo.
 	// GitHub: real PR reviews. GitLab: approvals + reviewer notes (approximation).
 	ListReviews(ctx context.Context, fullName string, prNumber int) ([]RemoteReview, error)
+
+	// ListCommits returns repository commits via the platform commits API (no
+	// clone). When since is non-zero only commits at/after it are returned (an
+	// INCREMENTAL pull keyed off the repo's last_synced_at); a zero since pulls
+	// the full history. Results carry no churn (the list endpoint omits it).
+	ListCommits(ctx context.Context, fullName string, since time.Time) ([]RemoteCommit, error)
 
 	// ListDeployments returns the CI/CD deployments for the repo (newest-first ok).
 	ListDeployments(ctx context.Context, fullName string) ([]RemoteDeployment, error)
@@ -338,6 +357,53 @@ func commitTime(c *gogithub.RepositoryCommit) time.Time {
 		return cm.Date.Time
 	}
 	return time.Time{}
+}
+
+func (g *githubProvider) ListCommits(ctx context.Context, fullName string, since time.Time) ([]RemoteCommit, error) {
+	owner, name, err := splitFullName(fullName)
+	if err != nil {
+		return nil, err
+	}
+	opts := &gogithub.CommitsListOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
+	if !since.IsZero() {
+		opts.Since = since
+	}
+	var out []RemoteCommit
+	for {
+		commits, resp, err := g.client.Repositories.ListCommits(ctx, owner, name, opts)
+		if err != nil {
+			return nil, fmt.Errorf("github: list commits %s: %w", fullName, err)
+		}
+		for _, c := range commits {
+			if c == nil {
+				continue
+			}
+			rc := RemoteCommit{
+				SHA:         c.GetSHA(),
+				AuthorLogin: c.GetAuthor().GetLogin(),
+				CommittedAt: commitTime(c),
+			}
+			if cm := c.GetCommit(); cm != nil {
+				rc.Message = cm.GetMessage()
+				if a := cm.GetAuthor(); a != nil {
+					rc.AuthorEmail = a.GetEmail()
+					// Fall back to the git author name when there is no linked login.
+					if rc.AuthorLogin == "" {
+						rc.AuthorLogin = a.GetName()
+					}
+				}
+			}
+			if rc.SHA == "" {
+				continue
+			}
+			out = append(out, rc)
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
 }
 
 func (g *githubProvider) ListReviews(ctx context.Context, fullName string, prNumber int) ([]RemoteReview, error) {
@@ -592,6 +658,46 @@ func (gl *gitlabProvider) firstCommitAt(ctx context.Context, fullName string, mr
 		opts.Page = resp.NextPage
 	}
 	return earliest, nil
+}
+
+func (gl *gitlabProvider) ListCommits(ctx context.Context, fullName string, since time.Time) ([]RemoteCommit, error) {
+	opts := &gogitlab.ListCommitsOptions{ListOptions: gogitlab.ListOptions{PerPage: 100}}
+	if !since.IsZero() {
+		s := since
+		opts.Since = &s
+	}
+	var out []RemoteCommit
+	for {
+		commits, resp, err := gl.client.Commits.ListCommits(fullName, opts, gogitlab.WithContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("gitlab: list commits %s: %w", fullName, err)
+		}
+		for _, c := range commits {
+			if c == nil || c.ID == "" {
+				continue
+			}
+			rc := RemoteCommit{
+				SHA:         c.ID,
+				AuthorLogin: c.AuthorName,
+				AuthorEmail: c.AuthorEmail,
+				Message:     c.Title,
+			}
+			switch {
+			case c.CommittedDate != nil:
+				rc.CommittedAt = *c.CommittedDate
+			case c.AuthoredDate != nil:
+				rc.CommittedAt = *c.AuthoredDate
+			case c.CreatedAt != nil:
+				rc.CommittedAt = *c.CreatedAt
+			}
+			out = append(out, rc)
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
 }
 
 // ListReviews approximates GitLab reviews from (1) MR approvals and (2) review

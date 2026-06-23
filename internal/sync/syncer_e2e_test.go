@@ -27,6 +27,12 @@ type fakeProvider struct {
 	prs     []RemotePR
 	reviews map[int][]RemoteReview // keyed by PR number
 	deploys []RemoteDeployment
+	commits []RemoteCommit
+
+	// commitsSince records the `since` passed to ListCommits so the test can
+	// assert the incremental wiring (SyncRepo passes repo.LastSyncedAt).
+	commitsSinceCalled bool
+	commitsSince       time.Time
 }
 
 func (f *fakeProvider) Platform() string { return "github" }
@@ -44,6 +50,11 @@ func (f *fakeProvider) ListReviews(_ context.Context, _ string, prNumber int) ([
 }
 func (f *fakeProvider) ListDeployments(context.Context, string) ([]RemoteDeployment, error) {
 	return f.deploys, nil
+}
+func (f *fakeProvider) ListCommits(_ context.Context, _ string, since time.Time) ([]RemoteCommit, error) {
+	f.commitsSinceCalled = true
+	f.commitsSince = since
+	return f.commits, nil
 }
 func (f *fakeProvider) UpdateIssueState(context.Context, string, int, string) error {
 	return nil
@@ -112,6 +123,13 @@ func TestSyncRepoEndToEnd(t *testing.T) {
 		deploys: []RemoteDeployment{
 			{ExternalID: fmt.Sprintf("e2e-dep-%d", ns), Environment: "production", Status: "success", SHA: "abc123", DeployedAt: merged},
 		},
+		// Two commits delivered via the API path (no clone). SyncRepo must upsert
+		// these through provider.ListCommits — the fake repo has no clone URL, so the
+		// blame clone is skipped and these are the only commits the API path adds.
+		commits: []RemoteCommit{
+			{SHA: fmt.Sprintf("api-sha-1-%d", ns), AuthorLogin: "dev", AuthorEmail: devEmail, Message: "api commit one", CommittedAt: firstCommit},
+			{SHA: fmt.Sprintf("api-sha-2-%d", ns), AuthorLogin: "reviewer", AuthorEmail: reviewerEmail, Message: "api commit two", CommittedAt: merged},
+		},
 	}
 
 	// Seed users + commits so the commit-identity bridge (login→email→users) can
@@ -160,6 +178,19 @@ func TestSyncRepoEndToEnd(t *testing.T) {
 	// git-analysis step is skipped/best-effort and the API-driven assertions hold.
 	if err := SyncRepo(ctx, database, prov, orgID, *repo, ""); err != nil {
 		t.Fatalf("SyncRepo returned error: %v", err)
+	}
+
+	// The API commit path must have been invoked, and `since` must equal the repo's
+	// LastSyncedAt at sync time (nil here → zero), proving the incremental wiring.
+	if !prov.commitsSinceCalled {
+		t.Error("provider.ListCommits was not called — API commit path not wired")
+	}
+	if repo.LastSyncedAt == nil {
+		if !prov.commitsSince.IsZero() {
+			t.Errorf("ListCommits since = %v, want zero (repo had no last_synced_at → full pull)", prov.commitsSince)
+		}
+	} else if !prov.commitsSince.Equal(*repo.LastSyncedAt) {
+		t.Errorf("ListCommits since = %v, want %v (= repo.LastSyncedAt → incremental)", prov.commitsSince, *repo.LastSyncedAt)
 	}
 
 	// Verify side effects landed, all reads inside the org's RLS context.
@@ -261,6 +292,19 @@ func TestSyncRepoEndToEnd(t *testing.T) {
 		}
 		if depCount != 1 {
 			t.Errorf("deployments = %d, want 1 (gap C)", depCount)
+		}
+
+		// 8b. API commits: the two commits delivered via provider.ListCommits (the
+		//     no-clone path) landed in the commits table. The fake repo has no clone
+		//     URL, so the blame clone is skipped — these prove the API commit path.
+		var apiCommitCount int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM commits WHERE org_id=$1 AND repo_id=$2 AND sha LIKE 'api-sha-%'`,
+			orgID, repoID).Scan(&apiCommitCount); err != nil {
+			return err
+		}
+		if apiCommitCount != 2 {
+			t.Errorf("api-sourced commits = %d, want 2 (commits via provider.ListCommits, no clone)", apiCommitCount)
 		}
 
 		// 9. Gap C — Incident derived from the sev1 closed issue, with resolved_at.
