@@ -411,6 +411,35 @@ export function syncCalendar(body) {
 }
 
 /**
+ * Download a billing invoice as a branded PDF (GET /api/invoices/{id}/pdf).
+ * Streams the attachment and triggers a browser save. Returns nothing; throws
+ * ApiError on a non-2xx response.
+ */
+export async function downloadInvoicePdf(invoiceId) {
+  const headers = {}
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const orgId = getActiveOrgId()
+  if (orgId) headers['X-Org-ID'] = orgId
+
+  const res = await fetch(`${BASE}/api/invoices/${invoiceId}/pdf`, { headers })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try { const j = await res.json(); msg = j.error || j.message || msg } catch { /* ignore */ }
+    throw new ApiError(res.status, msg)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `gitstate-invoice-${invoiceId}.pdf`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/**
  * Fetch public config — used by login page to discover enabled OAuth providers.
  * Shape: { publicUrl, auth: { password, providers: { google, microsoft } }, billing: { chargeCurrency } }
  * @returns {Promise<object>}

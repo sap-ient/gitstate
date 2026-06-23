@@ -13,6 +13,8 @@ import (
 
 	"github.com/exo/gitstate/internal/config"
 	"github.com/exo/gitstate/internal/db"
+	"github.com/exo/gitstate/internal/invoicedelivery"
+	"github.com/exo/gitstate/internal/invoicepdf"
 	"github.com/exo/gitstate/internal/middleware"
 	"github.com/exo/gitstate/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -57,6 +59,7 @@ func RegisterInvoiceRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Conf
 	mux.Handle("GET /api/invoices", auth(h.listInvoices))
 	mux.Handle("POST /api/invoices/generate", auth(h.generate))
 	mux.Handle("POST /api/invoices", auth(h.createInvoice))
+	mux.Handle("GET /api/invoices/{id}/pdf", auth(h.invoicePDF))
 	mux.Handle("GET /api/invoices/{id}", auth(h.getInvoice))
 	mux.Handle("PATCH /api/invoices/{id}", auth(h.patchInvoice))
 	mux.Handle("DELETE /api/invoices/{id}", auth(h.deleteInvoice))
@@ -252,6 +255,84 @@ func (h *invoiceHandlers) getInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// invoicePDF streams a branded PDF for a finalized billing invoice (the per-seat
+// invoices table: USD billed / ZAR charged / locked FX rate). Any org member may
+// download it; the invoice is read under RLS so only the caller's org is visible.
+//
+//	GET /api/invoices/{id}/pdf  → application/pdf (Content-Disposition: attachment)
+func (h *invoiceHandlers) invoicePDF(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	if orgID == "" {
+		writeError(w, http.StatusBadRequest, "org context required")
+		return
+	}
+	id := r.PathValue("id")
+
+	var (
+		inv   *store.Invoice
+		lines []store.InvoiceLine
+		org   *store.Org
+	)
+	err := h.db.WithOrg(r.Context(), orgID, func(tx pgx.Tx) error {
+		i, ls, e := store.GetInvoice(r.Context(), tx, orgID, id)
+		if e != nil {
+			return e
+		}
+		inv, lines = i, ls
+		o, e := store.GetOrg(r.Context(), tx, orgID)
+		if e != nil {
+			return e
+		}
+		org = o
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "invoice not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load invoice")
+		return
+	}
+
+	appBillingURL := ""
+	if h.cfg != nil {
+		if base := strings.TrimRight(h.cfg.App.PublicURL, "/"); base != "" {
+			appBillingURL = base + "/billing"
+		}
+	}
+	data := invoicedelivery.BuildInvoiceData(inv, lines, org, appBillingURL)
+	pdfBytes, err := invoicepdf.Render(data)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not render invoice pdf")
+		return
+	}
+
+	filename := "gitstate-invoice-" + invoiceFilenameSlug(data.Number) + ".pdf"
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(pdfBytes)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfBytes)
+}
+
+// invoiceFilenameSlug keeps only filename-safe characters from an invoice number.
+func invoiceFilenameSlug(s string) string {
+	out := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, s)
+	if out == "" {
+		return "invoice"
+	}
+	return out
 }
 
 // createInvoiceRequest is the body for POST /api/invoices (manual draft).

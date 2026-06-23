@@ -709,6 +709,19 @@ function InvoiceLineRow({ line }) {
 
 function InvoiceDetailPanel({ id, onBack }) {
   const { data: inv, loading, error, disabled } = useInvoiceDetail(id)
+  const [pdfBusy, setPdfBusy] = useState(false)
+  const [pdfError, setPdfError] = useState(null)
+
+  async function downloadPdf() {
+    setPdfBusy(true); setPdfError(null)
+    try {
+      await api.downloadInvoicePdf(id)
+    } catch (e) {
+      setPdfError(e?.message ?? 'Could not download PDF')
+    } finally {
+      setPdfBusy(false)
+    }
+  }
 
   if (disabled) return <BillingDisabled />
   if (loading) return <LoadingCenter />
@@ -752,8 +765,26 @@ function InvoiceDetailPanel({ id, onBack }) {
               <p className="text-xs text-[var(--text-faint)] mt-0.5">Issued {new Date(issuedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>
             )}
           </div>
-          <InvoiceStatus status={status} />
+          <div className="flex flex-col items-end gap-2 shrink-0">
+            <InvoiceStatus status={status} />
+            <button
+              onClick={downloadPdf}
+              disabled={pdfBusy}
+              className="inline-flex items-center gap-1.5 rounded-[var(--radius-btn)] px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 hover:brightness-110"
+              style={{ border: '1px solid var(--border2)', color: 'var(--brand-teal)', background: 'var(--bg)' }}
+            >
+              {pdfBusy ? (
+                <Spinner size={13} />
+              ) : (
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+              )}
+              Download PDF
+            </button>
+          </div>
         </div>
+        {pdfError && <p className="text-xs mb-3" style={{ color: 'var(--bad)' }}>{pdfError}</p>}
 
         {/* Amounts: USD billed + ZAR charged + FX rate */}
         <div
