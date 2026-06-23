@@ -7,10 +7,12 @@ test('analytics: charts + tables render', async ({ page }) => {
   const h1 = await pageHeading(page)
   assert(/Analytics/i.test(h1), `analytics: h1 expected "Analytics", got "${h1}"`)
 
-  // Contribution heatmap (svg with accessible name) must render with cells.
-  const heatmap = page.getByRole('img', { name: 'Contribution heatmap' })
+  // Contribution heatmap is now MULTI-YEAR: one full-width SVG per calendar year
+  // (accessible name "Contribution heatmap <year>"). At least the newest year row
+  // must render with day cells.
+  const heatmap = page.getByRole('img', { name: /^Contribution heatmap/ }).first()
   await assertVisible(heatmap, 'analytics: contribution heatmap')
-  const cells = await page.locator('svg[aria-label="Contribution heatmap"] rect').count()
+  const cells = await page.locator('svg[aria-label^="Contribution heatmap"] rect').count()
   assert(cells > 0, 'analytics: heatmap has no day cells')
 
   // Commits-over-time chart line path exists.

@@ -249,10 +249,12 @@ function StatTiles({ summary, loading }) {
 
 // ── contribution heatmap ────────────────────────────────────────────────────
 
-const WEEKS = 53
+const WEEKS = 53 // max week-columns in a calendar year (GitHub-style)
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const BASE_CELL = 12 // px including gap (fallback before measure)
 const GAP = 3
+const LEFT_MARGIN = 34 // px reserved for the year label / weekday gutter
+const TOP_LABEL = 14 // px reserved above each year grid for month labels
 
 // teal → indigo scale for cell intensity
 const HEAT_COLORS = ['#14b8a6', '#22b8bf', '#3aa6d4', '#5a8ee6', '#6366F1']
@@ -264,70 +266,185 @@ function colorForCount(count, max) {
   return HEAT_COLORS[idx]
 }
 
-/** Build a 53-week grid ending today (or at filter `to`). */
-function buildGrid(heatmap, endISO) {
-  const map = new Map()
-  let max = 0
-  for (const d of heatmap) {
-    if (d?.date) { map.set(d.date.slice(0, 10), d.count || 0); if ((d.count || 0) > max) max = d.count }
-  }
-  const end = endISO ? new Date(endISO + 'T00:00:00') : new Date()
-  end.setHours(0, 0, 0, 0)
-  // align end to Saturday so columns are clean weeks
-  const endDow = end.getDay()
-  const gridEnd = new Date(end); gridEnd.setDate(end.getDate() + (6 - endDow))
-  const start = new Date(gridEnd); start.setDate(gridEnd.getDate() - (WEEKS * 7 - 1))
-
-  const weeks = []
-  const cur = new Date(start)
-  for (let w = 0; w < WEEKS; w++) {
-    const col = []
-    for (let dow = 0; dow < 7; dow++) {
-      const iso = localISO(cur) // LOCAL date key — matches the data buckets (see localISO)
-      const isFuture = cur > end
-      col.push({ iso, count: map.get(iso) || 0, future: isFuture, date: new Date(cur) })
-      cur.setDate(cur.getDate() + 1)
-    }
-    weeks.push(col)
-  }
-  return { weeks, max }
+// startOfWeek: the Sunday on or before `d` (GitHub aligns weeks Sun..Sat).
+function startOfWeek(d) {
+  const s = new Date(d)
+  s.setHours(0, 0, 0, 0)
+  s.setDate(s.getDate() - s.getDay())
+  return s
 }
 
-function Heatmap({ heatmap, loading, endISO, selectedDate, onSelect }) {
-  const { weeks, max } = useMemo(() => buildGrid(heatmap, endISO), [heatmap, endISO])
-  const [hover, setHover] = useState(null) // {x,y,cell}
-  const wrapRef = useRef(null)
+/**
+ * Build a per-calendar-year set of GitHub-style grids covering the full span of
+ * the heatmap data. Each year is a 7-row × N-week-column grid (weeks aligned
+ * Sun..Sat) where days outside that calendar year are flagged `blank` (rendered
+ * empty). A SHARED global `max` is computed across ALL years so intensity colours
+ * are comparable year-to-year (2020 reads the same scale as 2024).
+ *
+ * Returns { years: [{year, weeks, total}], max, total, minYear, maxYear }, years
+ * ordered NEWEST-first for the stacked render.
+ */
+function buildYears(heatmap) {
+  const map = new Map()
+  let max = 0
+  let total = 0
+  let minDate = null
+  let maxDate = null
+  for (const d of heatmap) {
+    if (!d?.date) continue
+    const iso = d.date.slice(0, 10)
+    const c = d.count || 0
+    map.set(iso, c)
+    total += c
+    if (c > max) max = c
+    const dt = new Date(iso + 'T00:00:00')
+    if (!minDate || dt < minDate) minDate = dt
+    if (!maxDate || dt > maxDate) maxDate = dt
+  }
+  if (!minDate || !maxDate) return { years: [], max: 0, total: 0, minYear: null, maxYear: null }
 
-  // Responsive cell size: fill the container width with square cells (the SVG
-  // text labels stay crisp — we resize cells, not stretch the SVG).
-  const [measuredW, setMeasuredW] = useState(0)
-  useLayoutEffect(() => {
-    const el = wrapRef.current
-    if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(([e]) => setMeasuredW(Math.round(e.contentRect.width)))
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-  const CELL = measuredW > 0 ? Math.max(BASE_CELL, (measuredW - 30) / WEEKS) : BASE_CELL
+  // Never render future cells past today (a partial current year is fine).
+  const today = new Date(); today.setHours(0, 0, 0, 0)
 
-  // month labels: place at first week whose first day's month differs from prev
+  const minYear = minDate.getFullYear()
+  const maxYear = maxDate.getFullYear()
+  const years = []
+  for (let y = maxYear; y >= minYear; y--) {
+    // Grid runs from the Sunday on/before Jan 1 to the Saturday on/after Dec 31.
+    const jan1 = new Date(y, 0, 1)
+    const dec31 = new Date(y, 11, 31)
+    const gridStart = startOfWeek(jan1)
+    const gridEnd = new Date(dec31)
+    gridEnd.setDate(gridEnd.getDate() + (6 - gridEnd.getDay())) // align to Saturday
+    const weeks = []
+    let yTotal = 0
+    const cur = new Date(gridStart)
+    while (cur <= gridEnd) {
+      const col = []
+      for (let dow = 0; dow < 7; dow++) {
+        const iso = localISO(cur) // LOCAL date key — matches the data buckets (see localISO)
+        const inYear = cur.getFullYear() === y
+        const isFuture = cur > today
+        const count = map.get(iso) || 0
+        if (inYear) yTotal += count
+        col.push({ iso, count, blank: !inYear || isFuture, date: new Date(cur) })
+        cur.setDate(cur.getDate() + 1)
+      }
+      weeks.push(col)
+    }
+    years.push({ year: y, weeks, total: yTotal })
+  }
+  return { years, max, total, minYear, maxYear }
+}
+
+// One full-width year row: a left year label + the 7×N SVG grid. Cells resize to
+// fill `cellSize`; the SVG width tracks the measured container so each row spans
+// the card. Month labels sit along the top of every row. Hover/click bubble up to
+// the parent via callbacks so the tooltip is positioned relative to the wrapper.
+function YearRow({ year, weeks, cellSize, max, selectedDate, onSelect, onHover, onLeave }) {
+  const cols = weeks.length
   const monthLabels = useMemo(() => {
     const out = []
     let prev = -1
     weeks.forEach((col, wi) => {
-      const m = col[0].date.getMonth()
-      if (m !== prev && col[0].date.getDate() <= 14) { out.push({ wi, label: MONTHS[m] }); prev = m }
+      // label at the first week that contains the 1st..7th of a new month
+      const inYearDay = col.find(c => !c.blank) || col[0]
+      const m = inYearDay.date.getMonth()
+      if (m !== prev && inYearDay.date.getDate() <= 7 && !col.every(c => c.blank)) {
+        out.push({ wi, label: MONTHS[m] }); prev = m
+      }
     })
     return out
   }, [weeks])
 
-  const width = WEEKS * CELL + 30
-  const height = 7 * CELL + 22
+  const width = LEFT_MARGIN + cols * cellSize
+  const gridH = 7 * cellSize
+  const height = TOP_LABEL + gridH
+
+  return (
+    <svg width={width} height={height} className="block" role="img" aria-label={`Contribution heatmap ${year}`}>
+      {/* year label, vertically centred against the grid */}
+      <text x={0} y={TOP_LABEL + gridH / 2} dominantBaseline="middle" fontSize="11" className="font-mono font-semibold" fill="var(--text-dim)">
+        {year}
+      </text>
+      {/* month labels */}
+      {monthLabels.map(m => (
+        <text key={m.wi} x={LEFT_MARGIN + m.wi * cellSize} y={10} className="font-mono" fontSize="9" fill="var(--text-faint)">
+          {m.label}
+        </text>
+      ))}
+      {/* cells */}
+      <g transform={`translate(${LEFT_MARGIN}, ${TOP_LABEL})`}>
+        {weeks.map((col, wi) =>
+          col.map((cell, dow) => {
+            if (cell.blank) return null
+            const fill = colorForCount(cell.count, max)
+            const selected = selectedDate === cell.iso
+            return (
+              <rect
+                key={cell.iso}
+                x={wi * cellSize}
+                y={dow * cellSize}
+                width={Math.max(1, cellSize - GAP)}
+                height={Math.max(1, cellSize - GAP)}
+                rx={2}
+                fill={fill || 'var(--bg-surface3)'}
+                stroke={selected ? 'var(--text)' : 'transparent'}
+                strokeWidth={selected ? 1.5 : 0}
+                className="cursor-pointer transition-opacity hover:opacity-80"
+                onClick={() => onSelect(cell.count ? cell.iso : null)}
+                onMouseEnter={e => onHover(e, cell, cellSize)}
+                onMouseLeave={onLeave}
+              />
+            )
+          })
+        )}
+      </g>
+    </svg>
+  )
+}
+
+function Heatmap({ heatmap, loading, selectedDate, onSelect }) {
+  const { years, max, total, minYear, maxYear } = useMemo(() => buildYears(heatmap), [heatmap])
+  const [hover, setHover] = useState(null) // {x,y,cell}
+  const wrapRef = useRef(null)
+
+  // Responsive cell size: fill the container width with square cells (the SVG
+  // text labels stay crisp — we resize cells, not stretch the SVG). Each year row
+  // is a full calendar year (≤53 week-columns) so the grid spans the card width.
+  const [measuredW, setMeasuredW] = useState(0)
+  // Re-attach when the real (ref-bearing) wrapper mounts: the loading/empty
+  // branches return BEFORE the wrapper exists, so a []-deps effect would attach
+  // to nothing and never re-run, leaving the SVG stuck at the BASE_CELL fallback
+  // width. Keying on loading + years.length re-runs the observer once content is
+  // live so cells actually grow to fill the card.
+  useLayoutEffect(() => {
+    const el = wrapRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    setMeasuredW(Math.round(el.getBoundingClientRect().width))
+    const ro = new ResizeObserver(([e]) => setMeasuredW(Math.round(e.contentRect.width)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [loading, years.length])
+  const cellSize = measuredW > 0 ? Math.max(BASE_CELL, (measuredW - LEFT_MARGIN) / WEEKS) : BASE_CELL
+
+  // Position the tooltip relative to the wrapper so it's correct across the
+  // multiple stacked year-row SVGs.
+  const handleHover = (e, cell, cs) => {
+    const r = wrapRef.current?.getBoundingClientRect()
+    const cr = e.target.getBoundingClientRect()
+    setHover({
+      x: cr.left - (r?.left ?? 0) + (cs - GAP) / 2,
+      y: cr.top - (r?.top ?? 0),
+      cell,
+    })
+  }
+  const handleLeave = () => setHover(null)
 
   if (loading) {
-    return <div className="h-[140px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
+    return <div className="h-[160px] rounded-[var(--radius-card)] bg-[var(--bg-surface2)] animate-pulse" />
   }
-  if (!heatmap.length || max === 0) {
+  if (!heatmap.length || !years.length || max === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-[140px] text-center">
         <CalendarDays size={22} className="text-[var(--text-faint)] mb-2" />
@@ -336,90 +453,32 @@ function Heatmap({ heatmap, loading, endISO, selectedDate, onSelect }) {
     )
   }
 
-  const total = weeks.reduce((a, col) => a + col.reduce((b, c) => b + c.count, 0), 0)
-
-  // Honest range caption: the grid is a fixed 53-week (1-year) GitHub-style view
-  // ending at the filter `to` (or today). On a historical window it shows that
-  // year — not always "now" — and the caption states the exact span so users
-  // understand the full history lives in commits-over-time + the summary.
-  const firstCell = weeks[0]?.[0]?.date
-  const lastVisible = (() => {
-    for (let wi = weeks.length - 1; wi >= 0; wi--) {
-      for (let dow = 6; dow >= 0; dow--) {
-        const c = weeks[wi][dow]
-        if (c && !c.future) return c.date
-      }
-    }
-    return null
-  })()
-  const rangeCaption = firstCell && lastVisible
-    ? `${fmtDate(firstCell, { month: 'short', year: 'numeric' })} → ${fmtDate(lastVisible, { month: 'short', year: 'numeric' })}`
-    : null
+  const spanCaption = minYear === maxYear ? `${minYear}` : `${minYear} → ${maxYear}`
 
   return (
-    <div className="relative" ref={wrapRef}>
-      <div className="pb-1">
-        <svg width={width} height={height} className="block" role="img" aria-label="Contribution heatmap">
-          {/* month labels */}
-          {monthLabels.map(m => (
-            <text
-              key={m.wi}
-              x={30 + m.wi * CELL}
-              y={10}
-              className="font-mono"
-              fontSize="9"
-              fill="var(--text-faint)"
-            >
-              {m.label}
-            </text>
-          ))}
-          {/* weekday labels */}
-          {['Mon', 'Wed', 'Fri'].map((d, i) => (
-            <text key={d} x={0} y={22 + (i * 2 + 1) * CELL + 9} fontSize="9" className="font-mono" fill="var(--text-faint)">{d}</text>
-          ))}
-          {/* cells */}
-          <g transform={`translate(30, 16)`}>
-            {weeks.map((col, wi) =>
-              col.map((cell, dow) => {
-                if (cell.future) return null
-                const fill = colorForCount(cell.count, max)
-                const selected = selectedDate === cell.iso
-                return (
-                  <rect
-                    key={cell.iso}
-                    x={wi * CELL}
-                    y={dow * CELL}
-                    width={CELL - GAP}
-                    height={CELL - GAP}
-                    rx={2}
-                    fill={fill || 'var(--bg-surface3)'}
-                    stroke={selected ? 'var(--text)' : 'transparent'}
-                    strokeWidth={selected ? 1.5 : 0}
-                    className="cursor-pointer transition-opacity hover:opacity-80"
-                    onClick={() => onSelect(cell.count ? cell.iso : null)}
-                    onMouseEnter={e => {
-                      const r = wrapRef.current?.getBoundingClientRect()
-                      const cr = e.target.getBoundingClientRect()
-                      setHover({
-                        x: cr.left - (r?.left ?? 0) + (CELL - GAP) / 2,
-                        y: cr.top - (r?.top ?? 0),
-                        cell,
-                      })
-                    }}
-                    onMouseLeave={() => setHover(null)}
-                  />
-                )
-              })
-            )}
-          </g>
-        </svg>
+    <div className="relative w-full" ref={wrapRef}>
+      {/* Stacked full-width year rows, newest on top. */}
+      <div className="flex flex-col gap-3">
+        {years.map(y => (
+          <YearRow
+            key={y.year}
+            year={y.year}
+            weeks={y.weeks}
+            cellSize={cellSize}
+            max={max}
+            selectedDate={selectedDate}
+            onSelect={onSelect}
+            onHover={handleHover}
+            onLeave={handleLeave}
+          />
+        ))}
       </div>
 
       {/* legend + total */}
-      <div className="flex items-center justify-between mt-1.5">
+      <div className="flex items-center justify-between mt-3">
         <span className="text-[11px] font-mono text-[var(--text-faint)]">
           {fmtNum(total)} commits
-          {rangeCaption && <span className="text-[var(--text-faint)]/70"> · {rangeCaption} (last 53 weeks)</span>}
+          <span className="text-[var(--text-faint)]/70"> · {spanCaption}</span>
         </span>
         <div className="flex items-center gap-1.5 text-[10px] font-mono text-[var(--text-faint)]">
           <span>less</span>
@@ -1231,13 +1290,13 @@ export default function Analytics() {
               <div>
                 <h2 className="text-sm font-semibold text-[var(--text)]">Contribution heatmap</h2>
                 <p className="text-xs text-[var(--text-faint)] mt-0.5">
-                  Last 53 weeks ending {fmtDate(filters.to || todayISO(), { month: 'short', day: 'numeric', year: 'numeric' })} · click any day for its commits
+                  Full history, one row per year · click any day for its commits
                 </p>
               </div>
             </div>
           </div>
           <Heatmap
-            heatmap={heatmap} loading={heatLoading} endISO={filters.to}
+            heatmap={heatmap} loading={heatLoading}
             selectedDate={selectedDate} onSelect={setSelectedDate}
           />
         </Card>
