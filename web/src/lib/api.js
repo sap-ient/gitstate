@@ -564,3 +564,108 @@ export function fetchModels() {
   // Public route — no auth/org headers needed, but request() is harmless without a token.
   return get('/api/models')
 }
+
+// ── Agentic chat (SSE streaming) ────────────────────────────────────────────────
+//
+// POST /api/chat is a Server-Sent-Events stream delivered over a POST body, so it
+// can't use EventSource (which is GET-only). We read the response as a stream and
+// parse frames ourselves. Each frame is:
+//     event: <type>\n
+//     data: <one-line JSON>\n
+//     \n
+// Event types: token | tool_call | tool_result | action | done | error.
+//
+// When the gateway is disabled the endpoint returns 503 — surfaced as ApiError so
+// the UI can show a friendly "AI chat isn't enabled" state.
+
+/**
+ * Open a chat SSE stream. Calls `onEvent({ type, data })` for each parsed frame.
+ * Resolves when the stream ends. Honours an AbortSignal (the stop button).
+ *
+ * @param {{ messages: {role:string, content:string}[], model: string }} body
+ * @param {(evt: { type: string, data: any }) => void} onEvent
+ * @param {{ signal?: AbortSignal }} [options]
+ */
+export async function streamChat(body, onEvent, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  }
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const orgId = getActiveOrgId()
+  if (orgId) headers['X-Org-ID'] = orgId
+
+  const res = await fetch(`${BASE}/api/chat`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: options.signal,
+  })
+
+  if (!res.ok || !res.body) {
+    let errBody = null
+    try { errBody = await res.json() } catch { /* ignore */ }
+    const msg =
+      (errBody && (errBody.error || errBody.message)) ||
+      (res.status === 503
+        ? 'AI chat isn’t enabled on this server.'
+        : `HTTP ${res.status}`)
+    throw new ApiError(res.status, msg, errBody)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  // Parse one SSE block ("event:" + "data:" lines separated by a blank line).
+  const dispatch = (block) => {
+    let type = 'message'
+    const dataLines = []
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event:')) type = line.slice(6).trim()
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
+      // ignore comments (":") and other fields (id:, retry:)
+    }
+    if (dataLines.length === 0) return
+    const raw = dataLines.join('\n')
+    let data
+    try { data = JSON.parse(raw) } catch { data = { raw } }
+    onEvent({ type, data })
+  }
+
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // Split on blank line (frame boundary). Tolerate \r\n.
+    let idx
+    while ((idx = buffer.search(/\r?\n\r?\n/)) !== -1) {
+      const block = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + buffer.slice(idx).match(/^\r?\n\r?\n/)[0].length)
+      if (block.trim()) dispatch(block)
+    }
+  }
+  // Flush any trailing frame without a final blank line.
+  if (buffer.trim()) dispatch(buffer)
+}
+
+/**
+ * Execute an assistant-proposed action against its own endpoint, using the user's
+ * session. The action descriptor comes from an `action` SSE event:
+ *   { type, label, endpoint, method, payload, confirm }
+ * Returns the parsed response (e.g. a Paystack checkout object for plan_upgrade).
+ */
+export function runChatAction(action) {
+  const method = (action?.method || 'POST').toUpperCase()
+  const path = action?.endpoint
+  if (!path) throw new ApiError(400, 'Action has no endpoint')
+  const payload = action?.payload ?? {}
+  switch (method) {
+    case 'GET':    return get(path)
+    case 'PUT':    return put(path, payload)
+    case 'PATCH':  return patch(path, payload)
+    case 'DELETE': return del(path)
+    default:       return post(path, payload)
+  }
+}
