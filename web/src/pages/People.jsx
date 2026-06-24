@@ -124,27 +124,26 @@ function IdentityChip({ identity, canSplit, onSplit, isDefault, onSetDefault, se
 
 // groupIdentities lays a contributor's flat identity list out as login → attached
 // emails. An email "belongs to" a login when it co-occurred with that login on a
-// commit (backend `linkedLogins`). An email may link to several logins — we attach
-// it under EACH login it links to (so the relationship is visible everywhere it
-// holds). Emails with no linked logins are truly standalone → "Other emails".
-// Logins with no attached emails just render alone.
+// commit (backend `linkedLogins`). Each email is attached to EXACTLY ONE login
+// (the first of its linked logins that belongs to this contributor) so it renders
+// ONCE — never duplicated across groups (which also duplicated the default star).
+// Emails linked to no in-contributor login are standalone → "Other emails".
 function groupIdentities(identities) {
   const list = identities ?? []
   const logins = list.filter(i => i.kind === 'login')
   const emails = list.filter(i => i.kind === 'email')
   const loginValues = new Set(logins.map(l => l.value))
 
-  const groups = logins.map(login => ({
-    login,
-    emails: emails.filter(e => (e.linkedLogins ?? []).includes(login.value)),
-  }))
+  const byLogin = new Map(logins.map(l => [l.value, []]))
+  const otherEmails = []
+  for (const e of emails) {
+    // The first linked login that's actually one of this contributor's logins.
+    const target = (e.linkedLogins ?? []).find(v => loginValues.has(v))
+    if (target) byLogin.get(target).push(e)
+    else otherEmails.push(e)
+  }
 
-  // Standalone: an email with no linked login that is actually one of this
-  // contributor's logins. (A linkedLogins entry pointing outside loginValues is
-  // ignored defensively, leaving the email standalone.)
-  const otherEmails = emails.filter(
-    e => !(e.linkedLogins ?? []).some(v => loginValues.has(v)),
-  )
+  const groups = logins.map(login => ({ login, emails: byLogin.get(login.value) }))
   return { groups, otherEmails }
 }
 
