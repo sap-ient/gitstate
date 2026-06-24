@@ -372,6 +372,95 @@ func TestContributorIdentityValues_AndAuthorFilter(t *testing.T) {
 	}
 }
 
+// TestListContributors_LinkedLogins verifies ListContributors attaches the right
+// LinkedLogins to email identities: an email that co-occurred on a commit with a
+// login of the SAME contributor gets that login; an unrelated login (of another
+// contributor, even if it co-occurred) does NOT; and a standalone email (never
+// on a commit with any login) gets none.
+func TestListContributors_LinkedLogins(t *testing.T) {
+	ctx, tx, orgID, done := setupContribOrg(t)
+	defer done()
+
+	var repo string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO repos (org_id,platform,external_id,full_name) VALUES ($1,'github',$2,'acme/x') RETURNING id`,
+		orgID, fmt.Sprintf("ext-%d", time.Now().UnixNano())).Scan(&repo); err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	day := time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC)
+
+	// Commits establishing co-occurrence:
+	//   nat@a.com  + login "nat"   → same contributor (should link)
+	//   nat@b.com  + login "nat"   → same contributor (should link)
+	//   nat@a.com  + login "other" → "other" belongs to a DIFFERENT contributor
+	//                                 (must NOT be attached to nat's email)
+	// And a standalone email "lone@c.com" that NEVER shares a commit with a login.
+	rows := []struct{ sha, login, email string }{
+		{"n1", "nat", "nat@a.com"},
+		{"n2", "nat", "nat@b.com"},
+		{"x1", "other", "nat@a.com"},
+		{"l1", "", "lone@c.com"},
+	}
+	for i, c := range rows {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO commits (org_id,repo_id,sha,author_login,author_email,is_agent,committed_at)
+			 VALUES ($1,$2,$3,NULLIF($4,''),$5,false,$6)`,
+			orgID, repo, c.sha, c.login, c.email, day.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("commit %s: %v", c.sha, err)
+		}
+	}
+
+	// Nat: login "nat" + two emails + the standalone email (all one person).
+	natID, _ := CreateContributor(ctx, tx, orgID, "Nat", "nat@a.com", false)
+	_ = UpsertIdentity(ctx, tx, orgID, natID, "login", "nat", "Nat")
+	_ = UpsertIdentity(ctx, tx, orgID, natID, "email", "nat@a.com", "Nat")
+	_ = UpsertIdentity(ctx, tx, orgID, natID, "email", "nat@b.com", "Nat")
+	_ = UpsertIdentity(ctx, tx, orgID, natID, "email", "lone@c.com", "Nat")
+
+	// A different contributor owns the "other" login.
+	otherID, _ := CreateContributor(ctx, tx, orgID, "Other", "", false)
+	_ = UpsertIdentity(ctx, tx, orgID, otherID, "login", "other", "Other")
+
+	list, err := ListContributors(ctx, tx, orgID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	var nat *ContributorRecord
+	for i := range list {
+		if list[i].ID == natID {
+			nat = &list[i]
+		}
+	}
+	if nat == nil {
+		t.Fatalf("nat contributor not found in list")
+	}
+
+	linkedFor := map[string][]string{}
+	for _, id := range nat.Identities {
+		if id.Kind == "email" {
+			linkedFor[id.Value] = id.LinkedLogins
+		}
+		// Login identities never carry LinkedLogins.
+		if id.Kind == "login" && len(id.LinkedLogins) != 0 {
+			t.Errorf("login identity %q has LinkedLogins=%v, want none", id.Value, id.LinkedLogins)
+		}
+	}
+
+	// nat@a.com co-occurred with "nat" (same contributor) AND "other" (other
+	// contributor) — only "nat" attaches.
+	if got := linkedFor["nat@a.com"]; len(got) != 1 || got[0] != "nat" {
+		t.Errorf("nat@a.com LinkedLogins = %v, want [nat] (only same-contributor login)", got)
+	}
+	if got := linkedFor["nat@b.com"]; len(got) != 1 || got[0] != "nat" {
+		t.Errorf("nat@b.com LinkedLogins = %v, want [nat]", got)
+	}
+	// lone@c.com never shared a commit with a login → standalone.
+	if got := linkedFor["lone@c.com"]; len(got) != 0 {
+		t.Errorf("lone@c.com LinkedLogins = %v, want none (standalone)", got)
+	}
+}
+
 func countWithCommits(aggs []ContribAggregate) int {
 	n := 0
 	for _, a := range aggs {

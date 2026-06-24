@@ -120,6 +120,34 @@ function IdentityChip({ identity, canSplit, onSplit, isDefault, onSetDefault, se
   )
 }
 
+// ── Identity grouping ─────────────────────────────────────────────────────────────
+
+// groupIdentities lays a contributor's flat identity list out as login → attached
+// emails. An email "belongs to" a login when it co-occurred with that login on a
+// commit (backend `linkedLogins`). An email may link to several logins — we attach
+// it under EACH login it links to (so the relationship is visible everywhere it
+// holds). Emails with no linked logins are truly standalone → "Other emails".
+// Logins with no attached emails just render alone.
+function groupIdentities(identities) {
+  const list = identities ?? []
+  const logins = list.filter(i => i.kind === 'login')
+  const emails = list.filter(i => i.kind === 'email')
+  const loginValues = new Set(logins.map(l => l.value))
+
+  const groups = logins.map(login => ({
+    login,
+    emails: emails.filter(e => (e.linkedLogins ?? []).includes(login.value)),
+  }))
+
+  // Standalone: an email with no linked login that is actually one of this
+  // contributor's logins. (A linkedLogins entry pointing outside loginValues is
+  // ignored defensively, leaving the email standalone.)
+  const otherEmails = emails.filter(
+    e => !(e.linkedLogins ?? []).some(v => loginValues.has(v)),
+  )
+  return { groups, otherEmails }
+}
+
 // ── Inline-editable display name ─────────────────────────────────────────────────
 
 function EditableName({ value, onSave }) {
@@ -338,6 +366,45 @@ function MiniStat({ icon, value, label }) {
   )
 }
 
+// ── Grouped identities (login → attached emails, + standalone "Other emails") ────
+
+function IdentityGroups({ identities, chipProps }) {
+  const { groups, otherEmails } = useMemo(() => groupIdentities(identities), [identities])
+  if (groups.length === 0 && otherEmails.length === 0) return null
+
+  return (
+    <div className="flex flex-col gap-2 mt-2">
+      {groups.map(({ login, emails }) => (
+        <div key={`g:${login.value}`} className="flex flex-wrap items-start gap-x-2 gap-y-1.5">
+          {/* The @login anchor. */}
+          <IdentityChip identity={login} {...chipProps(login)} />
+          {/* Its attached emails, nested beside it with a connector bracket. */}
+          {emails.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l-2 border-[var(--border2)]">
+              {emails.map(email => (
+                <IdentityChip key={`${login.value}>${email.value}`} identity={email} {...chipProps(email)} />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {otherEmails.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <span className="text-[10px] uppercase tracking-wide font-medium text-[var(--text-faint)] shrink-0 pt-1">
+            Other emails
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l-2 border-[var(--border2)]">
+            {otherEmails.map(email => (
+              <IdentityChip key={`other>${email.value}`} identity={email} {...chipProps(email)} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Contributor row ──────────────────────────────────────────────────────────────
 
 function ContributorRow({
@@ -396,22 +463,20 @@ function ContributorRow({
             <p className="text-xs text-[var(--text-faint)] truncate mt-0.5">{c.primaryEmail}</p>
           )}
 
-          {/* Identities */}
+          {/* Identities — grouped: each @login anchors the emails it co-occurred
+              with on commits; emails tied to no login fall under "Other emails". */}
           {(c.identities?.length ?? 0) > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              {c.identities.map(idn => (
-                <IdentityChip
-                  key={`${idn.kind}:${idn.value}`}
-                  identity={idn}
-                  canSplit={canSplit}
-                  onSplit={(v) => onSplit(c.id, v)}
-                  isDefault={isDefaultIdentity(idn)}
-                  onSetDefault={(i) => onSetDefault(c.id, i)}
-                  settingDefault={busy.default === `${c.id}:${idn.value}`}
-                  busy={busy.split === `${c.id}:${idn.value}`}
-                />
-              ))}
-            </div>
+            <IdentityGroups
+              identities={c.identities}
+              chipProps={(idn) => ({
+                canSplit,
+                onSplit: (v) => onSplit(c.id, v),
+                isDefault: isDefaultIdentity(idn),
+                onSetDefault: (i) => onSetDefault(c.id, i),
+                settingDefault: busy.default === `${c.id}:${idn.value}`,
+                busy: busy.split === `${c.id}:${idn.value}`,
+              })}
+            />
           )}
 
           {/* Stats */}

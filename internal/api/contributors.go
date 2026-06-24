@@ -52,9 +52,10 @@ type contributorHandlers struct {
 // ── Response types (exact frontend contract) ─────────────────────────────────
 
 type contributorIdentityResp struct {
-	Kind     string `json:"kind"`
-	Value    string `json:"value"`
-	NameSeen string `json:"nameSeen"`
+	Kind         string   `json:"kind"`
+	Value        string   `json:"value"`
+	NameSeen     string   `json:"nameSeen"`
+	LinkedLogins []string `json:"linkedLogins,omitempty"`
 }
 
 type contributorStatsResp struct {
@@ -112,7 +113,7 @@ func contributorStatus(c store.ContributorRecord) string {
 func toContributorResp(c store.ContributorRecord, stats store.ContributorStats) contributorResp {
 	ids := make([]contributorIdentityResp, 0, len(c.Identities))
 	for _, i := range c.Identities {
-		ids = append(ids, contributorIdentityResp{Kind: i.Kind, Value: i.Value, NameSeen: i.NameSeen})
+		ids = append(ids, contributorIdentityResp{Kind: i.Kind, Value: i.Value, NameSeen: i.NameSeen, LinkedLogins: i.LinkedLogins})
 	}
 	return contributorResp{
 		ID:           c.ID,

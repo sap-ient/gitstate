@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +27,14 @@ type ContributorIdentity struct {
 	Kind     string `json:"kind"`  // 'email' | 'login'
 	Value    string `json:"value"` // lowercased
 	NameSeen string `json:"nameSeen"`
+
+	// LinkedLogins is only populated for email identities: the lowercased logins
+	// — WITHIN THE SAME CONTRIBUTOR — that this email co-occurred with on a commit
+	// (the commit literally carried both this email and that login). Lets the UI
+	// attach an email to the @login it belongs to instead of showing a flat soup.
+	// Empty for login identities and for emails that share no commit with any
+	// login of this contributor (those are truly standalone).
+	LinkedLogins []string `json:"linkedLogins,omitempty"`
 }
 
 // ContributorRecord is the canonical person plus their identities and (optional)
@@ -122,9 +131,95 @@ func ListContributors(ctx context.Context, tx pgx.Tx, orgID string) ([]Contribut
 		return nil, fmt.Errorf("store: list contributor identities rows: %w", err)
 	}
 
+	// Attach LinkedLogins to email identities. Query the org's (email, login)
+	// co-occurrence pairs once (commits where BOTH are non-empty), build
+	// email -> set(login), then for each contributor link an email to only the
+	// logins that are ALSO identities of that same contributor.
+	coOcc, err := emailLoginCoOccurrence(ctx, tx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range byID {
+		// The logins that belong to THIS contributor (its own login identities).
+		ownLogins := map[string]bool{}
+		for _, id := range c.Identities {
+			if id.Kind == "login" {
+				ownLogins[id.Value] = true
+			}
+		}
+		if len(ownLogins) == 0 {
+			continue
+		}
+		for i := range c.Identities {
+			id := &c.Identities[i]
+			if id.Kind != "email" {
+				continue
+			}
+			coLogins := coOcc[id.Value]
+			if len(coLogins) == 0 {
+				continue
+			}
+			var linked []string
+			for _, login := range coLogins {
+				if ownLogins[login] {
+					linked = append(linked, login)
+				}
+			}
+			if len(linked) > 0 {
+				sort.Strings(linked)
+				id.LinkedLogins = linked
+			}
+		}
+	}
+
 	out := make([]ContributorRecord, 0, len(order))
 	for _, id := range order {
 		out = append(out, *byID[id])
+	}
+	return out, nil
+}
+
+// emailLoginCoOccurrence returns lowercased email -> the lowercased logins that
+// appeared TOGETHER with it on the same commit author (both non-empty). One query
+// per ListContributors call. Used to attach an email identity to the @login it
+// belongs to in the People UI.
+func emailLoginCoOccurrence(ctx context.Context, tx pgx.Tx, orgID string) (map[string][]string, error) {
+	const q = `
+		SELECT lower(author_email::text), lower(author_login)
+		FROM commits
+		WHERE org_id = $1
+		  AND author_email IS NOT NULL AND author_email::text <> ''
+		  AND author_login IS NOT NULL AND author_login <> ''
+		GROUP BY 1,2`
+	rows, err := tx.Query(ctx, q, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("store: email/login co-occurrence: %w", err)
+	}
+	defer rows.Close()
+	seen := map[string]map[string]bool{}
+	for rows.Next() {
+		var email, login string
+		if err := rows.Scan(&email, &login); err != nil {
+			return nil, fmt.Errorf("store: scan co-occurrence: %w", err)
+		}
+		if email == "" || login == "" {
+			continue
+		}
+		if seen[email] == nil {
+			seen[email] = map[string]bool{}
+		}
+		seen[email][login] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: co-occurrence rows: %w", err)
+	}
+	out := make(map[string][]string, len(seen))
+	for email, logins := range seen {
+		ls := make([]string, 0, len(logins))
+		for l := range logins {
+			ls = append(ls, l)
+		}
+		out[email] = ls
 	}
 	return out, nil
 }
