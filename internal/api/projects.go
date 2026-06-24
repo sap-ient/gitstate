@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/exo/gitstate/internal/config"
@@ -20,6 +21,37 @@ func RegisterProjectRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Conf
 	orgScope := middleware.OrgScope(database.Pool())
 	mux.Handle("GET /api/projects", requireAuth(orgScope(http.HandlerFunc(h.list))))
 	mux.Handle("POST /api/projects", requireAuth(orgScope(http.HandlerFunc(h.create))))
+	// Move a repo into a project (or unassign with projectId null/empty).
+	mux.Handle("PATCH /api/repos/{id}/project", requireAuth(orgScope(http.HandlerFunc(h.moveRepo))))
+}
+
+// moveRepo assigns a repo to a project (body {projectId}; null/"" unassigns).
+func (h *projectHandlers) moveRepo(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	if orgID == "" {
+		writeError(w, http.StatusBadRequest, "X-Org-ID header required")
+		return
+	}
+	repoID := r.PathValue("id")
+	var body struct {
+		ProjectID *string `json:"projectId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	err := h.db.WithOrg(r.Context(), orgID, func(tx pgx.Tx) error {
+		return store.SetRepoProject(r.Context(), tx, orgID, repoID, body.ProjectID)
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "repo not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not move repo")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "projectId": body.ProjectID})
 }
 
 type projectHandlers struct {

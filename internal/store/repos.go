@@ -24,6 +24,7 @@ type Repo struct {
 	// re-syncs of an unchanged repo never pay the (minutes-long) blame cost again.
 	LastAnalyzedSHA string
 	LastAnalyzedAt  *time.Time
+	ProjectID       *string // user-created project this repo belongs to (nil = unassigned)
 	CreatedAt       time.Time
 	// Token is NOT stored in the DB — supplied at connect time and held in memory.
 	// For persisted connections the caller must re-supply the token on sync.
@@ -72,7 +73,7 @@ func ListRepos(ctx context.Context, tx pgx.Tx, orgID string) ([]Repo, error) {
 	const q = `
 		SELECT id, org_id, platform, external_id, full_name,
 		       COALESCE(default_branch,''), COALESCE(clone_url,''),
-		       last_synced_at, COALESCE(last_analyzed_sha,''), last_analyzed_at, created_at
+		       last_synced_at, COALESCE(last_analyzed_sha,''), last_analyzed_at, project_id::text, created_at
 		FROM repos
 		WHERE org_id = $1
 		ORDER BY full_name`
@@ -89,7 +90,7 @@ func ListRepos(ctx context.Context, tx pgx.Tx, orgID string) ([]Repo, error) {
 		var lastSynced *time.Time
 		if err := rows.Scan(
 			&r.ID, &r.OrgID, &r.Platform, &r.ExternalID, &r.FullName,
-			&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.LastAnalyzedSHA, &r.LastAnalyzedAt, &r.CreatedAt,
+			&r.DefaultBranch, &r.CloneURL, &lastSynced, &r.LastAnalyzedSHA, &r.LastAnalyzedAt, &r.ProjectID, &r.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan repo: %w", err)
 		}
@@ -97,6 +98,24 @@ func ListRepos(ctx context.Context, tx pgx.Tx, orgID string) ([]Repo, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SetRepoProject assigns a repo to a project (projectID nil/empty ⇒ unassign).
+// Run inside db.WithOrg. The FK + RLS ensure the project belongs to the same org.
+func SetRepoProject(ctx context.Context, tx pgx.Tx, orgID, repoID string, projectID *string) error {
+	var pid any
+	if projectID != nil && *projectID != "" {
+		pid = *projectID
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE repos SET project_id = $3 WHERE org_id = $1 AND id = $2`, orgID, repoID, pid)
+	if err != nil {
+		return fmt.Errorf("store: set repo project: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // GetRepo fetches a single repo by ID. Runs inside an org-scoped tx (RLS enforces

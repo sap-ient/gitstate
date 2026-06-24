@@ -111,6 +111,7 @@ type repoResponse struct {
 	FullName      string     `json:"fullName"`
 	DefaultBranch string     `json:"defaultBranch"`
 	LastSyncedAt  *time.Time `json:"lastSyncedAt"`
+	ProjectID     *string    `json:"projectId"` // user-created project (null = unassigned)
 	CreatedAt     time.Time  `json:"createdAt"`
 }
 
@@ -122,6 +123,7 @@ func repoToResponse(r store.Repo) repoResponse {
 		FullName:      r.FullName,
 		DefaultBranch: r.DefaultBranch,
 		LastSyncedAt:  r.LastSyncedAt,
+		ProjectID:     r.ProjectID,
 		CreatedAt:     r.CreatedAt,
 	}
 }
