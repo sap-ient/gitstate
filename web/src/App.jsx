@@ -18,6 +18,7 @@ const Signup = lazy(() => import('./pages/Signup.jsx'))
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'))
 const Settings = lazy(() => import('./pages/Settings.jsx'))
 const Integrations = lazy(() => import('./pages/Integrations.jsx'))
+const Notifications = lazy(() => import('./pages/Notifications.jsx'))
 const Members = lazy(() => import('./pages/Members.jsx'))
 const People = lazy(() => import('./pages/People.jsx'))
 const InviteAccept = lazy(() => import('./pages/InviteAccept.jsx'))
@@ -147,6 +148,7 @@ export default function App() {
                 <Route path="/people" element={<People />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/integrations" element={<Integrations />} />
+                <Route path="/notifications" element={<Notifications />} />
                 <Route path="/settings/members" element={<Members />} />
                 <Route path="/settings/billing" element={<Billing />} />
                 {/* Legacy /home — superseded by /dashboard (Home.jsx kept but unrouted). */}

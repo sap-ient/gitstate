@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Plug, Sparkles, KeyRound, Server, Check, Loader2,
-  CalendarDays, Link2, Unlink, ArrowUpFromLine, ArrowDownToLine, Bell,
-  Webhook, Copy, RefreshCw, Rocket, Eye, EyeOff, CircleDot, Receipt,
+  CalendarDays, Link2, Unlink, ArrowUpFromLine, ArrowDownToLine, Webhook, Copy, RefreshCw, Rocket, Eye, EyeOff, CircleDot, Receipt,
   ChevronRight,
 } from 'lucide-react'
 import { useWebhooks } from '../lib/useWebhooks.js'
@@ -10,7 +9,6 @@ import { useAccounting } from '../lib/useAccounting.js'
 import { Badge, Button } from '../components/ui/index.js'
 import { Reveal } from '../components/Reveal.jsx'
 import { SectionCard } from '../components/SectionCard.jsx'
-import { NotificationsBody } from '../components/notifications/NotificationsSection.jsx'
 import { ApiTokensBody } from '../components/settings/ApiTokens.jsx'
 import {
   get, put,
@@ -730,7 +728,6 @@ function WebhooksSection({ delay }) {
 const SECTION_NAV = [
   { id: 'accounting', label: 'Accounting' },
   { id: 'calendar', label: 'Calendar' },
-  { id: 'notifications', label: 'Notifications' },
   { id: 'webhooks', label: 'Webhooks' },
   { id: 'tokens', label: 'API tokens' },
   { id: 'ai', label: 'AI & LLM' },
@@ -771,18 +768,6 @@ export default function Integrations() {
 
       {/* Calendar */}
       <CalendarSection delay={0.08} />
-
-      {/* Notifications */}
-      <SectionCard
-        id="notifications"
-        icon={Bell}
-        title="Notifications"
-        description="Push evidence-based status to where your team works — Slack, a webhook, or email."
-        delay={0.1}
-        accent="var(--info)"
-      >
-        <NotificationsBody />
-      </SectionCard>
 
       {/* Developer — webhooks + API tokens */}
       <WebhooksSection delay={0.12} />
