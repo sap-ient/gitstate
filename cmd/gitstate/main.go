@@ -20,6 +20,7 @@ import (
 	"github.com/exo/gitstate/internal/exchange"
 	"github.com/exo/gitstate/internal/invoicedelivery"
 	"github.com/exo/gitstate/internal/jobs"
+	"github.com/exo/gitstate/internal/llm"
 )
 
 func main() {
@@ -96,6 +97,18 @@ func main() {
 			slog.Info("billing scheduler started")
 		}
 	}
+
+	// Start the in-process LLM gateway (no-op when LLM_GATEWAY != "llmux").
+	gw, gwErr := llm.StartGateway(ctx, cfg)
+	if gwErr != nil {
+		slog.Error("failed to start LLM gateway", "error", gwErr)
+		os.Exit(1)
+	}
+	if gw != nil {
+		defer gw.Close()
+		slog.Info("LLM gateway started", "base_url", gw.BaseURL())
+	}
+	api.SetModelGateway(gw)
 
 	// Build router with middleware wired.
 	handler := api.NewRouter(cfg, database)
