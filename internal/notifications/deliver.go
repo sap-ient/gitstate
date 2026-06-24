@@ -143,15 +143,19 @@ func EmailConfigured() bool { return LoadSMTPConfig().Configured() }
 
 // Deliver sends a rendered digest to a channel of the given kind/target.
 //
-//	slack | webhook → HTTP POST the Slack/webhook JSON payload.
-//	email           → SMTP send the plain-text body (only if configured).
+//	slack | webhook              → HTTP POST the Slack/webhook JSON payload.
+//	discord | google_chat | teams → HTTP POST the platform-native JSON payload.
+//	email                        → SMTP send the plain-text body (if configured).
+//
+// All HTTP-webhook kinds go through postWebhook, so the SSRF guard (scheme +
+// dial-time private-IP block, incl. redirects) protects every one of them.
 //
 // The target (a webhook URL or email address) is NEVER logged or returned in an
 // error. Errors describe the failure without echoing the destination.
 func Deliver(ctx context.Context, kind, target string, r Rendered) error {
 	switch kind {
-	case "slack", "webhook":
-		return postWebhook(ctx, target, r.SlackPayload)
+	case "slack", "webhook", "discord", "google_chat", "teams":
+		return postWebhook(ctx, target, r.PayloadFor(kind))
 	case "email":
 		return sendEmail(ctx, target, r)
 	default:

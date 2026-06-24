@@ -28,7 +28,7 @@ type DigestPrefs struct {
 type NotificationChannel struct {
 	ID        string      `json:"id"`
 	OrgID     string      `json:"orgId"`
-	Kind      string      `json:"kind"`   // slack | webhook | email
+	Kind      string      `json:"kind"`   // slack | webhook | discord | google_chat | teams | email
 	Target    string      `json:"target"` // webhook URL or email address
 	Label     string      `json:"label"`
 	Enabled   bool        `json:"enabled"`
