@@ -58,9 +58,23 @@ type notificationHandlers struct {
 	builder *notifications.Builder
 }
 
-// validKind reports whether a channel kind is supported.
+// validChannelKind reports whether a channel kind is supported.
 func validChannelKind(k string) bool {
-	return k == "slack" || k == "webhook" || k == "email"
+	switch k {
+	case "slack", "webhook", "discord", "google_chat", "teams", "email":
+		return true
+	}
+	return false
+}
+
+// isWebhookKind reports whether a kind delivers via an HTTP(S) webhook URL (as
+// opposed to email). Used to enforce the https-URL target rule.
+func isWebhookKind(k string) bool {
+	switch k {
+	case "slack", "webhook", "discord", "google_chat", "teams":
+		return true
+	}
+	return false
 }
 
 func validSchedule(s string) bool { return s == "weekly" || s == "daily" }
@@ -155,14 +169,14 @@ func (h *notificationHandlers) createChannel(w http.ResponseWriter, r *http.Requ
 	req.Schedule = strings.TrimSpace(req.Schedule)
 
 	if !validChannelKind(req.Kind) {
-		writeError(w, http.StatusBadRequest, "kind must be slack, webhook, or email")
+		writeError(w, http.StatusBadRequest, "kind must be slack, webhook, discord, google_chat, teams, or email")
 		return
 	}
 	if req.Target == "" {
 		writeError(w, http.StatusBadRequest, "target is required")
 		return
 	}
-	if (req.Kind == "slack" || req.Kind == "webhook") && !strings.HasPrefix(req.Target, "https://") {
+	if isWebhookKind(req.Kind) && !strings.HasPrefix(req.Target, "https://") {
 		writeError(w, http.StatusBadRequest, "webhook target must be an https URL")
 		return
 	}
