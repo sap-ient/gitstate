@@ -69,8 +69,8 @@ export default function CostEstimator({ plans, format }) {
         {/* Controls + headline */}
         <div className="flex flex-col gap-6">
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[var(--text-faint)]">
-              <Users size={14} className="text-[#2DD4BF]" /> Builders
+            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[var(--text-muted)]">
+              <Users size={14} className="text-[#0d9488] dark:text-[#2DD4BF]" /> Builders
             </div>
             <Segmented value={mode} onChange={setMode} />
           </div>
@@ -105,7 +105,7 @@ export default function CostEstimator({ plans, format }) {
                 background: `linear-gradient(90deg, #2DD4BF 0%, #6366F1 ${pct}%, var(--bg-surface3) ${pct}%)`,
               }}
             />
-            <div className="flex justify-between text-[10px] font-mono text-[var(--text-faint)]">
+            <div className="flex justify-between text-[10px] font-mono text-[var(--text-muted)]">
               <span>1</span><span>50</span>
             </div>
           </div>
@@ -113,10 +113,10 @@ export default function CostEstimator({ plans, format }) {
           {/* Headline — recommended tier */}
           {hero && (
             <div
-              className="rounded-[var(--radius-card)] border border-[#2DD4BF]/30 p-4"
-              style={{ background: 'linear-gradient(135deg, rgba(45,212,191,0.08), rgba(99,102,241,0.06))' }}
+              className="rounded-[var(--radius-card)] border border-[#2DD4BF]/40 dark:border-[#2DD4BF]/30 p-4"
+              style={{ background: 'linear-gradient(135deg, rgba(45,212,191,0.12), rgba(99,102,241,0.08))' }}
             >
-              <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-[#2DD4BF] mb-1.5">
+              <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-[#0d9488] dark:text-[#2DD4BF] mb-1.5">
                 <TrendingUp size={11} /> At {builders} builders · {hero.plan.name}
               </div>
               <div className="flex items-baseline gap-2 flex-wrap">
@@ -125,7 +125,7 @@ export default function CostEstimator({ plans, format }) {
                 </span>
                 <span className="text-sm text-[var(--text-muted)]">/ mo</span>
               </div>
-              <p className="text-[11px] text-[var(--text-faint)] mt-2">
+              <p className="text-[11px] text-[var(--text-muted)] mt-2">
                 {format(hero.rate)} / builder · {mode === 'byok' ? 'your own AI key' : 'AI included'} · stakeholders free
               </p>
             </div>
@@ -134,7 +134,7 @@ export default function CostEstimator({ plans, format }) {
 
         {/* Per-tier breakdown */}
         <div className="flex flex-col gap-2.5">
-          <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-[var(--text-faint)] px-1">
+          <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] px-1">
             <span>Plan</span><span>Monthly total</span>
           </div>
           {rows.map(({ plan, rate, total, over, cap }) => {
@@ -145,19 +145,19 @@ export default function CostEstimator({ plans, format }) {
                 key={plan.key}
                 className={[
                   'flex items-center justify-between gap-3 rounded-[var(--radius-badge)] border px-4 py-3 transition-colors',
-                  rec ? 'border-[#2DD4BF]/35 bg-[#2DD4BF]/[0.05]' : 'border-[var(--border)] bg-[var(--bg-surface2)]/40',
+                  rec ? 'border-[#2DD4BF]/45 dark:border-[#2DD4BF]/35 bg-[#2DD4BF]/[0.08] dark:bg-[#2DD4BF]/[0.05]' : 'border-[var(--border2)] bg-[var(--bg-surface2)]/70',
                 ].join(' ')}
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className={['text-sm font-semibold', rec ? 'text-[#2DD4BF]' : 'text-[var(--text)]'].join(' ')}>{plan.name}</span>
+                    <span className={['text-sm font-semibold', rec ? 'text-[#0d9488] dark:text-[#2DD4BF]' : 'text-[var(--text)]'].join(' ')}>{plan.name}</span>
                     {over && (
-                      <span className="text-[9px] font-mono uppercase tracking-wide text-yellow-400 border border-yellow-500/30 bg-yellow-500/10 rounded px-1.5 py-0.5">
+                      <span className="text-[9px] font-mono uppercase tracking-wide text-yellow-600 dark:text-yellow-400 border border-yellow-500/40 dark:border-yellow-500/30 bg-yellow-500/10 rounded px-1.5 py-0.5">
                         max {cap}
                       </span>
                     )}
                   </div>
-                  <span className="text-[11px] text-[var(--text-faint)]">
+                  <span className="text-[11px] text-[var(--text-muted)]">
                     {free ? 'free for ≤ 2 builders' : `${format(rate)} / builder`}
                   </span>
                 </div>
@@ -165,12 +165,12 @@ export default function CostEstimator({ plans, format }) {
                   <div className="font-display text-lg font-semibold text-[var(--text)] tabular-nums leading-none">
                     {over ? '—' : format(total, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                   </div>
-                  {!over && !free && <span className="text-[10px] text-[var(--text-faint)]">/ mo</span>}
+                  {!over && !free && <span className="text-[10px] text-[var(--text-muted)]">/ mo</span>}
                 </div>
               </div>
             )
           })}
-          <p className="text-[10px] font-mono text-[var(--text-faint)] mt-1 px-1 leading-relaxed">
+          <p className="text-[10px] font-mono text-[var(--text-muted)] mt-1 px-1 leading-relaxed">
             Estimates exclude managed-AI usage beyond the included credit (metered at each model&apos;s standard rate). Stakeholders are always free.
           </p>
         </div>

@@ -54,9 +54,9 @@ const usdPerM = (n) =>
 function RateCell({ icon: Icon, label, value, accent }) {
   return (
     <div className="flex items-center gap-2">
-      <Icon size={13} className={accent ? 'text-[#2DD4BF]' : 'text-[#818cf8]'} strokeWidth={1.9} />
-      <span className="font-mono text-sm font-semibold text-[var(--text-dim)] tabular-nums">{value}</span>
-      <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-faint)]">{label}</span>
+      <Icon size={13} className={accent ? 'text-[#0d9488] dark:text-[#2DD4BF]' : 'text-[#4f46e5] dark:text-[#818cf8]'} strokeWidth={1.9} />
+      <span className="font-mono text-sm font-semibold text-[var(--text)] tabular-nums">{value}</span>
+      <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)]">{label}</span>
     </div>
   )
 }
@@ -77,7 +77,7 @@ export default function AIModels() {
               <h3 className="font-display text-lg font-semibold text-[var(--text)] leading-none">Models &amp; pricing</h3>
               <Badge color="teal">At model cost</Badge>
             </div>
-            <p className="text-[11px] text-[var(--text-faint)] mt-1.5">Transparent pass-through · no per-seat AI fee</p>
+            <p className="text-[11px] text-[var(--text-muted)] mt-1.5">Transparent pass-through · no per-seat AI fee</p>
           </div>
         </div>
         <p className="text-sm text-[var(--text-muted)] leading-relaxed max-w-2xl">
@@ -94,8 +94,7 @@ export default function AIModels() {
           return (
             <div
               key={m.name}
-              className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6 px-6 md:px-8 py-4 transition-colors hover:bg-[var(--bg-surface2)]/40"
-              style={m.recommended ? { background: 'rgba(45,212,191,0.04)' } : undefined}
+              className={['flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6 px-6 md:px-8 py-4 transition-colors hover:bg-[var(--bg-surface2)]/60', m.recommended ? 'bg-[#2DD4BF]/[0.07] dark:bg-[#2DD4BF]/[0.04]' : ''].join(' ')}
             >
               {/* Name + note */}
               <div className="flex items-center gap-3 sm:w-[40%] min-w-0">
@@ -113,7 +112,7 @@ export default function AIModels() {
                     <span className="font-display text-sm font-semibold text-[var(--text)] truncate">{m.name}</span>
                     {m.recommended && <Badge color="teal">Default</Badge>}
                   </div>
-                  <span className="text-[11px] text-[var(--text-faint)]">{m.note}</span>
+                  <span className="text-[11px] text-[var(--text-muted)]">{m.note}</span>
                 </div>
               </div>
 
@@ -139,10 +138,10 @@ export default function AIModels() {
             <span className="text-[11px] text-[var(--text-dim)]">BYOK — pay your provider directly</span>
           </span>
         </div>
-        <p className="text-[11px] text-[var(--text-faint)]/90 leading-relaxed flex items-start gap-1.5">
-          <Info size={12} className="text-[var(--text-faint)] shrink-0 mt-0.5" />
+        <p className="text-[11px] text-[var(--text-muted)] leading-relaxed flex items-start gap-1.5">
+          <Info size={12} className="text-[var(--text-muted)] shrink-0 mt-0.5" />
           <span>
-            Rates are indicative provider list prices in <span className="font-mono text-[var(--text-muted)]">USD</span> per
+            Rates are indicative provider list prices in <span className="font-mono text-[var(--text-dim)] font-medium">USD</span> per
             1M tokens; see your invoice for exact metered usage.
           </span>
         </p>

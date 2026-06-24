@@ -32,14 +32,14 @@ function priceCell(row, plan, format) {
 function Cell({ value, accent }) {
   if (typeof value === 'boolean') {
     return value
-      ? <Check size={16} className="inline text-[#2DD4BF]" strokeWidth={2.5} />
-      : <Minus size={14} className="inline text-[var(--text-faint)]/50" />
+      ? <Check size={16} className="inline text-[#0d9488] dark:text-[#2DD4BF]" strokeWidth={2.5} />
+      : <Minus size={14} className="inline text-[var(--text-faint)]" />
   }
   if (value === '∞') {
-    return <span className="font-mono text-base text-[#818cf8]">∞</span>
+    return <span className="font-mono text-base text-[#4f46e5] dark:text-[#818cf8]">∞</span>
   }
   return (
-    <span className={['font-mono text-[13px] tabular-nums', accent ? 'text-[#818cf8]' : 'text-[var(--text-dim)]'].join(' ')}>
+    <span className={['font-mono text-[13px] font-medium tabular-nums', accent ? 'text-[#4f46e5] dark:text-[#818cf8]' : 'text-[var(--text-dim)]'].join(' ')}>
       {value}
     </span>
   )
@@ -53,8 +53,8 @@ export default function PricingMatrix({ plans, format }) {
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-sm min-w-[760px]">
           <thead>
-            <tr className="border-b border-[var(--border)]">
-              <th className="sticky left-0 z-[2] bg-[var(--bg-surface)] text-left font-normal px-5 py-4 text-[11px] font-mono uppercase tracking-widest text-[var(--text-faint)] min-w-[220px]">
+            <tr className="border-b-2 border-[var(--border2)]">
+              <th className="sticky left-0 z-[2] bg-[var(--bg-surface)] text-left font-normal px-5 py-4 text-[11px] font-mono uppercase tracking-widest text-[var(--text-muted)] min-w-[220px]">
                 Compare plans
               </th>
               {cols.map(col => {
@@ -62,14 +62,13 @@ export default function PricingMatrix({ plans, format }) {
                 return (
                   <th
                     key={col.key}
-                    className="px-4 py-4 text-center min-w-[120px]"
-                    style={rec ? { background: 'rgba(45,212,191,0.06)' } : undefined}
+                    className={['px-4 py-4 text-center min-w-[120px]', rec ? 'bg-[#2DD4BF]/[0.10] dark:bg-[#2DD4BF]/[0.07] border-x border-[#2DD4BF]/40 dark:border-[#2DD4BF]/25' : ''].join(' ')}
                   >
-                    <span className={['font-display text-sm font-semibold', rec ? 'text-[#2DD4BF]' : 'text-[var(--text)]'].join(' ')}>
+                    <span className={['font-display text-[15px] font-bold', rec ? 'text-[#0d9488] dark:text-[#2DD4BF]' : 'text-[var(--text)]'].join(' ')}>
                       {col.name}
                     </span>
                     {rec && (
-                      <span className="block text-[9px] font-mono uppercase tracking-wider text-[#2DD4BF]/80 mt-0.5">popular</span>
+                      <span className="block text-[9px] font-mono uppercase tracking-wider text-[#0d9488] dark:text-[#2DD4BF] mt-0.5">popular</span>
                     )}
                   </th>
                 )
@@ -93,18 +92,23 @@ function GroupBody({ group, cols, format }) {
       <tr>
         <td
           colSpan={cols.length + 1}
-          className="sticky left-0 bg-[var(--bg-surface2)]/60 px-5 py-2.5 text-[10px] font-mono uppercase tracking-[0.16em] text-[var(--text-faint)] border-y border-[var(--border)]"
+          className="sticky left-0 bg-[var(--bg-surface2)] px-5 py-2.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] border-y border-[var(--border2)]"
         >
           {group.title}
         </td>
       </tr>
-      {group.rows.map(row => {
+      {group.rows.map((row, ri) => {
         const Icon = row.icon
+        // Zebra striping: even rows sit on the surface, odd rows on the recessed
+        // well — gives the table clear horizontal scan-lines in both themes.
+        const zebra = ri % 2 === 1
+        const rowBg = zebra ? 'bg-[var(--bg-surface2)]/60' : 'bg-[var(--bg-surface)]'
+        const stickyBg = zebra ? 'bg-[var(--bg-surface2)]' : 'bg-[var(--bg-surface)]'
         return (
-          <tr key={row.label} className="border-b border-[var(--border)] last:border-b-0 hover:bg-[var(--bg-surface2)]/40 transition-colors">
-            <td className="sticky left-0 z-[1] bg-[var(--bg-surface)] px-5 py-3.5">
-              <span className="flex items-center gap-2.5 text-[var(--text-dim)]">
-                <Icon size={14} className="text-[var(--text-faint)] shrink-0" strokeWidth={1.8} />
+          <tr key={row.label} className={[rowBg, 'border-b border-[var(--border)] last:border-b-0 hover:bg-[var(--bg-surface3)]/50 transition-colors'].join(' ')}>
+            <td className={['sticky left-0 z-[1] px-5 py-3.5', stickyBg].join(' ')}>
+              <span className="flex items-center gap-2.5 text-[var(--text-dim)] font-medium">
+                <Icon size={14} className="text-[var(--text-muted)] shrink-0" strokeWidth={1.8} />
                 {row.label}
               </span>
             </td>
@@ -120,8 +124,7 @@ function GroupBody({ group, cols, format }) {
               return (
                 <td
                   key={col.key}
-                  className="px-4 py-3.5 text-center"
-                  style={rec ? { background: 'rgba(45,212,191,0.045)' } : undefined}
+                  className={['px-4 py-3.5 text-center', rec ? 'bg-[#2DD4BF]/[0.07] dark:bg-[#2DD4BF]/[0.045] border-x border-[#2DD4BF]/30 dark:border-[#2DD4BF]/15' : ''].join(' ')}
                 >
                   <Cell value={value} accent={row.accent} />
                 </td>

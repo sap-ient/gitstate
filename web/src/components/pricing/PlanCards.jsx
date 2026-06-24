@@ -38,7 +38,7 @@ function PriceBlock({ plan, billing, mode, format }) {
     return (
       <div className="flex flex-col gap-1.5">
         <span className="font-display text-[2.4rem] font-semibold text-[var(--text)] leading-none">Custom</span>
-        <span className="text-xs text-[var(--text-faint)]">Self-host or negotiated cloud SLA</span>
+        <span className="text-xs text-[var(--text-muted)]">Self-host or negotiated cloud SLA</span>
       </div>
     )
   }
@@ -59,7 +59,7 @@ function PriceBlock({ plan, billing, mode, format }) {
           </span>
           <span className="text-sm text-[var(--text-muted)]">forever</span>
         </div>
-        <span className="text-xs text-[var(--text-faint)]">No card required · up to 2 builders</span>
+        <span className="text-xs text-[var(--text-muted)]">No card required · up to 2 builders</span>
       </div>
     )
   }
@@ -74,23 +74,23 @@ function PriceBlock({ plan, billing, mode, format }) {
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
         {annual && (
-          <span className="font-mono text-[var(--text-faint)] line-through tabular-nums">
+          <span className="font-mono text-[var(--text-muted)] line-through tabular-nums">
             {format(baseUsd, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
           </span>
         )}
         {annual && (
-          <span className="font-mono text-[#2DD4BF]">billed yearly · 2 months free</span>
+          <span className="font-mono text-[#0d9488] dark:text-[#2DD4BF]">billed yearly · 2 months free</span>
         )}
         {!annual && (
-          <span className="text-[var(--text-faint)]">billed monthly · cancel anytime</span>
+          <span className="text-[var(--text-muted)]">billed monthly · cancel anytime</span>
         )}
       </div>
       {byok ? (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-[#818cf8] font-medium">
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-[#4f46e5] dark:text-[#818cf8] font-medium">
           <KeyRound size={11} strokeWidth={2.4} /> BYOK — route AI to your own provider key
         </span>
       ) : (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-[#2DD4BF] font-medium">
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-[#0d9488] dark:text-[#2DD4BF] font-medium">
           <Sparkles size={11} strokeWidth={2.4} /> Managed AI · {format(plan.includedLlmUsd)} / builder credit included
         </span>
       )}
@@ -152,7 +152,7 @@ function PlanCard({ plan, recommended, billing, mode, format }) {
             </div>
             <div>
               <h3 className="font-display text-lg font-semibold text-[var(--text)] leading-none">{plan.name}</h3>
-              <p className="text-[11px] text-[var(--text-faint)] mt-1.5">{meta.tagline}</p>
+              <p className="text-[11px] text-[var(--text-muted)] mt-1.5">{meta.tagline}</p>
             </div>
           </div>
 
