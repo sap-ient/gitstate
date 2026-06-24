@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -56,6 +57,9 @@ type ClientInvoice struct {
 	PeriodEnd     time.Time  `json:"periodEnd"`
 	Currency      string     `json:"currency"`
 	SubtotalCents int        `json:"subtotalCents"`
+	DiscountCents int        `json:"discountCents"`
+	TaxCents      int        `json:"taxCents"`
+	TaxRate       float64    `json:"taxRate"`
 	TotalCents    int        `json:"totalCents"`
 	ShareToken    *string    `json:"shareToken,omitempty"`
 	Notes         string     `json:"notes"`
@@ -75,8 +79,11 @@ type ClientInvoice struct {
 // ClientInvoiceLine mirrors a client_invoice_lines row. Evidence is the raw git
 // proof ([{prTitle, repo, mergedAt, sha}]).
 type ClientInvoiceLine struct {
-	ID            string         `json:"id"`
-	InvoiceID     string         `json:"invoiceId"`
+	ID        string `json:"id"`
+	InvoiceID string `json:"invoiceId"`
+	// Source is "git" (the line is git-derived and carries Evidence) or "manual"
+	// (free-form line entered by hand, no evidence). Defaults to "git".
+	Source        string         `json:"source"`
 	Description   string         `json:"description"`
 	EffortPoints  float64        `json:"effortPoints"`
 	Quantity      float64        `json:"quantity"`
@@ -198,7 +205,8 @@ func GetClientInvoice(ctx context.Context, tx pgx.Tx, orgID, id string) (*Client
 
 const invoiceSelect = `
 	SELECT i.id, i.org_id, i.client_id::text, i.project_id::text, i.number, i.status,
-	       i.period_start, i.period_end, i.currency, i.subtotal_cents, i.total_cents,
+	       i.period_start, i.period_end, i.currency, i.subtotal_cents,
+	       i.discount_cents, i.tax_cents, i.tax_rate, i.total_cents,
 	       i.share_token, COALESCE(i.notes,''), i.issued_at, i.created_at,
 	       COALESCE(i.external_provider,''), COALESCE(i.external_id,''), COALESCE(i.external_url,''),
 	       COALESCE(c.name,''), COALESCE(p.name,'')
@@ -209,7 +217,7 @@ const invoiceSelect = `
 // GetClientInvoiceLines returns the line items for an invoice, in sort order.
 func GetClientInvoiceLines(ctx context.Context, tx pgx.Tx, orgID, invoiceID string) ([]*ClientInvoiceLine, error) {
 	const q = `
-		SELECT id, invoice_id::text, description, effort_points, quantity,
+		SELECT id, invoice_id::text, COALESCE(source,'git'), description, effort_points, quantity,
 		       unit_rate_cents, amount_cents, evidence, sort
 		FROM client_invoice_lines
 		WHERE org_id = $1 AND invoice_id = $2
@@ -223,7 +231,7 @@ func GetClientInvoiceLines(ctx context.Context, tx pgx.Tx, orgID, invoiceID stri
 	for rows.Next() {
 		l := &ClientInvoiceLine{}
 		var ev []byte
-		if err := rows.Scan(&l.ID, &l.InvoiceID, &l.Description, &l.EffortPoints,
+		if err := rows.Scan(&l.ID, &l.InvoiceID, &l.Source, &l.Description, &l.EffortPoints,
 			&l.Quantity, &l.UnitRateCents, &l.AmountCents, &ev, &l.Sort); err != nil {
 			return nil, fmt.Errorf("store.invoicing: scan line: %w", err)
 		}
@@ -234,38 +242,77 @@ func GetClientInvoiceLines(ctx context.Context, tx pgx.Tx, orgID, invoiceID stri
 }
 
 // CreateClientInvoiceInput holds the data needed to persist a draft invoice + lines.
+//
+// DiscountCents is subtracted from the line subtotal; TaxCents is added on top.
+// If TaxCents is 0 and TaxRate > 0, tax is derived from the post-discount base as
+// round((subtotal - discount) * taxRate/100). Total = subtotal - discount + tax,
+// clamped at >= 0.
 type CreateClientInvoiceInput struct {
-	ClientID    *string
-	ProjectID   *string
-	Number      string
-	PeriodStart time.Time
-	PeriodEnd   time.Time
-	Currency    string
-	Notes       string
-	Lines       []ClientInvoiceLine
+	ClientID      *string
+	ProjectID     *string
+	Number        string
+	PeriodStart   time.Time
+	PeriodEnd     time.Time
+	Currency      string
+	Notes         string
+	DiscountCents int
+	TaxCents      int
+	TaxRate       float64
+	Lines         []ClientInvoiceLine
+}
+
+// computeInvoiceTotals derives (subtotal, tax, total) from the lines + discount +
+// tax inputs. tax_cents is the source of truth for the total; when it's 0 and a
+// rate is supplied, it's derived from the post-discount base.
+func computeInvoiceTotals(lines []ClientInvoiceLine, discountCents, taxCents int, taxRate float64) (subtotal, tax, total int) {
+	subtotal = 0
+	for _, l := range lines {
+		subtotal += l.AmountCents
+	}
+	if discountCents < 0 {
+		discountCents = 0
+	}
+	base := subtotal - discountCents
+	if base < 0 {
+		base = 0
+	}
+	tax = taxCents
+	if tax == 0 && taxRate > 0 {
+		tax = int(math.Round(float64(base) * taxRate / 100))
+	}
+	if tax < 0 {
+		tax = 0
+	}
+	total = base + tax
+	if total < 0 {
+		total = 0
+	}
+	return subtotal, tax, total
 }
 
 // CreateClientInvoice inserts an invoice header and its lines in one tx,
-// computing subtotal/total from the lines. Status is always 'draft' on creation.
+// computing subtotal/discount/tax/total from the lines + header inputs. Status is
+// always 'draft' on creation.
 func CreateClientInvoice(ctx context.Context, tx pgx.Tx, orgID string, in CreateClientInvoiceInput) (*ClientInvoice, error) {
-	subtotal := 0
-	for _, l := range in.Lines {
-		subtotal += l.AmountCents
-	}
 	currency := in.Currency
 	if currency == "" {
 		currency = "USD"
 	}
+	discount := in.DiscountCents
+	if discount < 0 {
+		discount = 0
+	}
+	subtotal, tax, total := computeInvoiceTotals(in.Lines, discount, in.TaxCents, in.TaxRate)
 
 	const insHdr = `
 		INSERT INTO client_invoices
 			(org_id, client_id, project_id, number, status, period_start, period_end,
-			 currency, subtotal_cents, total_cents, notes)
-		VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $8, NULLIF($9,''))
+			 currency, subtotal_cents, discount_cents, tax_cents, tax_rate, total_cents, notes)
+		VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13,''))
 		RETURNING id`
 	var invoiceID string
 	if err := tx.QueryRow(ctx, insHdr, orgID, in.ClientID, in.ProjectID, in.Number,
-		in.PeriodStart, in.PeriodEnd, currency, subtotal, in.Notes).Scan(&invoiceID); err != nil {
+		in.PeriodStart, in.PeriodEnd, currency, subtotal, discount, tax, in.TaxRate, total, in.Notes).Scan(&invoiceID); err != nil {
 		return nil, fmt.Errorf("store.invoicing: insert invoice: %w", err)
 	}
 
@@ -282,20 +329,26 @@ func insertClientInvoiceLines(ctx context.Context, tx pgx.Tx, orgID, invoiceID s
 	}
 	const insLine = `
 		INSERT INTO client_invoice_lines
-			(org_id, invoice_id, description, effort_points, quantity,
+			(org_id, invoice_id, source, description, effort_points, quantity,
 			 unit_rate_cents, amount_cents, evidence, sort)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 	batch := &pgx.Batch{}
 	for i, l := range lines {
+		// Manual lines carry no git proof; force their evidence empty regardless of
+		// what the caller sent.
+		source := l.Source
+		if source != "manual" {
+			source = "git"
+		}
 		ev, _ := json.Marshal(l.Evidence)
-		if len(ev) == 0 {
+		if source == "manual" || len(ev) == 0 {
 			ev = []byte("[]")
 		}
 		qty := l.Quantity
 		if qty == 0 {
 			qty = 1
 		}
-		batch.Queue(insLine, orgID, invoiceID, l.Description, l.EffortPoints, qty,
+		batch.Queue(insLine, orgID, invoiceID, source, l.Description, l.EffortPoints, qty,
 			l.UnitRateCents, l.AmountCents, ev, i)
 	}
 	br := tx.SendBatch(ctx, batch)
@@ -309,15 +362,61 @@ func insertClientInvoiceLines(ctx context.Context, tx pgx.Tx, orgID, invoiceID s
 }
 
 // ClientInvoicePatch carries optional invoice updates (nil = unchanged).
+//
+// When DiscountCents, TaxCents or TaxRate change, total_cents is recomputed from
+// the (unchanged) line subtotal as subtotal - discount + tax. If only TaxRate is
+// supplied (TaxCents nil), tax_cents is re-derived from the post-discount base.
 type ClientInvoicePatch struct {
-	Status *string
-	Notes  *string
+	Status        *string
+	Notes         *string
+	DiscountCents *int
+	TaxCents      *int
+	TaxRate       *float64
 }
 
 // UpdateClientInvoice applies a partial update to an invoice header. issued_at
-// is stamped the first time the invoice is marked 'sent'. Returns the refreshed
-// header.
+// is stamped the first time the invoice is marked 'sent'. Discount/tax changes
+// recompute total_cents from the persisted subtotal. Returns the refreshed header.
 func UpdateClientInvoice(ctx context.Context, tx pgx.Tx, orgID, id string, p ClientInvoicePatch) (*ClientInvoice, error) {
+	// Recompute money fields when any of discount/tax/rate is supplied. Read the
+	// current header (under RLS) to get the line subtotal + existing values, then
+	// fold in the patch.
+	if p.DiscountCents != nil || p.TaxCents != nil || p.TaxRate != nil {
+		cur, err := GetClientInvoice(ctx, tx, orgID, id)
+		if err != nil {
+			return nil, err
+		}
+		discount := cur.DiscountCents
+		if p.DiscountCents != nil {
+			discount = *p.DiscountCents
+		}
+		taxRate := cur.TaxRate
+		if p.TaxRate != nil {
+			taxRate = *p.TaxRate
+		}
+		// If TaxCents is given explicitly, use it; otherwise re-derive from rate.
+		taxCents := 0
+		if p.TaxCents != nil {
+			taxCents = *p.TaxCents
+		} else if p.TaxRate == nil {
+			// rate unchanged + no explicit tax → keep the existing absolute tax.
+			taxCents = cur.TaxCents
+		}
+		fakeLines := []ClientInvoiceLine{{AmountCents: cur.SubtotalCents}}
+		_, tax, total := computeInvoiceTotals(fakeLines, discount, taxCents, taxRate)
+
+		const mq = `
+			UPDATE client_invoices SET
+				discount_cents = $3,
+				tax_cents      = $4,
+				tax_rate       = $5,
+				total_cents    = $6
+			WHERE org_id = $1 AND id = $2`
+		if _, err := tx.Exec(ctx, mq, orgID, id, discount, tax, taxRate, total); err != nil {
+			return nil, fmt.Errorf("store.invoicing: recompute totals: %w", err)
+		}
+	}
+
 	const q = `
 		UPDATE client_invoices SET
 			status    = COALESCE($3, status),
@@ -494,7 +593,8 @@ type invoiceScanner interface {
 func scanClientInvoice(row invoiceScanner, inv *ClientInvoice) error {
 	if err := row.Scan(
 		&inv.ID, &inv.OrgID, &inv.ClientID, &inv.ProjectID, &inv.Number, &inv.Status,
-		&inv.PeriodStart, &inv.PeriodEnd, &inv.Currency, &inv.SubtotalCents, &inv.TotalCents,
+		&inv.PeriodStart, &inv.PeriodEnd, &inv.Currency, &inv.SubtotalCents,
+		&inv.DiscountCents, &inv.TaxCents, &inv.TaxRate, &inv.TotalCents,
 		&inv.ShareToken, &inv.Notes, &inv.IssuedAt, &inv.CreatedAt,
 		&inv.ExternalProvider, &inv.ExternalID, &inv.ExternalURL,
 		&inv.ClientName, &inv.ProjectName,

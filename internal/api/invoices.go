@@ -36,8 +36,9 @@ import (
 //
 //	GET    /api/invoices              list headers
 //	GET    /api/invoices/{id}         header + line items
-//	POST   /api/invoices             create a draft from explicit lines
-//	POST   /api/invoices/generate    GENERATE a draft from merged-PR git effort
+//	POST   /api/invoices             create a draft from explicit lines (git + manual)
+//	POST   /api/invoices/generate    GENERATE a draft from merged-PR git effort (per-repo)
+//	POST   /api/invoices/from-git    RICHER git draft: per-area lines, hours or $/point
 //	PATCH  /api/invoices/{id}        update status/notes (status→sent sets a share token)
 //	DELETE /api/invoices/{id}        delete
 //
@@ -58,6 +59,7 @@ func RegisterInvoiceRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Conf
 
 	mux.Handle("GET /api/invoices", auth(h.listInvoices))
 	mux.Handle("POST /api/invoices/generate", auth(h.generate))
+	mux.Handle("POST /api/invoices/from-git", auth(h.fromGit))
 	mux.Handle("POST /api/invoices", auth(h.createInvoice))
 	mux.Handle("GET /api/invoices/{id}/pdf", auth(h.invoicePDF))
 	mux.Handle("GET /api/invoices/{id}", auth(h.getInvoice))
@@ -335,18 +337,24 @@ func invoiceFilenameSlug(s string) string {
 	return out
 }
 
-// createInvoiceRequest is the body for POST /api/invoices (manual draft).
+// createInvoiceRequest is the body for POST /api/invoices (manual draft). Lines
+// may be git-derived (source "git", carry evidence) or manual (source "manual",
+// free-form). discountCents/taxCents/taxRate adjust the header total.
 type createInvoiceRequest struct {
-	ClientID  string             `json:"clientId"`
-	ProjectID string             `json:"projectId"`
-	From      string             `json:"from"`
-	To        string             `json:"to"`
-	Currency  string             `json:"currency"`
-	Notes     string             `json:"notes"`
-	Lines     []invoiceLineInput `json:"lines"`
+	ClientID      string             `json:"clientId"`
+	ProjectID     string             `json:"projectId"`
+	From          string             `json:"from"`
+	To            string             `json:"to"`
+	Currency      string             `json:"currency"`
+	Notes         string             `json:"notes"`
+	DiscountCents int                `json:"discountCents"`
+	TaxCents      int                `json:"taxCents"`
+	TaxRate       float64            `json:"taxRate"`
+	Lines         []invoiceLineInput `json:"lines"`
 }
 
 type invoiceLineInput struct {
+	Source        string               `json:"source"` // "git" | "manual" (default "git")
 	Description   string               `json:"description"`
 	EffortPoints  float64              `json:"effortPoints"`
 	Quantity      float64              `json:"quantity"`
@@ -376,13 +384,16 @@ func (h *invoiceHandlers) createInvoice(w http.ResponseWriter, r *http.Request) 
 	}
 
 	in := store.CreateClientInvoiceInput{
-		ClientID:    nullableUUID(req.ClientID),
-		ProjectID:   nullableUUID(req.ProjectID),
-		PeriodStart: from,
-		PeriodEnd:   to,
-		Currency:    req.Currency,
-		Notes:       req.Notes,
-		Lines:       toStoreLines(req.Lines),
+		ClientID:      nullableUUID(req.ClientID),
+		ProjectID:     nullableUUID(req.ProjectID),
+		PeriodStart:   from,
+		PeriodEnd:     to,
+		Currency:      req.Currency,
+		Notes:         req.Notes,
+		DiscountCents: req.DiscountCents,
+		TaxCents:      req.TaxCents,
+		TaxRate:       req.TaxRate,
+		Lines:         toStoreLines(req.Lines),
 	}
 
 	var out *store.ClientInvoice
@@ -545,6 +556,232 @@ func (h *invoiceHandlers) generate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── From-git builder (richer) ────────────────────────────────────────────────────
+
+// fromGitRequest is the body for POST /api/invoices/from-git — a richer git-derived
+// draft builder. It takes a client/period + optional project scope and a billing
+// rate expressed either as $/effort-point (rateCents, the default) OR as an
+// effort→hours conversion (hoursPerPoint) priced at hourlyRateCents. Each generated
+// line is git-derived (source "git") and carries its Evidence (PR titles + repo +
+// merged_at + sha). discountCents/taxCents/taxRate carry through to the header.
+type fromGitRequest struct {
+	ClientID  string `json:"clientId"`
+	ProjectID string `json:"projectId"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+
+	// Pricing. If HoursPerPoint > 0, lines bill HoursPerPoint×points hours at
+	// HourlyRateCents; quantity is the hours. Otherwise lines bill points × RateCents
+	// directly (quantity = points). RateCents falls back to the client/default rate.
+	RateCents       *int    `json:"rateCents"`
+	HoursPerPoint   float64 `json:"hoursPerPoint"`
+	HourlyRateCents int     `json:"hourlyRateCents"`
+
+	DiscountCents int     `json:"discountCents"`
+	TaxCents      int     `json:"taxCents"`
+	TaxRate       float64 `json:"taxRate"`
+	Notes         string  `json:"notes"`
+
+	// Preview=true returns the would-be lines + header without persisting.
+	Preview bool `json:"preview"`
+}
+
+func (h *invoiceHandlers) fromGit(w http.ResponseWriter, r *http.Request) {
+	orgID := middleware.OrgFromContext(r.Context())
+	if orgID == "" {
+		writeError(w, http.StatusBadRequest, "org context required")
+		return
+	}
+	if !h.requireManager(w, r, orgID) {
+		return
+	}
+	var req fromGitRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	from, to, ok := parseInvoicePeriod(req.From, req.To)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "from/to must be valid dates with from <= to")
+		return
+	}
+
+	clientID := nullableUUID(req.ClientID)
+	projectID := nullableUUID(req.ProjectID)
+
+	var (
+		lines  []store.ClientInvoiceLine
+		header *store.ClientInvoice
+	)
+
+	err := withInvoiceNumberRetry(func() error {
+		return h.db.WithOrg(r.Context(), orgID, func(tx pgx.Tx) error {
+			// Resolve the per-point rate: explicit > client default > schema default.
+			rate := 15000
+			if clientID != nil {
+				cs, e := store.ListClients(r.Context(), tx, orgID)
+				if e != nil {
+					return e
+				}
+				for _, c := range cs {
+					if c.ID == *clientID {
+						rate = c.RateCents
+						break
+					}
+				}
+			}
+			if req.RateCents != nil && *req.RateCents > 0 {
+				rate = *req.RateCents
+			}
+
+			eff, e := store.MergedPREffort(r.Context(), tx, orgID, store.MergedEffortInput{
+				ProjectID: derefStr(projectID),
+				From:      from,
+				To:        to,
+			})
+			if e != nil {
+				return e
+			}
+			lines = buildLinesFromGit(eff, rate, req.HoursPerPoint, req.HourlyRateCents)
+
+			if req.Preview {
+				subtotal := 0
+				for _, l := range lines {
+					subtotal += l.AmountCents
+				}
+				base := subtotal - req.DiscountCents
+				if base < 0 {
+					base = 0
+				}
+				tax := req.TaxCents
+				if tax == 0 && req.TaxRate > 0 {
+					tax = int(math.Round(float64(base) * req.TaxRate / 100))
+				}
+				header = &store.ClientInvoice{
+					ClientID:      clientID,
+					ProjectID:     projectID,
+					Number:        "(draft)",
+					Status:        "draft",
+					PeriodStart:   from,
+					PeriodEnd:     to,
+					Currency:      "USD",
+					SubtotalCents: subtotal,
+					DiscountCents: req.DiscountCents,
+					TaxCents:      tax,
+					TaxRate:       req.TaxRate,
+					TotalCents:    base + tax,
+					Notes:         req.Notes,
+				}
+				return nil
+			}
+
+			num, e := store.NextClientInvoiceNumber(r.Context(), tx, orgID, from.Year())
+			if e != nil {
+				return e
+			}
+			inv, e := store.CreateClientInvoice(r.Context(), tx, orgID, store.CreateClientInvoiceInput{
+				ClientID:      clientID,
+				ProjectID:     projectID,
+				Number:        num,
+				PeriodStart:   from,
+				PeriodEnd:     to,
+				Currency:      "USD",
+				Notes:         req.Notes,
+				DiscountCents: req.DiscountCents,
+				TaxCents:      req.TaxCents,
+				TaxRate:       req.TaxRate,
+				Lines:         lines,
+			})
+			header = inv
+			return e
+		})
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not build invoice from git: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, invoiceDetail{
+		ClientInvoice: header,
+		Lines:         linesWithoutID(lines),
+	})
+}
+
+// buildLinesFromGit groups merged-PR effort into per-repo (per-area) billable
+// lines. When hoursPerPoint>0, each line bills points×hoursPerPoint hours at
+// hourlyRateCents (quantity = hours, unit = hourly rate); otherwise it bills
+// points directly at perPointRateCents (quantity = points, unit = per-point rate).
+// Every line is source "git" and carries its PRs as Evidence.
+func buildLinesFromGit(eff []store.EffortLine, perPointRateCents int, hoursPerPoint float64, hourlyRateCents int) []store.ClientInvoiceLine {
+	type group struct {
+		repo     string
+		points   float64
+		count    int
+		evidence []store.EvidenceItem
+	}
+	byRepo := map[string]*group{}
+	order := []string{}
+	for _, e := range eff {
+		g := byRepo[e.Repo]
+		if g == nil {
+			g = &group{repo: e.Repo}
+			byRepo[e.Repo] = g
+			order = append(order, e.Repo)
+		}
+		pts := e.Difficulty
+		if pts <= 0 {
+			pts = 1 // baseline for unestimated delivered work
+		}
+		g.points += pts
+		g.count++
+		g.evidence = append(g.evidence, store.EvidenceItem{
+			PRTitle:  e.PRTitle,
+			Repo:     e.Repo,
+			MergedAt: e.MergedAt.Format(time.RFC3339),
+			SHA:      e.SHA,
+		})
+	}
+	sort.Strings(order)
+
+	hourly := hoursPerPoint > 0 && hourlyRateCents > 0
+	lines := make([]store.ClientInvoiceLine, 0, len(order))
+	for _, repo := range order {
+		g := byRepo[repo]
+		pts := math.Round(g.points*10) / 10
+		noun := "merged PR"
+		if g.count != 1 {
+			noun = "merged PRs"
+		}
+
+		var qty float64
+		var unit, amount int
+		var desc string
+		if hourly {
+			hours := math.Round(pts*hoursPerPoint*10) / 10
+			qty = hours
+			unit = hourlyRateCents
+			amount = int(math.Round(hours * float64(hourlyRateCents)))
+			desc = fmt.Sprintf("%s — %d %s delivered (%.1f effort pts → %.1f hrs)", repo, g.count, noun, pts, hours)
+		} else {
+			qty = pts
+			unit = perPointRateCents
+			amount = int(math.Round(pts * float64(perPointRateCents)))
+			desc = fmt.Sprintf("%s — %d %s delivered (%.1f effort pts)", repo, g.count, noun, pts)
+		}
+
+		lines = append(lines, store.ClientInvoiceLine{
+			Source:        "git",
+			Description:   desc,
+			EffortPoints:  pts,
+			Quantity:      qty,
+			UnitRateCents: unit,
+			AmountCents:   amount,
+			Evidence:      g.evidence,
+		})
+	}
+	return lines
+}
+
 // buildLines groups merged-PR effort into per-repo invoice line items. Each
 // line's effort_points = summed difficulty, amount = round(effort × rate), and
 // evidence = the actual PRs ([{prTitle, repo, mergedAt, sha}]). PRs with no LLM
@@ -592,6 +829,7 @@ func buildLines(eff []store.EffortLine, rateCents int) []store.ClientInvoiceLine
 			noun = "merged PRs"
 		}
 		lines = append(lines, store.ClientInvoiceLine{
+			Source:        "git",
 			Description:   fmt.Sprintf("%s — %d %s delivered", repo, g.count, noun),
 			EffortPoints:  pts,
 			Quantity:      1,
@@ -620,8 +858,11 @@ func linesWithoutID(lines []store.ClientInvoiceLine) []*store.ClientInvoiceLine 
 // ── Patch / status / share ──────────────────────────────────────────────────────
 
 type patchInvoiceRequest struct {
-	Status *string `json:"status"`
-	Notes  *string `json:"notes"`
+	Status        *string  `json:"status"`
+	Notes         *string  `json:"notes"`
+	DiscountCents *int     `json:"discountCents"`
+	TaxCents      *int     `json:"taxCents"`
+	TaxRate       *float64 `json:"taxRate"`
 }
 
 var validStatuses = map[string]bool{"draft": true, "sent": true, "paid": true, "void": true}
@@ -665,8 +906,11 @@ func (h *invoiceHandlers) patchInvoice(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		inv, e := store.UpdateClientInvoice(r.Context(), tx, orgID, id, store.ClientInvoicePatch{
-			Status: req.Status,
-			Notes:  req.Notes,
+			Status:        req.Status,
+			Notes:         req.Notes,
+			DiscountCents: req.DiscountCents,
+			TaxCents:      req.TaxCents,
+			TaxRate:       req.TaxRate,
 		})
 		out = inv
 		return e
@@ -809,6 +1053,9 @@ func derefStr(p *string) string {
 	return *p
 }
 
+// toStoreLines maps request lines to store lines. A line is "manual" (free-form,
+// no evidence, amount = quantity × unitRate) or "git" (default; amount falls back
+// to effortPoints × unitRate and evidence is preserved).
 func toStoreLines(in []invoiceLineInput) []store.ClientInvoiceLine {
 	out := make([]store.ClientInvoiceLine, 0, len(in))
 	for _, l := range in {
@@ -816,15 +1063,24 @@ func toStoreLines(in []invoiceLineInput) []store.ClientInvoiceLine {
 		if qty == 0 {
 			qty = 1
 		}
+		source := l.Source
+		if source != "manual" {
+			source = "git"
+		}
 		amount := l.AmountCents
 		if amount == 0 && l.UnitRateCents != 0 {
-			amount = int(math.Round(l.EffortPoints * float64(l.UnitRateCents)))
+			if source == "manual" {
+				amount = int(math.Round(qty * float64(l.UnitRateCents)))
+			} else {
+				amount = int(math.Round(l.EffortPoints * float64(l.UnitRateCents)))
+			}
 		}
 		ev := l.Evidence
-		if ev == nil {
+		if source == "manual" || ev == nil {
 			ev = []store.EvidenceItem{}
 		}
 		out = append(out, store.ClientInvoiceLine{
+			Source:        source,
 			Description:   l.Description,
 			EffortPoints:  l.EffortPoints,
 			Quantity:      qty,
