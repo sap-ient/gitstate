@@ -1193,19 +1193,29 @@ export default function Repos() {
                         {synced === list.length ? 'all synced' : `${synced}/${list.length} synced`}
                       </span>
                     </button>
-                    {open && unassigned.ownerGroups.map(({ owner, list: ownerList }) => (
-                      <div key={owner}>
-                        {/* Owner-org sub-header (a nicety so nothing is hidden). */}
-                        <div className="flex items-center gap-2 px-5 py-1.5 pl-9 bg-[var(--bg-surface2)]/30 border-b border-[var(--border)]">
-                          <Building2 size={11} className="text-[var(--text-faint)] shrink-0" />
-                          <span className="text-[10px] font-semibold text-[var(--text-faint)] truncate">{owner}</span>
-                          <span className="text-[10px] font-mono text-[var(--text-faint)] tabular-nums">{ownerList.length}</span>
+                    {open && unassigned.ownerGroups.map(({ owner, list: ownerList }) => {
+                      const okey = `org:${owner}`
+                      const oopen = openGroups[okey] ?? true
+                      return (
+                        <div key={owner}>
+                          {/* Collapsible owner-org sub-header. */}
+                          <button
+                            type="button"
+                            onClick={() => toggleGroup(okey)}
+                            aria-expanded={oopen}
+                            className="w-full flex items-center gap-2 px-5 py-1.5 pl-9 bg-[var(--bg-surface2)]/30 hover:bg-[var(--bg-surface2)]/60 border-b border-[var(--border)] transition-colors text-left"
+                          >
+                            <ChevronRight size={11} className={`text-[var(--text-faint)] shrink-0 transition-transform duration-150 ${oopen ? 'rotate-90' : ''}`} />
+                            <Building2 size={11} className="text-[var(--text-faint)] shrink-0" />
+                            <span className="text-[10px] font-semibold text-[var(--text-faint)] truncate">{owner}</span>
+                            <span className="text-[10px] font-mono text-[var(--text-faint)] tabular-nums">{ownerList.length}</span>
+                          </button>
+                          {oopen && ownerList.map(repo => (
+                            <RepoRow key={repo.id} repo={repo} onSync={syncRepo} projects={projects.filter(p => !p.archived)} onMove={handleMoveRepo} />
+                          ))}
                         </div>
-                        {ownerList.map(repo => (
-                          <RepoRow key={repo.id} repo={repo} onSync={syncRepo} projects={projects.filter(p => !p.archived)} onMove={handleMoveRepo} />
-                        ))}
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )
               })()}
