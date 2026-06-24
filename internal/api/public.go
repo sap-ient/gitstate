@@ -61,13 +61,13 @@ func RegisterPublicPlans(mux *http.ServeMux, database *db.DB, _ *config.Config) 
 			return
 		}
 		// Only the canonical per-builder ladder is public, in ladder order;
-		// legacy rows (hobby/pro/scale/ent) stay in the table for back-compat but hidden.
+		// legacy rows stay in the table for back-compat but hidden.
 		byKey := make(map[string]store.Plan, len(plans))
 		for _, p := range plans {
 			byKey[p.Key] = p
 		}
-		out := make([]publicPlan, 0, 4)
-		for _, key := range []string{"free", "team", "business", "enterprise"} {
+		out := make([]publicPlan, 0, 5)
+		for _, key := range []string{"free", "starter", "pro", "scale", "enterprise"} {
 			p, ok := byKey[key]
 			if !ok {
 				continue
