@@ -63,12 +63,15 @@ func (h *billingHandlers) billingEnabled(w http.ResponseWriter) bool {
 // ── Response types ────────────────────────────────────────────────────────────
 
 type planResponse struct {
-	Key      string         `json:"key"`
-	Name     string         `json:"name"`
-	USDCents int            `json:"usdCents"`
-	Builders int            `json:"builders"`
-	MaxConns int            `json:"maxConns"`
-	Features map[string]any `json:"features"`
+	Key              string         `json:"key"`
+	Name             string         `json:"name"`
+	USDCents         int            `json:"usdCents"`
+	PerBuilderCents  int            `json:"perBuilderCents"`  // monthly price per billable builder
+	IncludedLLMCents int            `json:"includedLLMCents"` // included managed-LLM allowance per builder/mo
+	OverageMarkup    float64        `json:"overageMarkup"`    // markup on managed-LLM beyond allowance (1.05 = +5%)
+	Builders         int            `json:"builders"`
+	MaxConns         int            `json:"maxConns"`
+	Features         map[string]any `json:"features"`
 }
 
 type subscriptionResponse struct {
@@ -157,12 +160,15 @@ func (h *billingHandlers) listPlans(w http.ResponseWriter, r *http.Request) {
 	resp := make([]planResponse, 0, len(plans))
 	for _, p := range plans {
 		resp = append(resp, planResponse{
-			Key:      p.Key,
-			Name:     p.Name,
-			USDCents: p.USDCents,
-			Builders: p.Builders,
-			MaxConns: p.MaxConns,
-			Features: p.Features,
+			Key:              p.Key,
+			Name:             p.Name,
+			USDCents:         p.USDCents,
+			PerBuilderCents:  p.PerBuilderCents,
+			IncludedLLMCents: p.IncludedLLMCents,
+			OverageMarkup:    p.OverageMarkup,
+			Builders:         p.Builders,
+			MaxConns:         p.MaxConns,
+			Features:         p.Features,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -187,11 +193,11 @@ func (h *billingHandlers) getSubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	resp := subscriptionResponse{
-		ID:              sub.ID,
-		PlanKey:         sub.PlanKey,
-		Status:          sub.Status,
+		ID:               sub.ID,
+		PlanKey:          sub.PlanKey,
+		Status:           sub.Status,
 		CurrentPeriodEnd: fmtTimePtr(sub.CurrentPeriodEnd),
-		PaystackSubCode: sub.PaystackSubCode,
+		PaystackSubCode:  sub.PaystackSubCode,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
