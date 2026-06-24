@@ -31,6 +31,10 @@ import { UsageMeter } from '../components/billing/UsageMeter.jsx'
 import { UsageBreakdown } from '../components/billing/UsageBreakdown.jsx'
 import { StatusPill, DunningBanner } from '../components/billing/BillingStatus.jsx'
 import { MetersSkeleton, BreakdownSkeleton, PlansSkeleton, InvoicesSkeleton } from '../components/billing/Skeletons.jsx'
+import { Card, Button, Glow } from '../components/ui'
+import { ArrowRight, Sparkles, Eye } from 'lucide-react'
+import { PriceBlock, FeatureRow } from '../components/pricing/PlanCards.jsx'
+import { PLAN_META, PLAN_FEATURES } from '../components/pricing/planData.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -184,45 +188,6 @@ function planIsPerBuilder(plan) {
 function planIncludedLlmCents(plan) {
   return plan?.includedLLMCents ?? plan?.included_llm_cents ?? null
 }
-
-// Human labels for known feature flags (features jsonb).
-const FEATURE_LABELS = {
-  pdf_invoices: 'Branded PDF invoices',
-  priority_sync: 'Priority repo sync',
-  advanced_analytics: 'Advanced analytics',
-  sso: 'SAML / SSO',
-  audit: 'Audit log',
-  sla: 'Uptime SLA',
-  scale_to_zero: 'Scale-to-zero compute',
-  byok_only: 'Bring-your-own LLM key',
-  byok: 'Bring-your-own LLM key',
-  self_host: 'Self-host option',
-  unlimited: 'Unlimited everything',
-  custom: 'Custom contract',
-}
-
-/** Turn the features jsonb into a list of {label, on} feature lines for a plan. */
-function planFeatureLines(plan) {
-  const features = plan?.features ?? {}
-  const lines = []
-  for (const [k, v] of Object.entries(features)) {
-    if (k === 'max_repos' || k === 'history_days') continue // shown as quotas, not checks
-    const label = FEATURE_LABELS[k] ?? k.replace(/_/g, ' ')
-    lines.push({ label, on: Boolean(v) })
-  }
-  return lines
-}
-
-const CheckIcon = (
-  <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="#2DD4BF" strokeWidth="2.5" className="shrink-0 mt-0.5">
-    <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-  </svg>
-)
-const DashIcon = (
-  <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="var(--text-faint)" strokeWidth="2" className="shrink-0 mt-0.5">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
-  </svg>
-)
 
 // ── Usage parsing ───────────────────────────────────────────────────────────────
 
@@ -781,159 +746,185 @@ function WalletAndModels() {
 
 // ── Plan ladder ───────────────────────────────────────────────────────────────
 
-function PlanCard({ plan, isCurrent, onUpgrade, upgrading, builderCount = 0 }) {
+/** Map the billing /api/billing/plans shape (cents) onto the dollar shape that
+ *  the shared landing PriceBlock/PlanCard expect. Keeps the canonical key/name
+ *  so PLAN_META / PLAN_FEATURES resolve identically to the marketing page. */
+function planToDollarShape(plan) {
   const key = plan.key ?? plan.planKey ?? ''
-  const accent = planAccent(key)
-  const priceCents = planPriceCents(plan)
-  const perBuilder = planIsPerBuilder(plan)
-  const includedLlm = planIncludedLlmCents(plan)
-  const builderCap = plan.builders ?? plan.builder_limit ?? 0
-  const popular = key === 'pro'
-  const isEnterprise = key === 'enterprise'
-  const features = planFeatureLines(plan)
+  const ent = key === 'enterprise'
+  const perBuilderCents = plan.perBuilderCents ?? plan.per_builder_cents
+  const flatCents = plan.usdCents ?? plan.usd_cents
+  const includedCents = planIncludedLlmCents(plan)
+  const byokCents = plan.byokPerBuilderCents ?? plan.byok_per_builder_cents
+  // perBuilderUsd === null signals "custom" to the shared isEnterprise()/PriceBlock.
+  const perBuilderUsd = ent
+    ? null
+    : (perBuilderCents != null ? perBuilderCents / 100 : (flatCents != null ? flatCents / 100 : 0))
+  return {
+    key,
+    name: plan.name ?? key,
+    perBuilderUsd,
+    byokPerBuilderUsd: byokCents != null ? byokCents / 100 : undefined,
+    includedLlmUsd: includedCents != null ? includedCents / 100 : 0,
+  }
+}
 
-  // Monthly cost preview at the org's current billable-builder count.
+function PlanCard({ plan, isCurrent, onUpgrade, upgrading, builderCount = 0, fxRate = null }) {
+  const key = plan.key ?? plan.planKey ?? ''
+  const dollarPlan = planToDollarShape(plan)
+  const ent = key === 'enterprise'
+  const meta = PLAN_META[key] ?? PLAN_META.starter
+  const Icon = meta.icon
+  const features = PLAN_FEATURES[key] ?? []
+  // Recommend Pro (matching the landing) — but never over the user's current plan.
+  const recommended = key === 'pro' && !isCurrent
+
+  // USD formatter that mirrors useCurrency().format's signature, and appends the
+  // ZAR equivalent (charge currency / FX) so the shared PriceBlock stays accurate
+  // in the billing context. ZAR is shown only when an FX rate is available.
+  const format = (usd, opts) => {
+    const fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: opts?.minimumFractionDigits ?? 0, maximumFractionDigits: opts?.maximumFractionDigits ?? 0 })
+    return fmt.format(usd ?? 0)
+  }
+
+  // Per-builder monthly preview at the org's current billable-builder count.
+  const perBuilderUsd = typeof dollarPlan.perBuilderUsd === 'number' ? dollarPlan.perBuilderUsd : 0
   const seats = Math.max(1, builderCount)
-  const monthlyCents = perBuilder && priceCents > 0 ? priceCents * seats : (priceCents > 0 ? priceCents : 0)
-  const showPreview = !isEnterprise && priceCents > 0 && perBuilder
+  const monthlyUsd = perBuilderUsd * seats
+  const showPreview = !ent && perBuilderUsd > 0
+  const monthlyZar = fxRate != null ? monthlyUsd * fxRate : null
 
   return (
-    <div
-      className="relative flex flex-col rounded-[var(--radius-card)] p-6 transition-all duration-200 h-full"
-      style={{
-        background: isCurrent ? `linear-gradient(160deg, ${accent.grad[0]}10, var(--bg-surface) 55%)` : 'var(--bg-surface)',
-        border: `1px solid ${isCurrent ? accent.grad[0] + '99' : (popular ? '#6366F166' : 'var(--border)')}`,
-        boxShadow: isCurrent ? `0 0 0 1px ${accent.grad[0]}40` : undefined,
-      }}
-    >
-      {popular && !isCurrent && (
-        <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-          <span className="text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest text-white"
-            style={{ background: 'linear-gradient(90deg,#6366F1,#2DD4BF)' }}>
-            Most popular
-          </span>
-        </div>
-      )}
-      {isCurrent && (
-        <span
-          className="absolute top-4 right-4 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full uppercase tracking-widest"
-          style={{ background: `${accent.grad[0]}22`, color: accent.text, border: `1px solid ${accent.grad[0]}55` }}
-        >
-          Current
-        </span>
-      )}
-
-      <h3 className="text-sm font-bold uppercase tracking-widest mb-3" style={{ color: accent.text }}>
-        {plan.name ?? key}
-      </h3>
-
-      {/* Price */}
-      <div className="mb-1 flex items-end gap-1.5">
-        {isEnterprise ? (
-          <span className="text-3xl font-extrabold text-[var(--text)]">Custom</span>
-        ) : priceCents === 0 ? (
-          <span className="text-3xl font-extrabold text-[var(--text)]">Free</span>
-        ) : (
-          <>
-            <span className="text-3xl font-extrabold text-[var(--text)] tabular-nums">{fmtUsd(priceCents)}</span>
-            <span className="text-xs text-[var(--text-faint)] mb-1.5">{perBuilder ? '/builder/mo' : '/mo'}</span>
-          </>
-        )}
-      </div>
-      <p className="text-[11px] text-[var(--text-faint)] mb-5 min-h-[14px]">
-        {isEnterprise
-          ? 'Self-host, BYOK, unlimited seats'
-          : priceCents === 0
-            ? 'Bring-your-own LLM key'
-            : <>charged in {CHARGE_CURRENCY} at current FX</>}
-      </p>
-
-      {showPreview && (
-        <div
-          className="rounded-[var(--radius-badge)] px-3 py-2 mb-4 flex items-center justify-between gap-2"
-          style={{ background: `color-mix(in srgb, ${accent.grad[0]} 8%, transparent)`, border: `1px solid ${accent.grad[0]}33` }}
-        >
-          <span className="text-[11px] text-[var(--text-muted)]">
-            At your <strong className="text-[var(--text)]">{seats}</strong> builder{seats !== 1 ? 's' : ''}
-          </span>
-          <span className="text-xs font-bold tabular-nums" style={{ color: accent.text }}>
-            {fmtUsd(monthlyCents)}/mo
+    <div className={['group relative flex flex-col h-full', recommended ? 'xl:-translate-y-3' : ''].join(' ')}>
+      {recommended && (
+        <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-20">
+          <span
+            className="inline-flex items-center gap-1 px-3 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider text-[#0B1120] shadow-[0_6px_18px_rgba(45,212,191,0.45)] whitespace-nowrap"
+            style={{ background: 'linear-gradient(135deg, #2DD4BF, #6366F1)' }}
+          >
+            <Sparkles size={11} strokeWidth={2.5} /> Most popular
           </span>
         </div>
       )}
 
-      {/* Quotas */}
-      <div className="rounded-[var(--radius-badge)] p-3 mb-4 space-y-1.5" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-[var(--text-muted)]">Builder seats</span>
-          <span className="font-bold text-[var(--text)]">{builderCap > 0 ? `Up to ${builderCap}` : 'Unlimited'}</span>
-        </div>
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-[var(--text-muted)]">Stakeholders</span>
-          <span className="font-bold text-[var(--brand-teal)]">Always free</span>
-        </div>
-        {includedLlm != null && includedLlm > 0 && (
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[var(--text-muted)]">Included LLM</span>
-            <span className="font-bold text-[var(--text)]">{fmtUsd(includedLlm)}/builder</span>
-          </div>
-        )}
-        {plan.features?.max_repos != null && (
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[var(--text-muted)]">Repositories</span>
-            <span className="font-bold text-[var(--text)]">{plan.features.max_repos}</span>
-          </div>
-        )}
-      </div>
+      {/* Gradient-border wrapper for the recommended card */}
+      <div
+        className={[
+          'relative flex flex-1 rounded-[var(--radius-card)]',
+          recommended ? 'p-px' : '',
+        ].join(' ')}
+        style={recommended ? { background: 'linear-gradient(160deg, rgba(45,212,191,0.7), rgba(99,102,241,0.55) 55%, rgba(45,212,191,0.15))' } : undefined}
+      >
+        <Card
+          padding="lg"
+          glow={recommended}
+          className={[
+            'relative flex flex-1 flex-col gap-5 transition-all duration-300 w-full',
+            recommended
+              ? 'border-transparent shadow-[0_18px_60px_-12px_rgba(45,212,191,0.25)]'
+              : 'hover:border-[var(--border2)] hover:-translate-y-1.5 hover:shadow-[var(--shadow-card-hover)]',
+          ].join(' ')}
+        >
+          {recommended && (
+            <Glow variant="teal" size={300} className="-top-10 right-0 opacity-50 group-hover:opacity-75 transition-opacity" />
+          )}
 
-      {/* Features */}
-      <div className="flex-1 space-y-2 mb-6">
-        {features.length === 0 ? (
-          <>
-            <div className="flex items-start gap-2 text-xs text-[var(--text-muted)]">{CheckIcon}<span>Git-derived project state</span></div>
-            <div className="flex items-start gap-2 text-xs text-[var(--text-muted)]">{CheckIcon}<span>Evidence-backed invoicing</span></div>
-          </>
-        ) : features.map((f, i) => (
-          <div key={i} className={`flex items-start gap-2 text-xs ${f.on ? 'text-[var(--text-muted)]' : 'text-[var(--text-faint)]'}`}>
-            {f.on ? CheckIcon : DashIcon}
-            <span>{f.label}</span>
-          </div>
-        ))}
-      </div>
+          {isCurrent && (
+            <span
+              className="absolute top-4 right-4 z-[2] inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider text-[#2DD4BF]"
+              style={{ background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.4)' }}
+            >
+              Current plan
+            </span>
+          )}
 
-      {/* CTA */}
-      {isCurrent ? (
-        <div className="w-full py-2.5 rounded-[var(--radius-btn)] text-xs font-semibold text-center"
-          style={{ background: `${accent.grad[0]}18`, color: accent.text, border: `1px solid ${accent.grad[0]}40` }}>
-          Current plan
-        </div>
-      ) : isEnterprise ? (
-        <a
-          href="mailto:sales@gitstate.dev?subject=Enterprise%20plan"
-          className="w-full py-2.5 rounded-[var(--radius-btn)] text-xs font-semibold text-center text-[var(--text-muted)] transition-colors hover:text-[var(--text)] hover:border-[var(--brand-teal)]"
-          style={{ border: '1px solid var(--border2)' }}
-        >
-          Contact sales
-        </a>
-      ) : priceCents === 0 ? (
-        <button
-          onClick={() => onUpgrade(key)}
-          className="w-full py-2.5 rounded-[var(--radius-btn)] text-xs font-semibold text-center text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)]"
-          style={{ border: '1px solid var(--border)' }}
-        >
-          Downgrade to Free
-        </button>
-      ) : (
-        <button
-          onClick={() => onUpgrade(key)}
-          disabled={upgrading}
-          className="w-full py-2.5 rounded-[var(--radius-btn)] text-xs font-semibold text-white transition-all duration-150 disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.98]"
-          style={{ background: `linear-gradient(135deg, ${accent.grad[0]}, ${accent.grad[1]})` }}
-        >
-          {upgrading && <Spinner size={14} />}
-          Choose {plan.name ?? key}
-        </button>
-      )}
+          {/* Header */}
+          <div className="flex items-center gap-3 relative z-[1]">
+            <div
+              className="w-10 h-10 shrink-0 rounded-[var(--radius-badge)] flex items-center justify-center border"
+              style={{
+                background: recommended ? 'rgba(45,212,191,0.12)' : 'var(--bg-surface3)',
+                borderColor: recommended ? 'rgba(45,212,191,0.32)' : 'var(--border)',
+              }}
+            >
+              <Icon size={18} className={recommended ? 'text-[#2DD4BF]' : 'text-[var(--text-muted)]'} strokeWidth={1.8} />
+            </div>
+            <div>
+              <h3 className="font-display text-lg font-semibold text-[var(--text)] leading-none">{dollarPlan.name}</h3>
+              <p className="text-[11px] text-[var(--text-muted)] mt-1.5">{meta.tagline}</p>
+            </div>
+          </div>
+
+          {/* Price (shared landing PriceBlock, fed the cents→dollars shape) */}
+          <div className="relative z-[1] min-h-[88px]">
+            <PriceBlock plan={dollarPlan} billing="monthly" mode="managed" format={format} />
+            {!ent && (
+              <p className="text-[11px] text-[var(--text-muted)] mt-2">charged in {CHARGE_CURRENCY} at the FX captured on each invoice</p>
+            )}
+          </div>
+
+          {/* "At your N builders = $X/mo" preview (billing context) */}
+          {showPreview && (
+            <div
+              className="relative z-[1] rounded-[var(--radius-badge)] px-3 py-2 flex items-center justify-between gap-2"
+              style={{ background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.22)' }}
+            >
+              <span className="text-[11px] text-[var(--text-dim)]">
+                At your <strong className="text-[var(--text)]">{seats}</strong> builder{seats !== 1 ? 's' : ''}
+              </span>
+              <span className="text-right">
+                <span className="text-xs font-bold tabular-nums text-[#0d9488] dark:text-[#2DD4BF]">{usdFmt0.format(monthlyUsd)}/mo</span>
+                {monthlyZar != null && (
+                  <span className="block text-[10px] text-[var(--text-muted)] tabular-nums">≈ {fmtZar(Math.round(monthlyZar * 100))}</span>
+                )}
+              </span>
+            </div>
+          )}
+
+          {/* Stakeholders-free chip */}
+          {!ent && (
+            <div className="relative z-[1] flex items-center gap-2 rounded-[var(--radius-badge)] border border-[#6366F1]/20 bg-[#6366F1]/[0.06] px-3 py-2">
+              <Eye size={13} className="text-[#818cf8] shrink-0" />
+              <span className="text-xs text-[var(--text-dim)]">
+                <span className="font-semibold text-[#818cf8]">Unlimited stakeholders</span> — always free
+              </span>
+            </div>
+          )}
+
+          {/* CTA — billing context: current plan / upgrade / contact sales */}
+          {isCurrent ? (
+            <Button variant="outline" size="md" className="w-full relative z-[1]" disabled>
+              Current plan
+            </Button>
+          ) : ent ? (
+            <Button
+              variant="outline"
+              size="md"
+              className="w-full relative z-[1]"
+              onClick={() => { window.location.href = 'mailto:sales@gitstate.dev?subject=Enterprise%20plan' }}
+            >
+              Contact sales
+            </Button>
+          ) : (
+            <Button
+              variant={recommended ? 'primary' : 'outline'}
+              size="md"
+              className="w-full relative z-[1]"
+              disabled={upgrading}
+              onClick={() => onUpgrade(key)}
+              leftIcon={upgrading ? <Spinner size={14} /> : undefined}
+              rightIcon={!upgrading ? <ArrowRight size={15} /> : undefined}
+            >
+              {dollarPlan.perBuilderUsd === 0 ? 'Switch to ' + dollarPlan.name : 'Upgrade to ' + dollarPlan.name}
+            </Button>
+          )}
+
+          {/* Features (shared landing checklist) */}
+          <ul className="flex flex-col gap-2.5 pt-4 mt-auto border-t border-[var(--border)] relative z-[1]">
+            {features.map(feat => <FeatureRow key={feat.label} feat={feat} />)}
+          </ul>
+        </Card>
+      </div>
     </div>
   )
 }
@@ -942,10 +933,22 @@ function PlansTab() {
   const { data: plans, loading, error, disabled } = usePlans()
   const { data: sub } = useSubscription()
   const { data: usage } = useUsage()
+  const { data: invoicesData } = useInvoices()
   const [upgrading, setUpgrading] = useState(null)
   const [upgradeError, setUpgradeError] = useState(null)
 
   const builderCount = Math.round(indexUsage(usage).builder_seat?.qty ?? 0)
+
+  // Reuse the most-recent invoice's FX rate (1 USD = N ZAR) to show a ZAR
+  // estimate alongside the USD per-builder preview. Null → USD-only.
+  const fxRate = useMemo(() => {
+    const list = Array.isArray(invoicesData) ? invoicesData : (invoicesData?.invoices ?? [])
+    for (const inv of list) {
+      const r = inv.fxRate ?? inv.fx_rate
+      if (r != null && r > 0) return Number(r)
+    }
+    return null
+  }, [invoicesData])
 
   async function handleUpgrade(planKey) {
     if (planKey === 'free') { setUpgradeError('Contact support to downgrade to the Free plan.'); return }
@@ -1003,7 +1006,7 @@ function PlansTab() {
       {sorted.length === 0 ? (
         <div className="text-sm text-[var(--text-muted)] text-center py-10">No plan data returned. Check the billing configuration.</div>
       ) : (
-        <RevealList className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch" staggerDelay={0.05}>
+        <RevealList className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5 items-stretch pt-4" staggerDelay={0.05}>
           {sorted.map(plan => (
             <PlanCard
               key={plan.key ?? plan.planKey ?? plan.id}
@@ -1012,6 +1015,7 @@ function PlansTab() {
               onUpgrade={handleUpgrade}
               upgrading={upgrading === (plan.key ?? plan.planKey)}
               builderCount={builderCount}
+              fxRate={fxRate}
             />
           ))}
         </RevealList>

@@ -16,7 +16,7 @@ import {
 // Annual = ~2 months free → 16.7% off. Presentational only.
 export const ANNUAL_DISCOUNT = 1 / 6
 
-function FeatureRow({ feat }) {
+export function FeatureRow({ feat }) {
   const g = FEATURE_GLYPH[feat.kind] ?? FEATURE_GLYPH.default
   const { Icon } = g
   return (
@@ -32,7 +32,7 @@ function FeatureRow({ feat }) {
   )
 }
 
-function PriceBlock({ plan, billing, mode, format }) {
+export function PriceBlock({ plan, billing, mode, format }) {
   const ent = isEnterprise(plan)
   if (ent) {
     return (
@@ -98,7 +98,7 @@ function PriceBlock({ plan, billing, mode, format }) {
   )
 }
 
-function PlanCard({ plan, recommended, billing, mode, format }) {
+export function PlanCard({ plan, recommended, billing, mode, format }) {
   const ent = isEnterprise(plan)
   const meta = PLAN_META[plan.key] ?? PLAN_META.starter
   const Icon = meta.icon
