@@ -39,6 +39,11 @@ func RegisterReportRoutes(mux *http.ServeMux, database *db.DB, cfg *config.Confi
 	mux.Handle("GET /api/reports/dashboard", chain(http.HandlerFunc(h.dashboard)))
 	mux.Handle("GET /api/reports/burndown", chain(http.HandlerFunc(h.burndown)))
 	mux.Handle("POST /api/reports/query", chain(http.HandlerFunc(h.query)))
+
+	// Agentic chat (POST /api/chat, SSE) is folded in here so it rides an
+	// already-wired registrar — no router.go change. It uses the package-level
+	// modelGateway (injected by main.go's SetModelGateway before NewRouter).
+	RegisterChatRoutes(mux, database, cfg)
 }
 
 // reportHandlers holds shared state for reporting HTTP handlers.
