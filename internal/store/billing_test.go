@@ -448,13 +448,16 @@ func TestWallet_TopupIdempotency(t *testing.T) {
 		t.Errorf("replayed credit: balance=%d credited=%v, want 4000/false (no double-credit)", b2, c2)
 	}
 
-	// Exactly one topup row for the ref.
+	// Exactly one topup row for the ref. wallet_ledger is FORCE RLS, so the count
+	// must run inside the org context (a bare-pool query sees zero rows).
 	var n int
-	if err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM wallet_ledger WHERE org_id=$1 AND kind='topup' AND ref=$2`,
-		orgID, ref).Scan(&n); err != nil {
-		t.Fatalf("count topups: %v", err)
-	}
+	withOrgCtx(t, ctx, pool, orgID, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM wallet_ledger WHERE org_id=$1 AND kind='topup' AND ref=$2`,
+			orgID, ref).Scan(&n); err != nil {
+			t.Fatalf("count topups: %v", err)
+		}
+	})
 	if n != 1 {
 		t.Errorf("topup rows for ref = %d, want 1", n)
 	}
